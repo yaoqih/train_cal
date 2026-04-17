@@ -19,6 +19,7 @@ from fzed_shunting.verify.replay import ReplayState, replay_plan
 
 BEAM_POST_REPAIR_PASSES = 1
 BEAM_POST_REPAIR_MAX_ROUNDS = 1
+BEAM_SHALLOW_RESERVE = 1
 
 
 @dataclass(order=True)
@@ -499,23 +500,37 @@ def _prune_queue(
     if len(queue) <= beam_width:
         return
     ranked = sorted(queue)
-    kept = ranked[:beam_width]
-    if beam_width >= 2:
+    if beam_width <= 1:
+        kept = ranked[:beam_width]
+    else:
+        kept: list[QueueItem] = []
+        kept_ids: set[int] = set()
+        shallow_depth = min(len(item.plan) for item in ranked)
+        shallow_candidates = [
+            item
+            for item in ranked
+            if len(item.plan) == shallow_depth
+        ]
+        for item in shallow_candidates[:BEAM_SHALLOW_RESERVE]:
+            kept.append(item)
+            kept_ids.add(id(item))
         blocker_candidates = [
             item
-            for item in ranked[beam_width - 1 :]
-            if item.priority[3] < 0
+            for item in ranked
+            if item.priority[3] < 0 and id(item) not in kept_ids
         ]
         if blocker_candidates:
             blocker_item = blocker_candidates[0]
-            base_kept = [
-                item
-                for item in ranked[: beam_width - 1]
-                if item is not blocker_item
-            ]
-            if blocker_item not in base_kept:
-                kept = base_kept + [blocker_item]
-                kept.sort()
+            kept.append(blocker_item)
+            kept_ids.add(id(blocker_item))
+        for item in ranked:
+            if len(kept) >= beam_width:
+                break
+            if id(item) in kept_ids:
+                continue
+            kept.append(item)
+            kept_ids.add(id(item))
+        kept.sort()
     kept_ids = {id(item) for item in kept}
     pruned = [item for item in ranked if id(item) not in kept_ids]
     queue[:] = kept

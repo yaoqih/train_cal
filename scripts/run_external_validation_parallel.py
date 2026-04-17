@@ -20,7 +20,7 @@ from fzed_shunting.verify.replay import build_initial_state
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_inputs"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_parallel_runs"
-DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = 0
+DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,8 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--solver", default="beam")
     parser.add_argument("--beam-width", type=int, default=8)
     parser.add_argument("--heuristic-weight", type=float, default=1.0)
-    parser.add_argument("--max-workers", type=int, default=4)
-    parser.add_argument("--timeout-seconds", type=int, default=20)
+    parser.add_argument("--max-workers", type=int, default=8)
+    parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
     parser.add_argument("--worker", action="store_true")
@@ -216,48 +216,85 @@ def recover_no_solution_results(
     retry_no_solution_beam_width: int | None,
     initial_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if solver != "beam" or beam_width is None or retry_no_solution_beam_width is None:
+    effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
+        beam_width=beam_width,
+        retry_no_solution_beam_width=retry_no_solution_beam_width,
+    )
+    if solver != "beam" or beam_width is None or effective_retry_beam_width is None:
         return initial_results
-    if retry_no_solution_beam_width <= beam_width:
+    retry_beam_widths = _build_retry_beam_widths(
+        beam_width=beam_width,
+        retry_no_solution_beam_width=effective_retry_beam_width,
+    )
+    if not retry_beam_widths:
         return initial_results
 
     scenario_path_by_name = {scenario_path.name: scenario_path for scenario_path in scenario_paths}
-    retry_scenarios = [
-        scenario_path_by_name[result["scenario"]]
+    ordered_scenarios = [result["scenario"] for result in initial_results]
+    merged_results = {
+        result["scenario"]: dict(result)
         for result in initial_results
-        if (
-            not result.get("solved")
-            and "No solution found" in result.get("error", "")
-            and result["scenario"] in scenario_path_by_name
-        )
-    ]
-    if not retry_scenarios:
-        return initial_results
-
-    retry_results = run_parallel_scenarios(
-        master_dir=master_dir,
-        scenario_paths=retry_scenarios,
-        solver=solver,
-        beam_width=retry_no_solution_beam_width,
-        heuristic_weight=heuristic_weight,
-        timeout_seconds=timeout_seconds,
-        max_workers=max_workers,
-    )
-    retry_result_by_scenario = {
-        result["scenario"]: result
-        for result in retry_results
-        if result.get("solved")
     }
-    merged_results: list[dict[str, Any]] = []
-    for result in initial_results:
-        recovered = retry_result_by_scenario.get(result["scenario"])
-        if recovered is None:
-            merged_results.append(result)
-            continue
-        recovered = dict(recovered)
-        recovered["recovery_beam_width"] = retry_no_solution_beam_width
-        merged_results.append(recovered)
-    return merged_results
+
+    for retry_beam_width in retry_beam_widths:
+        retry_scenarios = [
+            scenario_path_by_name[scenario_name]
+            for scenario_name in ordered_scenarios
+            if (
+                scenario_name in scenario_path_by_name
+                and not merged_results[scenario_name].get("solved")
+                and "No solution found" in merged_results[scenario_name].get("error", "")
+            )
+        ]
+        if not retry_scenarios:
+            break
+        retry_results = run_parallel_scenarios(
+            master_dir=master_dir,
+            scenario_paths=retry_scenarios,
+            solver=solver,
+            beam_width=retry_beam_width,
+            heuristic_weight=heuristic_weight,
+            timeout_seconds=timeout_seconds,
+            max_workers=max_workers,
+        )
+        for retry_result in retry_results:
+            if not retry_result.get("solved"):
+                continue
+            recovered = dict(retry_result)
+            recovered["recovery_beam_width"] = retry_beam_width
+            merged_results[retry_result["scenario"]] = recovered
+    return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
+
+
+def _resolve_retry_no_solution_beam_width(
+    *,
+    beam_width: int | None,
+    retry_no_solution_beam_width: int | None,
+) -> int | None:
+    if beam_width is None:
+        return None
+    if retry_no_solution_beam_width == 0:
+        return None
+    if retry_no_solution_beam_width is None:
+        return beam_width * 3
+    return retry_no_solution_beam_width
+
+
+def _build_retry_beam_widths(
+    *,
+    beam_width: int,
+    retry_no_solution_beam_width: int,
+) -> list[int]:
+    if retry_no_solution_beam_width <= beam_width:
+        return []
+    retry_beam_widths: list[int] = []
+    multiplier = 2
+    while multiplier * beam_width < retry_no_solution_beam_width:
+        retry_beam_widths.append(multiplier * beam_width)
+        multiplier += 1
+    if not retry_beam_widths or retry_beam_widths[-1] != retry_no_solution_beam_width:
+        retry_beam_widths.append(retry_no_solution_beam_width)
+    return retry_beam_widths
 
 
 def _run_worker(args: argparse.Namespace) -> None:

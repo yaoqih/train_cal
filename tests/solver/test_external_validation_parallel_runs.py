@@ -50,6 +50,20 @@ def test_solve_one_external_validation_returns_debug_stats(tmp_path: Path):
         assert "error" in result
 
 
+def test_parse_args_defaults_to_baseline_settings():
+    original_argv = module.sys.argv
+    module.sys.argv = ["run_external_validation_parallel.py"]
+    try:
+        args = module.parse_args()
+    finally:
+        module.sys.argv = original_argv
+
+    assert args.beam_width == 8
+    assert args.max_workers == 8
+    assert args.timeout_seconds == 60
+    assert args.retry_no_solution_beam_width is None
+
+
 def test_run_parallel_scenarios_uses_subprocesses_and_collects_results(tmp_path: Path):
     scenario_a = tmp_path / "validation_a.json"
     scenario_b = tmp_path / "validation_b.json"
@@ -211,6 +225,71 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
     assert results[0]["solved"] is True
     assert results[0]["recovery_beam_width"] == 12
     assert results[1] == initial_results[1]
+
+
+def test_recover_no_solution_results_retries_progressively_until_success(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": "validation_a.json", "solved": False, "error": "No solution found", "debug_stats": {}},
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+    ):
+        calls.append(beam_width)
+        if beam_width == 16:
+            return [
+                {
+                    "scenario": "validation_a.json",
+                    "solved": False,
+                    "error": "No solution found",
+                    "debug_stats": {},
+                }
+            ]
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 9,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=24,
+            initial_results=initial_results,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [16, 24]
+    assert results[0]["solved"] is True
+    assert results[0]["recovery_beam_width"] == 24
 
 
 def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):

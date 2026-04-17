@@ -17,6 +17,7 @@ def test_generate_goal_moves_from_north_prefix_only():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "vehicleInfo": [
             {
@@ -37,7 +38,7 @@ def test_generate_goal_moves_from_north_prefix_only():
                 "vehicleNo": "D2",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "机库",
+                "targetTrack": "存4北",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
@@ -51,11 +52,10 @@ def test_generate_goal_moves_from_north_prefix_only():
 
     move_blocks = [tuple(move.vehicle_nos) for move in moves]
     assert ("D1",) in move_blocks
-    assert ("D1", "D2") in move_blocks
     assert ("D2",) not in move_blocks
 
 
-def test_generate_goal_moves_orders_longer_same_goal_prefixes_first():
+def test_generate_goal_moves_keeps_only_longest_feasible_prefix_for_single_target_goal():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -93,7 +93,279 @@ def test_generate_goal_moves_orders_longer_same_goal_prefixes_first():
 
     moves = generate_goal_moves(normalized, state)
 
-    assert [tuple(move.vehicle_nos) for move in moves] == [("P1", "P2"), ("P1",)]
+    assert [tuple(move.vehicle_nos) for move in moves] == [("P1", "P2")]
+
+
+def test_generate_goal_moves_keeps_shorter_prefix_when_longest_single_target_prefix_does_not_fit():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 20.0},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "Q1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "Q2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state)
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [("Q1",)]
+
+
+def test_generate_goal_moves_keeps_shorter_prefix_for_single_target_goal_when_target_track_is_not_empty():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "R1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "R2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "R_OCC",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state)
+        if move.source_track == "存5北"
+    ]
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [("R1", "R2"), ("R1",)]
+
+
+def test_generate_goal_moves_keeps_shorter_prefix_for_single_target_goal_from_temporary_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "临3", "trackDistance": 120.0},
+            {"trackName": "修3库外", "trackDistance": 120.0},
+            {"trackName": "机库", "trackDistance": 120.0},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "临3",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TMP1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库外",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "临3",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TMP2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库外",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state, master=master, route_oracle=RouteOracle(master))
+        if move.source_track == "临3" and move.target_track == "修3库外"
+    ]
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [("TMP1", "TMP2"), ("TMP1",)]
+
+
+def test_generate_goal_moves_keeps_only_longest_prefix_for_three_car_temporary_same_goal_block():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "临3", "trackDistance": 120.0},
+            {"trackName": "修3库外", "trackDistance": 120.0},
+            {"trackName": "机库", "trackDistance": 120.0},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "临3",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TMP3_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库外",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "临3",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TMP3_2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库外",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "临3",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TMP3_3",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库外",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state, master=master, route_oracle=RouteOracle(master))
+        if move.source_track == "临3" and move.target_track == "修3库外"
+    ]
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [("TMP3_1", "TMP3_2", "TMP3_3")]
+
+
+def test_generate_goal_moves_keeps_shorter_prefixes_when_same_goal_front_block_does_not_consume_source_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "存4北", "trackDistance": 317.8},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "M1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "M2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "M3",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "4",
+                "vehicleModel": "棚车",
+                "vehicleNo": "M4",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state)
+        if move.source_track == "存5北" and move.target_track == "机库"
+    ]
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [
+        ("M1", "M2", "M3"),
+        ("M1", "M2"),
+        ("M1",),
+    ]
 
 
 def test_generate_goal_moves_respects_allowed_target_tracks():

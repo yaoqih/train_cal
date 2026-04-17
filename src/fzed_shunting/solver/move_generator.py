@@ -59,6 +59,8 @@ def generate_goal_moves(
     for source_track, seq in state.track_sequences.items():
         if not seq:
             continue
+        emitted_longest_single_target_direct_moves: set[str] = set()
+        source_track_is_uniform_goal = _same_goal(seq, goal_by_vehicle)
         for prefix_size in range(len(seq), 0, -1):
             block = seq[:prefix_size]
             block_length = sum(length_by_vehicle[vehicle_no] for vehicle_no in block)
@@ -78,6 +80,12 @@ def generate_goal_moves(
                 ):
                     continue
                 candidate_targets = _candidate_targets(block, plan_input, state, vehicle_by_no)
+                if _should_skip_shorter_single_target_direct_move(
+                    candidate_targets=candidate_targets,
+                    emitted_targets=emitted_longest_single_target_direct_moves,
+                ):
+                    continue
+                generated_targets: list[str] = []
                 for target_track in candidate_targets:
                     move = _build_candidate_move(
                         source_track=source_track,
@@ -94,11 +102,23 @@ def generate_goal_moves(
                     )
                     if move is not None:
                         moves.append(move)
+                        generated_targets.append(target_track)
                         _record_move_debug_stats(
                             debug_stats,
                             move=move,
                             is_staging=False,
                         )
+                if (
+                    source_track_is_uniform_goal
+                    and len(generated_targets) == 1
+                    and not state.track_sequences.get(generated_targets[0])
+                    and not _preserve_shorter_single_target_direct_moves(
+                        master=master,
+                        source_track=source_track,
+                        source_seq=seq,
+                    )
+                ):
+                    emitted_longest_single_target_direct_moves.add(generated_targets[0])
         staging_requests = _collect_staging_requests_for_source(
             source_track=source_track,
             seq=seq,
@@ -163,6 +183,28 @@ def generate_goal_moves(
                 if feasible_target_count > 0:
                     break
     return moves
+
+
+def _should_skip_shorter_single_target_direct_move(
+    *,
+    candidate_targets: list[str],
+    emitted_targets: set[str],
+) -> bool:
+    return len(candidate_targets) == 1 and candidate_targets[0] in emitted_targets
+
+
+def _preserve_shorter_single_target_direct_moves(
+    *,
+    master: MasterData | None,
+    source_track: str,
+    source_seq: list[str],
+) -> bool:
+    if master is None:
+        return False
+    track = master.tracks.get(source_track)
+    if track is None:
+        return False
+    return track.track_type in PRIMARY_STAGING_TRACK_TYPES and len(source_seq) == 2
 
 
 def _record_move_debug_stats(

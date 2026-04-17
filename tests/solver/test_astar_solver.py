@@ -423,6 +423,88 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
     assert ("D",) in best_cost
 
 
+def test_prune_queue_keeps_best_shallow_state_even_when_deeper_states_have_better_f_score():
+    def build_item(
+        *,
+        seq: int,
+        priority: tuple[float, int, int, int, int],
+        state_key: tuple[str],
+        plan_len: int,
+    ) -> QueueItem:
+        move = HookAction(
+            source_track="存5北",
+            target_track="机库",
+            vehicle_nos=[state_key[0]],
+            path_tracks=["存5北", "机库"],
+        )
+        return QueueItem(
+            priority=priority,
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"存5北": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[move for _ in range(plan_len)],
+        )
+
+    shallow = build_item(
+        seq=1,
+        priority=(30, 2, 28, 0, 28),
+        state_key=("shallow",),
+        plan_len=2,
+    )
+    deep_a = build_item(
+        seq=2,
+        priority=(20, 12, 8, 0, 8),
+        state_key=("deep_a",),
+        plan_len=12,
+    )
+    deep_b = build_item(
+        seq=3,
+        priority=(21, 13, 8, 0, 8),
+        state_key=("deep_b",),
+        plan_len=13,
+    )
+    deep_c = build_item(
+        seq=4,
+        priority=(22, 14, 8, 0, 8),
+        state_key=("deep_c",),
+        plan_len=14,
+    )
+    queue = [deep_c, deep_b, deep_a, shallow]
+    best_cost = {item.state_key: len(item.plan) for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=3)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("shallow",) in kept_keys
+
+
+def test_beam_solver_solves_20260310w_regression():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (Path(__file__).resolve().parents[2] / "artifacts" / "external_validation_inputs" / "validation_20260310W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    result = solve_with_simple_astar_result(
+        normalized,
+        initial,
+        master=master,
+        solver_mode="beam",
+        beam_width=8,
+    )
+
+    assert len(result.plan) == 39
+
+
 def test_apply_move_matches_replay_plan_for_weigh_move():
     master = load_master_data(DATA_DIR)
     payload = {
