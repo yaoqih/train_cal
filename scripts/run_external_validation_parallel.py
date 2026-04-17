@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -135,15 +137,17 @@ def _run_scenario_subprocess(
         beam_width=beam_width,
         heuristic_weight=heuristic_weight,
     )
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        _kill_worker_process_group(process)
         return {
             "scenario": scenario_path.name,
             "solved": False,
@@ -151,14 +155,23 @@ def _run_scenario_subprocess(
             "debug_stats": {},
         }
 
-    if completed.returncode != 0:
+    if process.returncode != 0:
         return {
             "scenario": scenario_path.name,
             "solved": False,
-            "error": completed.stderr.strip() or f"worker exited with code {completed.returncode}",
+            "error": stderr.strip() or f"worker exited with code {process.returncode}",
             "debug_stats": {},
         }
-    return json.loads(completed.stdout)
+    return json.loads(stdout)
+
+
+def _kill_worker_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        process.wait()
 
 
 def run_parallel_scenarios(

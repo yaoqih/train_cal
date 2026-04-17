@@ -58,19 +58,30 @@ def test_run_parallel_scenarios_uses_subprocesses_and_collects_results(tmp_path:
 
     calls: list[list[str]] = []
 
-    class FakeCompleted:
+    class FakeProcess:
         def __init__(self, scenario_name: str):
-            self.stdout = json.dumps({"scenario": scenario_name, "solved": True})
-            self.stderr = ""
+            self.pid = 4321
             self.returncode = 0
+            self._stdout = json.dumps({"scenario": scenario_name, "solved": True})
+            self._stderr = ""
 
-    def fake_run(cmd, capture_output, text, timeout, check):  # noqa: ANN001
+        def communicate(self, timeout):  # noqa: ANN001, ARG002
+            return self._stdout, self._stderr
+
+        def wait(self, timeout=None):  # noqa: ANN001, ARG002
+            return self.returncode
+
+    def fake_popen(cmd, stdout, stderr, text, start_new_session):  # noqa: ANN001
+        assert stdout == module.subprocess.PIPE
+        assert stderr == module.subprocess.PIPE
+        assert text is True
+        assert start_new_session is True
         calls.append(cmd)
         scenario_name = Path(cmd[cmd.index("--scenario") + 1]).name
-        return FakeCompleted(scenario_name)
+        return FakeProcess(scenario_name)
 
-    original_run = module.subprocess.run
-    module.subprocess.run = fake_run
+    original_popen = module.subprocess.Popen
+    module.subprocess.Popen = fake_popen
     try:
         results = module.run_parallel_scenarios(
             master_dir=Path("data/master"),
@@ -82,22 +93,42 @@ def test_run_parallel_scenarios_uses_subprocesses_and_collects_results(tmp_path:
             max_workers=2,
         )
     finally:
-        module.subprocess.run = original_run
+        module.subprocess.Popen = original_popen
 
     assert [item["scenario"] for item in results] == ["validation_a.json", "validation_b.json"]
     assert len(calls) == 2
     assert all("--scenario" in call for call in calls)
 
 
-def test_run_parallel_scenarios_marks_timeout(tmp_path: Path):
+def test_run_parallel_scenarios_marks_timeout_and_cleans_worker_process_group(tmp_path: Path):
     scenario = tmp_path / "validation_timeout.json"
     scenario.write_text("{}", encoding="utf-8")
+    calls: list[tuple] = []
 
-    def fake_run(cmd, capture_output, text, timeout, check):  # noqa: ANN001, ARG001
-        raise module.subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+    class FakeProcess:
+        pid = 9876
+        returncode = None
 
-    original_run = module.subprocess.run
-    module.subprocess.run = fake_run
+        def communicate(self, timeout):  # noqa: ANN001
+            calls.append(("communicate", timeout))
+            raise module.subprocess.TimeoutExpired(cmd=["worker"], timeout=timeout)
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            calls.append(("wait", timeout))
+            self.returncode = -9
+            return self.returncode
+
+    def fake_popen(cmd, stdout, stderr, text, start_new_session):  # noqa: ANN001, ARG001
+        calls.append(("popen", start_new_session))
+        return FakeProcess()
+
+    def fake_killpg(pgid, sig):  # noqa: ANN001
+        calls.append(("killpg", pgid, sig))
+
+    original_popen = module.subprocess.Popen
+    original_killpg = module.os.killpg
+    module.subprocess.Popen = fake_popen
+    module.os.killpg = fake_killpg
     try:
         results = module.run_parallel_scenarios(
             master_dir=Path("data/master"),
@@ -109,11 +140,16 @@ def test_run_parallel_scenarios_marks_timeout(tmp_path: Path):
             max_workers=1,
         )
     finally:
-        module.subprocess.run = original_run
+        module.subprocess.Popen = original_popen
+        module.os.killpg = original_killpg
 
     assert results[0]["scenario"] == "validation_timeout.json"
     assert results[0]["solved"] is False
     assert results[0]["error"] == "timeout"
+    assert ("popen", True) in calls
+    assert ("communicate", 3) in calls
+    assert ("killpg", 9876, module.signal.SIGKILL) in calls
+    assert ("wait", None) in calls
 
 
 def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: Path):
