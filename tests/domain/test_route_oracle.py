@@ -171,6 +171,49 @@ def test_route_oracle_returns_route_metrics():
     assert result.uses_l1 is True
 
 
+def test_route_oracle_caches_route_resolution_by_track_pair():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    first = oracle.resolve_route("存5北", "机库")
+    second = oracle.resolve_route("存5北", "机库")
+
+    assert first is not None
+    assert second is first
+    assert oracle._route_cache[("存5北", "机库")] is first
+
+
+def test_route_oracle_caches_path_tracks_by_track_pair():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    first = oracle.resolve_path_tracks("存5北", "机库")
+    second = oracle.resolve_path_tracks("存5北", "机库")
+
+    assert first == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert second == first
+    assert oracle._path_track_cache[("存5北", "机库")] == tuple(first)
+
+
+def test_route_oracle_validate_path_accepts_pre_resolved_route_and_path():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+    path_tracks = oracle.resolve_path_tracks("存5北", "机库")
+    route = oracle.resolve_route("存5北", "机库")
+
+    result = oracle.validate_path(
+        source_track="存5北",
+        target_track="机库",
+        path_tracks=path_tracks,
+        train_length_m=50,
+        expected_path_tracks=path_tracks,
+        route=route,
+    )
+
+    assert result.is_valid is True
+    assert "L7-机库尽头" in result.branch_codes
+
+
 def test_route_oracle_rejects_terminal_branch_reverse_distance_overflow():
     master = MasterData(
         tracks={

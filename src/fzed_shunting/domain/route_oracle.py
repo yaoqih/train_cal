@@ -179,6 +179,9 @@ class RouteOracle:
         self._track_route_meta = self._build_track_route_meta()
         self._graph = self._build_graph()
         self._track_graph = self._build_track_graph()
+        self._route_cache: dict[tuple[str, str], ResolvedRoute | None] = {}
+        self._path_track_cache: dict[tuple[str, str], tuple[str, ...] | None] = {}
+        self._node_path_cache: dict[tuple[str, str], tuple[str, ...] | None] = {}
 
     def validate_path(
         self,
@@ -187,6 +190,8 @@ class RouteOracle:
         path_tracks: list[str],
         train_length_m: float,
         occupied_track_sequences: dict[str, list[str]] | None = None,
+        expected_path_tracks: list[str] | None = None,
+        route: ResolvedRoute | None = None,
     ) -> PathValidationResult:
         errors: list[str] = []
         if not path_tracks:
@@ -196,7 +201,8 @@ class RouteOracle:
             errors.append("pathTracks must start at source and end at target")
             return PathValidationResult(is_valid=False, errors=errors)
 
-        expected_path_tracks = self.resolve_path_tracks(source_track, target_track)
+        if expected_path_tracks is None:
+            expected_path_tracks = self.resolve_path_tracks(source_track, target_track)
         if expected_path_tracks is None:
             errors.append(f"No track path mapping for {source_track} -> {target_track}")
             return PathValidationResult(is_valid=False, errors=errors)
@@ -205,7 +211,8 @@ class RouteOracle:
                 f"pathTracks must match complete route path: {expected_path_tracks}"
             )
 
-        route = self.resolve_route(source_track, target_track)
+        if route is None:
+            route = self.resolve_route(source_track, target_track)
         if route is None:
             errors.append(f"No route mapping for {source_track} -> {target_track}")
             return PathValidationResult(is_valid=False, errors=errors)
@@ -264,9 +271,13 @@ class RouteOracle:
         )
 
     def resolve_route(self, source_track: str, target_track: str) -> ResolvedRoute | None:
+        cache_key = (source_track, target_track)
+        if cache_key in self._route_cache:
+            return self._route_cache[cache_key]
         source_meta = self._track_route_meta.get(source_track)
         target_meta = self._track_route_meta.get(target_track)
         if source_meta is None or target_meta is None:
+            self._route_cache[cache_key] = None
             return None
 
         best_route: ResolvedRoute | None = None
@@ -298,12 +309,18 @@ class RouteOracle:
                 )
                 if best_route is None or candidate.total_length_m < best_route.total_length_m:
                     best_route = candidate
+        self._route_cache[cache_key] = best_route
         return best_route
 
     def resolve_path_tracks(self, source_track: str, target_track: str) -> list[str] | None:
+        cache_key = (source_track, target_track)
+        if cache_key in self._path_track_cache:
+            cached = self._path_track_cache[cache_key]
+            return list(cached) if cached is not None else None
         if source_track == target_track:
             return [source_track]
         if source_track not in self._track_endpoints or target_track not in self._track_endpoints:
+            self._path_track_cache[cache_key] = None
             return None
 
         queue: list[tuple[float, str, list[str]]] = [(0.0, source_track, [source_track])]
@@ -311,6 +328,7 @@ class RouteOracle:
         while queue:
             cost, track_code, path_tracks = heappop(queue)
             if track_code == target_track:
+                self._path_track_cache[cache_key] = tuple(path_tracks)
                 return path_tracks
             if cost > best.get(track_code, float("inf")) + 1e-9:
                 continue
@@ -323,6 +341,7 @@ class RouteOracle:
                     continue
                 best[next_track] = next_cost
                 heappush(queue, (next_cost, next_track, path_tracks + [next_track]))
+        self._path_track_cache[cache_key] = None
         return None
 
     def _build_graph(self) -> dict[str, list[tuple[str, str, float]]]:
@@ -386,6 +405,10 @@ class RouteOracle:
         return {track_code: sorted(neighbors) for track_code, neighbors in graph.items()}
 
     def _shortest_path(self, source_node: str, target_node: str) -> list[str] | None:
+        cache_key = (source_node, target_node)
+        if cache_key in self._node_path_cache:
+            cached = self._node_path_cache[cache_key]
+            return list(cached) if cached is not None else None
         if source_node == target_node:
             return []
         queue: list[tuple[float, str, list[str]]] = [(0.0, source_node, [])]
@@ -393,6 +416,7 @@ class RouteOracle:
         while queue:
             cost, node, branch_codes = heappop(queue)
             if node == target_node:
+                self._node_path_cache[cache_key] = tuple(branch_codes)
                 return branch_codes
             if cost > best.get(node, float("inf")) + 1e-9:
                 continue
@@ -402,6 +426,7 @@ class RouteOracle:
                     continue
                 best[next_node] = next_cost
                 heappush(queue, (next_cost, next_node, branch_codes + [branch]))
+        self._node_path_cache[cache_key] = None
         return None
 
     def _append_branch(

@@ -1,28 +1,46 @@
 import json
 from pathlib import Path
+from shutil import copy2
 
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.tools.convert_external_validation_inputs import (
-    PAIR_SPECS,
+    PairSpec,
     ExcelVehicleRow,
+    build_pair_spec_for_workbook,
     build_shared_vehicle_scenario,
     build_vehicle_attributes,
     convert_external_validation_inputs,
+    discover_monthly_plan_workbooks,
     load_length_m_by_model,
+    load_supplemental_length_m_by_model,
+    load_vehicle_rows_by_sheet,
     map_excel_track_name,
 )
 
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT_DIR / "data" / "master"
+MONTHLY_PLAN_ROOT = ROOT_DIR / "取送车计划"
+SAMPLE_WORKBOOK = MONTHLY_PLAN_ROOT / "1月-取送车计划" / "取送车计划_20260103W.xlsx"
+SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET = MONTHLY_PLAN_ROOT / "2月-取送车计划" / "取送车计划_20260206W.xlsx"
+MARCH_Z_WORKBOOK = MONTHLY_PLAN_ROOT / "3月-取送车计划" / "取送车计划_20260302Z.xlsx"
+MARCH_26_Z_WORKBOOK = MONTHLY_PLAN_ROOT / "3月-取送车计划" / "取送车计划_20260326Z.xlsx"
 
 
 def test_map_excel_track_name_maps_known_aliases():
     assert map_excel_track_name("存5线北") == "存5北"
     assert map_excel_track_name("老预修") == "预修"
     assert map_excel_track_name("调梁库内") == "调棚"
+    assert map_excel_track_name("调梁线南") == "调棚"
+    assert map_excel_track_name("调梁线北") == "调北"
     assert map_excel_track_name("喷漆库外") == "油"
+    assert map_excel_track_name("喷漆线") == "油"
     assert map_excel_track_name("存4线") == "存4北"
+    assert map_excel_track_name("机走北") == "机北"
+    assert map_excel_track_name("机走南") == "机棚"
+    assert map_excel_track_name("洗罐线北") == "洗北"
+    assert map_excel_track_name("洗罐线南") == "洗南"
 
 
 def test_build_vehicle_attributes_extracts_heavy_and_maps_empty_to_linxiu():
@@ -36,13 +54,57 @@ def test_build_vehicle_attributes_extracts_heavy_and_maps_empty_to_linxiu():
 
 
 def test_load_length_m_by_model_reads_enabled_models_from_length_sheet():
-    length_by_model = load_length_m_by_model(
-        Path(__file__).resolve().parents[2] / "段内车型换长.xlsx"
-    )
+    length_by_model = load_length_m_by_model(ROOT_DIR / "段内车型换长.xlsx")
 
     assert length_by_model["C70E"] == 14.3
     assert length_by_model["C64K"] == 13.2
     assert "GQ70" in length_by_model
+
+
+def test_load_supplemental_length_m_by_model_reads_explicit_aliases_from_huanchang_xlsx():
+    length_by_model = load_supplemental_length_m_by_model(
+        ROOT_DIR / "换长.xlsx",
+        alias_overrides={
+            "P64G": "P64GK",
+            "NX70AK": "NX70AF",
+        },
+        literal_overrides={
+            "NX17": 1.5,
+        },
+    )
+
+    assert length_by_model["P64G"] == 16.5
+    assert length_by_model["NX70AK"] == 14.3
+    assert length_by_model["NX17"] == 16.5
+
+
+def test_discover_monthly_plan_workbooks_returns_all_monthly_xlsx():
+    workbooks = discover_monthly_plan_workbooks(MONTHLY_PLAN_ROOT)
+
+    assert len(workbooks) == 109
+    assert workbooks[0].name == "取送车计划_20260103W.xlsx"
+    assert workbooks[-1].name == "取送车计划_20260331Z.xlsx"
+
+
+def test_build_pair_spec_for_workbook_ignores_template_sheet():
+    pair_spec = build_pair_spec_for_workbook(SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET)
+
+    assert pair_spec.start_sheet == "2.6-下午-起"
+    assert pair_spec.end_sheet == "2.9-上午-终"
+    assert pair_spec.scenario_name == "validation_20260206W"
+
+
+def test_load_vehicle_rows_by_sheet_accepts_monthly_plan_column_variants():
+    january_rows = load_vehicle_rows_by_sheet(SAMPLE_WORKBOOK)
+    february_rows = load_vehicle_rows_by_sheet(
+        MONTHLY_PLAN_ROOT / "2月-取送车计划" / "取送车计划_20260202W.xlsx"
+    )
+
+    january_first = january_rows["1.3-下午-起"][0]
+    february_first = february_rows["0202W-起点"][0]
+
+    assert january_first == ExcelVehicleRow("存5线北", 1, "NX17KF", "5267378", "段", "")
+    assert february_first == ExcelVehicleRow("老预修", 1, "K13NK", "5508258", "", "")
 
 
 def test_normalize_plan_input_accepts_explicit_track_target_mode():
@@ -92,14 +154,14 @@ def test_build_shared_vehicle_scenario_keeps_all_shared_vehicles_and_records_exc
     ]
 
     scenario, summary = build_shared_vehicle_scenario(
-        pair_spec=PAIR_SPECS[0],
+        pair_spec=PairSpec("start", "end", "validation_sample"),
         start_rows=start_rows,
         end_rows=end_rows,
         length_m_by_model=length_by_model,
         master=master,
     )
 
-    assert scenario["name"] == PAIR_SPECS[0].scenario_name
+    assert scenario["name"] == "validation_sample"
     assert {item["vehicleNo"] for item in scenario["payload"]["vehicleInfo"]} == {"A1", "A2"}
     by_no = {item["vehicleNo"]: item for item in scenario["payload"]["vehicleInfo"]}
     assert by_no["A1"]["targetMode"] == "TRACK"
@@ -123,7 +185,7 @@ def test_build_shared_vehicle_scenario_records_duplicate_vehicle_rows():
     ]
 
     scenario, summary = build_shared_vehicle_scenario(
-        pair_spec=PAIR_SPECS[0],
+        pair_spec=PairSpec("start", "end", "validation_sample"),
         start_rows=start_rows,
         end_rows=end_rows,
         length_m_by_model=length_by_model,
@@ -146,7 +208,7 @@ def test_build_shared_vehicle_scenario_uses_aggregate_depot_target_for_inner_dep
     ]
 
     scenario, _summary = build_shared_vehicle_scenario(
-        pair_spec=PAIR_SPECS[0],
+        pair_spec=PairSpec("start", "end", "validation_sample"),
         start_rows=start_rows,
         end_rows=end_rows,
         length_m_by_model=length_by_model,
@@ -159,34 +221,90 @@ def test_build_shared_vehicle_scenario_uses_aggregate_depot_target_for_inner_dep
     assert vehicle["targetAreaCode"] == "大库:RANDOM"
 
 
-def test_convert_external_validation_inputs_writes_duplicate_metadata_to_summary(tmp_path: Path):
+def test_convert_external_validation_inputs_converts_each_monthly_workbook_to_one_scenario(tmp_path: Path):
+    source_root = tmp_path / "取送车计划"
+    january_dir = source_root / "1月-取送车计划"
+    february_dir = source_root / "2月-取送车计划"
+    january_dir.mkdir(parents=True)
+    february_dir.mkdir(parents=True)
+    copy2(SAMPLE_WORKBOOK, january_dir / SAMPLE_WORKBOOK.name)
+    copy2(
+        SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET,
+        february_dir / SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET.name,
+    )
     output_dir = tmp_path / "external_validation_inputs"
 
     summary = convert_external_validation_inputs(
         output_dir=output_dir,
-        source_xlsx=Path(__file__).resolve().parents[2] / "标准化起点终点模板（9.4-9.8-9.9）.xlsx",
-        length_xlsx=Path(__file__).resolve().parents[2] / "段内车型换长.xlsx",
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
         master_dir=DATA_DIR,
     )
 
-    scenario = next(item for item in summary["scenarios"] if item["scenario_name"] == "validation_2025-09-04_am_to_pm")
-    assert scenario["end_sheet_duplicate_vehicle_nos"] == ["4206309", "4872388"]
+    assert summary["source_root"] == "取送车计划"
+    assert summary["scenario_count"] == 2
+    assert [item["scenario_file"] for item in summary["scenarios"]] == [
+        "validation_20260103W.json",
+        "validation_20260206W.json",
+    ]
+    assert summary["scenarios"][0]["source_workbook"] == "1月-取送车计划/取送车计划_20260103W.xlsx"
+    assert summary["scenarios"][1]["start_sheet"] == "2.6-下午-起"
+    assert summary["scenarios"][1]["end_sheet"] == "2.9-上午-终"
 
-
-def test_convert_external_validation_inputs_includes_all_master_tracks(tmp_path: Path):
-    output_dir = tmp_path / "external_validation_inputs"
-
-    convert_external_validation_inputs(
-        output_dir=output_dir,
-        source_xlsx=Path(__file__).resolve().parents[2] / "标准化起点终点模板（9.4-9.8-9.9）.xlsx",
-        length_xlsx=Path(__file__).resolve().parents[2] / "段内车型换长.xlsx",
-        master_dir=DATA_DIR,
-    )
-
-    payload = json.loads(
-        (output_dir / "validation_2025-09-04_am_to_pm.json").read_text(encoding="utf-8")
-    )
+    payload = json.loads((output_dir / "validation_20260103W.json").read_text(encoding="utf-8"))
     track_names = {item["trackName"] for item in payload["trackInfo"]}
     master = load_master_data(DATA_DIR)
 
+    assert payload["vehicleInfo"]
     assert track_names == set(master.tracks)
+
+
+def test_convert_external_validation_inputs_removes_stale_validation_jsons(tmp_path: Path):
+    source_root = tmp_path / "取送车计划"
+    january_dir = source_root / "1月-取送车计划"
+    january_dir.mkdir(parents=True)
+    copy2(SAMPLE_WORKBOOK, january_dir / SAMPLE_WORKBOOK.name)
+    output_dir = tmp_path / "external_validation_inputs"
+    output_dir.mkdir()
+    stale_path = output_dir / "validation_2025-09-04_am_to_pm.json"
+    stale_note_path = output_dir / "conversion_assumptions.md"
+    stale_path.write_text("{}", encoding="utf-8")
+    stale_note_path.write_text("stale", encoding="utf-8")
+
+    convert_external_validation_inputs(
+        output_dir=output_dir,
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
+        master_dir=DATA_DIR,
+    )
+
+    assert not stale_path.exists()
+    assert not stale_note_path.exists()
+    assert [path.name for path in sorted(output_dir.glob("validation_*.json"))] == [
+        "validation_20260103W.json"
+    ]
+
+
+def test_convert_external_validation_inputs_uses_huanchang_xlsx_for_explicit_alias_supplements(
+    tmp_path: Path,
+):
+    source_root = tmp_path / "取送车计划"
+    march_dir = source_root / "3月-取送车计划"
+    march_dir.mkdir(parents=True)
+    copy2(MARCH_Z_WORKBOOK, march_dir / MARCH_Z_WORKBOOK.name)
+    copy2(MARCH_26_Z_WORKBOOK, march_dir / MARCH_26_Z_WORKBOOK.name)
+    output_dir = tmp_path / "external_validation_inputs"
+
+    summary = convert_external_validation_inputs(
+        output_dir=output_dir,
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
+        master_dir=DATA_DIR,
+    )
+
+    missing_by_scenario = {
+        item["scenario_name"]: item["missing_models"] for item in summary["scenarios"]
+    }
+
+    assert missing_by_scenario["validation_20260302Z"] == []
+    assert missing_by_scenario["validation_20260326Z"] == []

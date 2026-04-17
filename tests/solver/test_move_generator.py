@@ -1,6 +1,8 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from fzed_shunting.domain.master_data import load_master_data
+from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.move_generator import generate_goal_moves
 from fzed_shunting.verify.replay import build_initial_state
@@ -53,6 +55,47 @@ def test_generate_goal_moves_from_north_prefix_only():
     assert ("D2",) not in move_blocks
 
 
+def test_generate_goal_moves_orders_longer_same_goal_prefixes_first():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state)
+
+    assert [tuple(move.vehicle_nos) for move in moves] == [("P1", "P2"), ("P1",)]
+
+
 def test_generate_goal_moves_respects_allowed_target_tracks():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -87,7 +130,7 @@ def test_generate_goal_moves_respects_allowed_target_tracks():
     assert targets == {"修1库外", "修2库外", "修3库外", "修4库外"}
 
 
-def test_generate_goal_moves_prioritizes_random_depot_targets_to_preferred_tracks():
+def test_generate_goal_moves_keeps_all_random_depot_targets_for_direct_rebalancing():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -117,7 +160,77 @@ def test_generate_goal_moves_prioritizes_random_depot_targets_to_preferred_track
 
     moves = generate_goal_moves(normalized, state, master=master)
 
-    assert [move.target_track for move in moves] == ["修1库内", "修2库内", "修3库内"]
+    assert {move.target_track for move in moves} == {"修1库内", "修2库内", "修3库内", "修4库内"}
+
+
+def test_generate_goal_moves_orders_random_depot_targets_by_current_occupancy_desc():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEPOT_ORDER",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_A",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "101",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修3库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_B",
+                "repairProcess": "厂修",
+                "vehicleLength": 19.0,
+                "targetTrack": "修3库内",
+                "isSpotting": "301",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修4库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_C",
+                "repairProcess": "厂修",
+                "vehicleLength": 24.0,
+                "targetTrack": "修4库内",
+                "isSpotting": "401",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state, master=master)
+        if move.source_track == "存5北"
+    ]
+
+    assert [move.target_track for move in moves] == ["修4库内", "修3库内", "修1库内", "修2库内"]
 
 
 def test_generate_goal_moves_supports_oil_and_shot_targets_when_missing_segment_is_40m_placeholder():
@@ -295,23 +408,26 @@ def test_generate_goal_moves_can_emit_temporary_clear_move_for_front_blocker():
     )
 
 
-def test_generate_goal_moves_freezes_satisfied_non_blocking_track():
+def test_generate_goal_moves_skips_pure_random_depot_rebalancing_when_block_is_already_satisfied():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "预修", "trackDistance": 208.5},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "预修",
+                "trackName": "修3库内",
                 "order": "1",
                 "vehicleModel": "棚车",
-                "vehicleNo": "SAT_OK",
-                "repairProcess": "临修",
+                "vehicleNo": "RANDOM_OK",
+                "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "预修",
+                "targetTrack": "大库",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
@@ -319,7 +435,7 @@ def test_generate_goal_moves_freezes_satisfied_non_blocking_track():
                 "trackName": "存5北",
                 "order": "1",
                 "vehicleModel": "棚车",
-                "vehicleNo": "GO_OUT",
+                "vehicleNo": "OTHER_GO",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetTrack": "机库",
@@ -334,8 +450,56 @@ def test_generate_goal_moves_freezes_satisfied_non_blocking_track():
 
     moves = generate_goal_moves(normalized, state, master=master)
 
-    assert all(move.source_track != "预修" for move in moves)
-    assert any(move.source_track == "存5北" and move.target_track == "机库" for move in moves)
+    assert not any(move.source_track == "修3库内" for move in moves)
+
+
+def test_generate_goal_moves_keeps_random_depot_front_blocker_movable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "存4北", "trackDistance": 317.8},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修3库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "RAND_FRONT",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修3库内",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "NEED_C4B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+
+    assert any(
+        move.source_track == "修3库内"
+        and move.vehicle_nos == ["RAND_FRONT"]
+        and move.target_track in {"修1库内", "修2库内", "修4库内"}
+        for move in moves
+    )
 
 
 def test_generate_goal_moves_can_emit_temporary_clear_move_to_cun4nan():
@@ -527,7 +691,6 @@ def test_generate_goal_moves_limits_front_blocker_staging_targets_to_nearest_tem
 
     assert {move.target_track for move in staging_moves} == {"临1", "临2"}
 
-
 def test_generate_goal_moves_prunes_heavy_equivalent_block_before_staging_without_l1():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -575,3 +738,198 @@ def test_generate_goal_moves_prunes_heavy_equivalent_block_before_staging_withou
 
     assert any(move.target_track == "临1" for move in staging_moves)
     assert {len(move.vehicle_nos) for move in staging_moves} == {14}
+
+
+def test_generate_goal_moves_falls_back_to_smaller_interfering_prefix_when_largest_block_cannot_stage():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 171.6},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "PATH_NEED_FALLBACK",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "101",
+                "vehicleAttributes": "",
+            },
+            *[
+                {
+                    "trackName": "存5南",
+                    "order": str(i),
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"FALLBACK_BLOCK_{i}",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5南",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for i in range(1, 13)
+            ],
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+    staging_moves = [move for move in moves if move.source_track == "存5南"]
+
+    assert any(
+        move.target_track == "临4" and len(move.vehicle_nos) == 6
+        for move in staging_moves
+    )
+
+
+def test_generate_goal_moves_can_fallback_to_storage_cache_when_no_temporary_track_fits():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "存4南", "trackDistance": 154.5},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            *[
+                {
+                    "trackName": "存5北",
+                    "order": str(i),
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"STORAGE_BLOCK_{i}",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for i in range(1, 12)
+            ],
+            {
+                "trackName": "存5北",
+                "order": "12",
+                "vehicleModel": "棚车",
+                "vehicleNo": "STORAGE_GO",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+    staging_moves = [move for move in moves if move.source_track == "存5北"]
+
+    assert any(
+        move.target_track == "存2" and len(move.vehicle_nos) == 11
+        for move in staging_moves
+    )
+
+
+def test_generate_goal_moves_does_not_add_storage_cache_when_temporary_stage_is_already_feasible():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TEMP_FIRST_BLOCK",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TEMP_FIRST_GO",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+    staging_moves = [move for move in moves if move.source_track == "存5北"]
+
+    assert {move.target_track for move in staging_moves} == {"临1"}
+
+def test_generate_goal_moves_reuses_injected_route_oracle():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "INJECTED_BLOCK",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "INJECTED_GO",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    route_oracle = RouteOracle(master)
+
+    with patch("fzed_shunting.solver.move_generator.RouteOracle", side_effect=AssertionError("unexpected constructor call")):
+        moves = generate_goal_moves(
+            normalized,
+            state,
+            master=master,
+            route_oracle=route_oracle,
+        )
+
+    assert any(move.target_track == "临1" for move in moves)

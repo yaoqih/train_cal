@@ -1,6 +1,9 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from shutil import copy2
 import json
+
+from fzed_shunting.tools.convert_external_validation_inputs import convert_external_validation_inputs
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_external_validation_parallel.py"
@@ -12,19 +15,33 @@ solve_one = module.solve_one
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
-INPUT_DIR = Path(__file__).resolve().parents[2] / "artifacts" / "external_validation_inputs"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+SAMPLE_WORKBOOK = ROOT_DIR / "取送车计划" / "2月-取送车计划" / "取送车计划_20260227W.xlsx"
 
 
-def test_solve_one_external_validation_returns_debug_stats():
+def test_solve_one_external_validation_returns_debug_stats(tmp_path: Path):
+    source_root = tmp_path / "取送车计划"
+    february_dir = source_root / "2月-取送车计划"
+    february_dir.mkdir(parents=True)
+    copy2(SAMPLE_WORKBOOK, february_dir / SAMPLE_WORKBOOK.name)
+    output_dir = tmp_path / "external_validation_inputs"
+    convert_external_validation_inputs(
+        output_dir=output_dir,
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
+        master_dir=DATA_DIR,
+    )
+    scenario_path = output_dir / "validation_20260227W.json"
+
     result = solve_one(
         master_dir=DATA_DIR,
-        scenario_path=INPUT_DIR / "validation_2025-09-04_am_to_pm.json",
+        scenario_path=scenario_path,
         solver="beam",
         beam_width=8,
         heuristic_weight=1.0,
     )
 
-    assert result["scenario"] == "validation_2025-09-04_am_to_pm.json"
+    assert result["scenario"] == "validation_20260227W.json"
     assert "debug_stats" in result
     if result["solved"]:
         assert result["expanded_nodes"] >= 1
@@ -97,3 +114,128 @@ def test_run_parallel_scenarios_marks_timeout(tmp_path: Path):
     assert results[0]["scenario"] == "validation_timeout.json"
     assert results[0]["solved"] is False
     assert results[0]["error"] == "timeout"
+
+
+def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: Path):
+    scenario_a = tmp_path / "validation_a.json"
+    scenario_b = tmp_path / "validation_b.json"
+    scenario_a.write_text("{}", encoding="utf-8")
+    scenario_b.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": "validation_a.json", "solved": False, "error": "No solution found", "debug_stats": {}},
+        {"scenario": "validation_b.json", "solved": False, "error": "timeout", "debug_stats": {}},
+    ]
+    calls: list[tuple[list[str], int | None]] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+    ):
+        calls.append(([path.name for path in scenario_paths], beam_width))
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 9,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario_a, scenario_b],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=12,
+            initial_results=initial_results,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [(["validation_a.json"], 12)]
+    assert results[0]["scenario"] == "validation_a.json"
+    assert results[0]["solved"] is True
+    assert results[0]["recovery_beam_width"] == 12
+    assert results[1] == initial_results[1]
+
+
+def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
+    scenario = tmp_path / "validation_single.json"
+    scenario.write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, list[str], int | None]] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+    ):
+        calls.append(("run", [path.name for path in scenario_paths], beam_width))
+        return [{"scenario": "validation_single.json", "solved": True}]
+
+    def fake_recover_no_solution_results(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        retry_no_solution_beam_width,  # noqa: ANN001
+        initial_results,  # noqa: ANN001
+    ):
+        calls.append(("recover", [path.name for path in scenario_paths], retry_no_solution_beam_width))
+        return initial_results
+
+    original_parse_args = module.parse_args
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    original_recover_no_solution_results = module.recover_no_solution_results
+    try:
+        module.parse_args = lambda: module.argparse.Namespace(
+            input_dir=Path("ignored"),
+            output_dir=tmp_path / "out",
+            master_dir=Path("data/master"),
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            max_workers=2,
+            timeout_seconds=60,
+            scenario=scenario,
+            retry_no_solution_beam_width=12,
+            worker=False,
+        )
+        module.run_parallel_scenarios = fake_run_parallel_scenarios
+        module.recover_no_solution_results = fake_recover_no_solution_results
+        module.main()
+    finally:
+        module.parse_args = original_parse_args
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+        module.recover_no_solution_results = original_recover_no_solution_results
+
+    assert calls == [
+        ("run", ["validation_single.json"], 8),
+        ("recover", ["validation_single.json"], 12),
+    ]

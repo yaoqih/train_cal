@@ -49,6 +49,8 @@ python -m fzed_shunting.cli generate-typical-workflow-suite --output artifacts/t
 
 ## 求解一个场景
 
+详细的求解逻辑说明见：[docs/solver-logic-explained.md](docs/solver-logic-explained.md)。
+
 ```bash
 . .venv/bin/activate
 python -m fzed_shunting.cli solve --input artifacts/sample_micro.json

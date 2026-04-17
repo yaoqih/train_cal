@@ -13,8 +13,20 @@ from fzed_shunting.domain.master_data import MasterData, load_master_data
 
 app = typer.Typer(no_args_is_help=True)
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[3] / "data" / "master"
-DEFAULT_SOURCE_XLSX = Path(__file__).resolve().parents[3] / "标准化起点终点模板（9.4-9.8-9.9）.xlsx"
+DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "取送车计划"
 DEFAULT_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "段内车型换长.xlsx"
+DEFAULT_SUPPLEMENTAL_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "换长.xlsx"
+MONTHLY_PLAN_SUBDIRS = ("1月-取送车计划", "2月-取送车计划", "3月-取送车计划")
+MONTHLY_PLAN_TEMPLATE_MARKER = "模板"
+MONTHLY_PLAN_HEADER_ROW_INDEX = 2
+MONTHLY_PLAN_DATA_ROW_START_INDEX = 3
+SUPPLEMENTAL_LENGTH_ALIASES = {
+    "P64G": "P64GK",
+    "NX70AK": "NX70AF",
+}
+SUPPLEMENTAL_LITERAL_LENGTHS = {
+    "NX17": 1.5,
+}
 
 
 @dataclass(frozen=True)
@@ -33,13 +45,6 @@ class ExcelVehicleRow:
     repair: str
     note: str
 
-
-PAIR_SPECS = [
-    PairSpec("9.4上午（起点）", "9.4下午（终点）", "validation_2025-09-04_am_to_pm"),
-    PairSpec("9.8上午（起点）", "9.8下午（终点）", "validation_2025-09-08_am_to_pm"),
-    PairSpec("9.8下午（起点）", "9.9上午（终点）", "validation_2025-09-08_pm_to_09-09_am"),
-    PairSpec("9.9上午（起点）", "9.9下午（终点）", "validation_2025-09-09_am_to_pm"),
-]
 
 TRACK_ALIAS_MAP = {
     "存1线": "存1",
@@ -61,12 +66,19 @@ TRACK_ALIAS_MAP = {
     "抛丸线": "抛",
     "喷漆库内": "油",
     "喷漆库外": "油",
+    "喷漆线": "油",
     "洗罐线内": "洗南",
     "洗罐线外": "洗北",
+    "洗罐线北": "洗北",
+    "洗罐线南": "洗南",
+    "机走北": "机北",
+    "机走南": "机棚",
     "机走预修": "机棚",
     "老预修": "预修",
     "调梁库内": "调棚",
     "调梁库外": "调北",
+    "调梁线北": "调北",
+    "调梁线南": "调棚",
 }
 
 DEPOT_INNER_TRACKS = {"修1库内", "修2库内", "修3库内", "修4库内"}
@@ -108,6 +120,42 @@ def load_length_m_by_model(path: Path) -> dict[str, float]:
             continue
         length_by_model[model] = round(float(length_unit) * 11.0, 1)
     return length_by_model
+
+
+def load_supplemental_length_m_by_model(
+    path: Path,
+    *,
+    alias_overrides: dict[str, str],
+    literal_overrides: dict[str, float],
+) -> dict[str, float]:
+    rows_by_sheet = read_worksheet_rows(path)
+    best_by_model: dict[str, tuple[float, int]] = {}
+    for rows in rows_by_sheet.values():
+        for row in rows[1:]:
+            if len(row) < 3:
+                continue
+            model = row[0].strip()
+            length_unit = row[1].strip()
+            count_raw = row[2].strip()
+            if not model or not length_unit:
+                continue
+            try:
+                length_value = float(length_unit)
+                count_value = int(float(count_raw)) if count_raw else 0
+            except ValueError:
+                continue
+            current = best_by_model.get(model)
+            if current is None or count_value > current[1]:
+                best_by_model[model] = (length_value, count_value)
+
+    supplemental_lengths: dict[str, float] = {}
+    for target_model, source_model in alias_overrides.items():
+        if source_model not in best_by_model:
+            continue
+        supplemental_lengths[target_model] = round(best_by_model[source_model][0] * 11.0, 1)
+    for target_model, length_unit in literal_overrides.items():
+        supplemental_lengths[target_model] = round(length_unit * 11.0, 1)
+    return supplemental_lengths
 
 
 def build_shared_vehicle_scenario(
@@ -190,6 +238,34 @@ def build_shared_vehicle_scenario(
     return scenario, summary
 
 
+def discover_monthly_plan_workbooks(source_root: Path) -> list[Path]:
+    workbooks: list[Path] = []
+    for month_dir_name in MONTHLY_PLAN_SUBDIRS:
+        month_dir = source_root / month_dir_name
+        if not month_dir.exists():
+            continue
+        workbooks.extend(sorted(path for path in month_dir.glob("*.xlsx") if path.is_file()))
+    return sorted(workbooks)
+
+
+def build_pair_spec_for_workbook(path: Path, *, sheet_names: tuple[str, ...] | None = None) -> PairSpec:
+    if sheet_names is None:
+        sheet_names = tuple(read_worksheet_rows(path))
+    data_sheet_names = tuple(
+        name for name in sheet_names if MONTHLY_PLAN_TEMPLATE_MARKER not in name
+    )
+    if len(data_sheet_names) != 2:
+        raise ValueError(
+            f"{path.name} should contain exactly 2 non-template sheets, got {list(sheet_names)}"
+        )
+    scenario_suffix = path.stem.split("_", maxsplit=1)[-1]
+    return PairSpec(
+        start_sheet=data_sheet_names[0],
+        end_sheet=data_sheet_names[1],
+        scenario_name=f"validation_{scenario_suffix}",
+    )
+
+
 def read_worksheet_rows(path: Path) -> dict[str, list[list[str]]]:
     namespace = {
         "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -222,40 +298,65 @@ def load_vehicle_rows_by_sheet(path: Path) -> dict[str, list[ExcelVehicleRow]]:
     vehicles_by_sheet: dict[str, list[ExcelVehicleRow]] = {}
     for sheet_name, rows in rows_by_sheet.items():
         vehicles: list[ExcelVehicleRow] = []
-        for row in rows[3:]:
-            for base_index in (0, 6):
-                cells = (row[base_index:base_index + 6] + [""] * 6)[:6]
-                track_name, order, vehicle_model, vehicle_no, repair, note = cells
-                if not vehicle_no:
-                    continue
-                vehicles.append(
-                    ExcelVehicleRow(
-                        track_name=track_name,
-                        order=int(order),
-                        vehicle_model=vehicle_model,
-                        vehicle_no=vehicle_no,
-                        repair=repair,
-                        note=note,
-                    )
+        if len(rows) <= MONTHLY_PLAN_HEADER_ROW_INDEX:
+            vehicles_by_sheet[sheet_name] = vehicles
+            continue
+        header_row = rows[MONTHLY_PLAN_HEADER_ROW_INDEX]
+        if not header_row or len(header_row) % 2 != 0:
+            raise ValueError(f"Unsupported monthly plan header layout in {path.name}::{sheet_name}")
+        block_width = len(header_row) // 2
+        block_headers = [
+            [cell.strip() for cell in header_row[base_index:base_index + block_width]]
+            for base_index in range(0, len(header_row), block_width)
+        ]
+        for row in rows[MONTHLY_PLAN_DATA_ROW_START_INDEX:]:
+            for block_index, headers in enumerate(block_headers):
+                base_index = block_index * block_width
+                cells = (row[base_index:base_index + block_width] + [""] * block_width)[:block_width]
+                vehicle = _build_vehicle_row_from_cells(
+                    path=path,
+                    sheet_name=sheet_name,
+                    headers=headers,
+                    cells=cells,
                 )
+                if vehicle is not None:
+                    vehicles.append(vehicle)
         vehicles_by_sheet[sheet_name] = vehicles
     return vehicles_by_sheet
 
 
 def convert_external_validation_inputs(
     *,
-    source_xlsx: Path = DEFAULT_SOURCE_XLSX,
+    source_root: Path = DEFAULT_SOURCE_ROOT,
     length_xlsx: Path = DEFAULT_LENGTH_XLSX,
+    supplemental_length_xlsx: Path = DEFAULT_SUPPLEMENTAL_LENGTH_XLSX,
     output_dir: Path,
     master_dir: Path = DEFAULT_MASTER_DIR,
 ) -> dict:
     master = load_master_data(master_dir)
     length_m_by_model = load_length_m_by_model(length_xlsx)
-    rows_by_sheet = load_vehicle_rows_by_sheet(source_xlsx)
+    if supplemental_length_xlsx.exists():
+        length_m_by_model.update(
+            load_supplemental_length_m_by_model(
+                supplemental_length_xlsx,
+                alias_overrides=SUPPLEMENTAL_LENGTH_ALIASES,
+                literal_overrides=SUPPLEMENTAL_LITERAL_LENGTHS,
+            )
+        )
+    workbooks = discover_monthly_plan_workbooks(source_root)
+    if not workbooks:
+        raise ValueError(f"No monthly plan workbooks found under {source_root}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_path in output_dir.glob("validation_*.json"):
+        stale_path.unlink()
+    for stale_path in (output_dir / "conversion_assumptions.md",):
+        if stale_path.exists():
+            stale_path.unlink()
 
     summaries: list[dict] = []
-    for pair_spec in PAIR_SPECS:
+    for workbook in workbooks:
+        rows_by_sheet = load_vehicle_rows_by_sheet(workbook)
+        pair_spec = build_pair_spec_for_workbook(workbook, sheet_names=tuple(rows_by_sheet))
         scenario, summary = build_shared_vehicle_scenario(
             pair_spec=pair_spec,
             start_rows=rows_by_sheet[pair_spec.start_sheet],
@@ -271,14 +372,16 @@ def convert_external_validation_inputs(
         summaries.append(
             {
                 **summary,
+                "source_workbook": workbook.relative_to(source_root).as_posix(),
                 "scenario_file": scenario_path.name,
             }
         )
 
     summary_payload = {
-        "source_xlsx": source_xlsx.name,
+        "source_root": source_root.name,
         "length_xlsx": length_xlsx.name,
-        "scenario_count": len(PAIR_SPECS),
+        "supplemental_length_xlsx": supplemental_length_xlsx.name if supplemental_length_xlsx.exists() else None,
+        "scenario_count": len(summaries),
         "scenarios": summaries,
     }
     (output_dir / "conversion_summary.json").write_text(
@@ -320,6 +423,36 @@ def _read_cell_value(cell: ET.Element, shared_strings: list[str], namespace: dic
     return raw
 
 
+def _build_vehicle_row_from_cells(
+    *,
+    path: Path,
+    sheet_name: str,
+    headers: list[str],
+    cells: list[str],
+) -> ExcelVehicleRow | None:
+    normalized_headers = {header.strip(): index for index, header in enumerate(headers)}
+    required_headers = {"股道", "序号", "车型", "车号", "修程", "备注"}
+    missing_headers = sorted(required_headers - set(normalized_headers))
+    if missing_headers:
+        raise ValueError(
+            f"{path.name}::{sheet_name} is missing required headers: {', '.join(missing_headers)}"
+    )
+    vehicle_no = cells[normalized_headers["车号"]].strip()
+    order_raw = cells[normalized_headers["序号"]].strip()
+    if not vehicle_no or vehicle_no == "车号" or order_raw == "序号":
+        return None
+    if not order_raw:
+        raise ValueError(f"{path.name}::{sheet_name} has vehicle {vehicle_no} without 序号")
+    return ExcelVehicleRow(
+        track_name=cells[normalized_headers["股道"]].strip(),
+        order=int(float(order_raw)),
+        vehicle_model=cells[normalized_headers["车型"]].strip(),
+        vehicle_no=vehicle_no,
+        repair=cells[normalized_headers["修程"]].strip(),
+        note=cells[normalized_headers["备注"]].strip(),
+    )
+
+
 def _duplicate_vehicle_nos(rows: list[ExcelVehicleRow]) -> set[str]:
     seen: set[str] = set()
     duplicates: set[str] = set()
@@ -333,13 +466,15 @@ def _duplicate_vehicle_nos(rows: list[ExcelVehicleRow]) -> set[str]:
 @app.command("convert")
 def convert_cmd(
     output_dir: Path = typer.Option(..., exists=False, file_okay=False, dir_okay=True),
-    source_xlsx: Path = typer.Option(DEFAULT_SOURCE_XLSX, exists=True, dir_okay=False),
+    source_root: Path = typer.Option(DEFAULT_SOURCE_ROOT, exists=True, file_okay=False, dir_okay=True),
     length_xlsx: Path = typer.Option(DEFAULT_LENGTH_XLSX, exists=True, dir_okay=False),
+    supplemental_length_xlsx: Path = typer.Option(DEFAULT_SUPPLEMENTAL_LENGTH_XLSX, exists=False, dir_okay=False),
     master_dir: Path = typer.Option(DEFAULT_MASTER_DIR, exists=True, file_okay=False, dir_okay=True),
 ):
     summary = convert_external_validation_inputs(
-        source_xlsx=source_xlsx,
+        source_root=source_root,
         length_xlsx=length_xlsx,
+        supplemental_length_xlsx=supplemental_length_xlsx,
         output_dir=output_dir,
         master_dir=master_dir,
     )

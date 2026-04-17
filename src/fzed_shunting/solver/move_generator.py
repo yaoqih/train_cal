@@ -16,30 +16,33 @@ AREA_CAPACITY_LIMITS = {
     "油:WORK": 2,
     "抛:WORK": 2,
 }
-STAGING_TRACK_TYPES = {"TEMPORARY"}
+PRIMARY_STAGING_TRACK_TYPES = {"TEMPORARY"}
+FALLBACK_STAGING_TRACK_TYPES = {"STORAGE"}
 MAX_STAGING_TARGETS = 2
-DEPOT_SHORT_TRACKS = ("修1库内", "修2库内")
-DEPOT_LONG_TRACKS = ("修3库内", "修4库内")
 
 
 def generate_goal_moves(
     plan_input: NormalizedPlanInput,
     state: ReplayState,
     master: MasterData | None = None,
+    route_oracle: RouteOracle | None = None,
+    blocking_goal_targets_by_source: dict[str, set[str]] | None = None,
     debug_stats: dict[str, Any] | None = None,
 ) -> list[HookAction]:
     goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
     capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
-    route_oracle = RouteOracle(master) if master is not None else None
-    blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
-        plan_input=plan_input,
-        state=state,
-        goal_by_vehicle=goal_by_vehicle,
-        vehicle_by_no=vehicle_by_no,
-        route_oracle=route_oracle,
-    )
+    if route_oracle is None and master is not None:
+        route_oracle = RouteOracle(master)
+    if blocking_goal_targets_by_source is None:
+        blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
+            plan_input=plan_input,
+            state=state,
+            goal_by_vehicle=goal_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            route_oracle=route_oracle,
+        )
     moves: list[HookAction] = []
     if debug_stats is not None:
         debug_stats.clear()
@@ -56,14 +59,7 @@ def generate_goal_moves(
     for source_track, seq in state.track_sequences.items():
         if not seq:
             continue
-        if _track_sequence_is_frozen(
-            source_track=source_track,
-            seq=seq,
-            goal_by_vehicle=goal_by_vehicle,
-            blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-        ):
-            continue
-        for prefix_size in range(1, len(seq) + 1):
+        for prefix_size in range(len(seq), 0, -1):
             block = seq[:prefix_size]
             block_length = sum(length_by_vehicle[vehicle_no] for vehicle_no in block)
             block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
@@ -71,6 +67,16 @@ def generate_goal_moves(
                 continue
             if _same_goal(block, goal_by_vehicle):
                 goal = goal_by_vehicle[block[0]]
+                if _should_skip_pure_random_depot_rebalancing(
+                    source_track=source_track,
+                    seq=seq,
+                    block=block,
+                    state=state,
+                    goal_by_vehicle=goal_by_vehicle,
+                    vehicle_by_no=vehicle_by_no,
+                    blocking_goal_targets_by_source=blocking_goal_targets_by_source,
+                ):
+                    continue
                 candidate_targets = _candidate_targets(block, plan_input, state, vehicle_by_no)
                 for target_track in candidate_targets:
                     move = _build_candidate_move(
@@ -102,51 +108,59 @@ def generate_goal_moves(
             vehicle_by_no=vehicle_by_no,
             blocking_goal_targets_by_source=blocking_goal_targets_by_source,
         )
-        for prefix_size, goal_target_hints in staging_requests:
-            block = seq[:prefix_size]
-            block_length = sum(length_by_vehicle[vehicle_no] for vehicle_no in block)
-            block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
-            if validate_hook_vehicle_group(block_vehicles):
-                continue
-            if any(
-                vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos
-                for vehicle in block_vehicles
-            ):
-                continue
-            feasible_target_count = 0
-            for target_track in _candidate_staging_targets(
-                source_track=source_track,
-                block=block,
-                state=state,
-                plan_input=plan_input,
-                master=master,
-                vehicle_by_no=vehicle_by_no,
-                goal_target_hints=goal_target_hints,
-                route_oracle=route_oracle,
-            ):
-                move = _build_candidate_move(
-                    source_track=source_track,
-                    target_track=target_track,
-                    block=block,
-                    block_vehicles=block_vehicles,
-                    block_length=block_length,
-                    state=state,
-                    capacity_by_track=capacity_by_track,
-                    length_by_vehicle=length_by_vehicle,
-                    vehicle_by_no=vehicle_by_no,
-                    plan_input=plan_input,
-                    route_oracle=route_oracle,
-                )
-                if move is None:
+        for prefix_sizes, goal_target_hints in staging_requests:
+            for prefix_size in prefix_sizes:
+                block = seq[:prefix_size]
+                block_length = sum(length_by_vehicle[vehicle_no] for vehicle_no in block)
+                block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
+                if validate_hook_vehicle_group(block_vehicles):
                     continue
-                moves.append(move)
-                _record_move_debug_stats(
-                    debug_stats,
-                    move=move,
-                    is_staging=True,
-                )
-                feasible_target_count += 1
-                if feasible_target_count >= MAX_STAGING_TARGETS:
+                if any(
+                    vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos
+                    for vehicle in block_vehicles
+                ):
+                    continue
+                feasible_target_count = 0
+                for target_track in _candidate_staging_targets(
+                    source_track=source_track,
+                    block=block,
+                    state=state,
+                    plan_input=plan_input,
+                    master=master,
+                    vehicle_by_no=vehicle_by_no,
+                    goal_target_hints=goal_target_hints,
+                    route_oracle=route_oracle,
+                ):
+                    if (
+                        feasible_target_count > 0
+                        and _is_fallback_staging_track(master, target_track)
+                    ):
+                        break
+                    move = _build_candidate_move(
+                        source_track=source_track,
+                        target_track=target_track,
+                        block=block,
+                        block_vehicles=block_vehicles,
+                        block_length=block_length,
+                        state=state,
+                        capacity_by_track=capacity_by_track,
+                        length_by_vehicle=length_by_vehicle,
+                        vehicle_by_no=vehicle_by_no,
+                        plan_input=plan_input,
+                        route_oracle=route_oracle,
+                    )
+                    if move is None:
+                        continue
+                    moves.append(move)
+                    _record_move_debug_stats(
+                        debug_stats,
+                        move=move,
+                        is_staging=True,
+                    )
+                    feasible_target_count += 1
+                    if feasible_target_count >= MAX_STAGING_TARGETS:
+                        break
+                if feasible_target_count > 0:
                     break
     return moves
 
@@ -219,6 +233,7 @@ def _candidate_targets(
     state: ReplayState,
     vehicle_by_no: dict,
 ) -> list[str]:
+    length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
     if any(
         vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
         for vehicle_no in block
@@ -227,12 +242,15 @@ def _candidate_targets(
     goal = vehicle_by_no[block[0]].goal
     targets = list(goal.allowed_target_tracks)
     if goal.target_area_code == "大库:RANDOM":
-        block_length = max(vehicle_by_no[vehicle_no].vehicle_length for vehicle_no in block)
-        preferred_tracks = DEPOT_LONG_TRACKS if block_length >= 17.6 else DEPOT_SHORT_TRACKS
-        preferred_targets = [track for track in targets if track in preferred_tracks]
-        fallback_targets = [track for track in targets if track not in preferred_tracks]
-        if preferred_targets:
-            targets = preferred_targets + fallback_targets[:1]
+        targets.sort(
+            key=lambda track_name: (
+                -sum(
+                    length_by_vehicle[vehicle_no]
+                    for vehicle_no in state.track_sequences.get(track_name, [])
+                ),
+                track_name,
+            )
+        )
     return targets
 
 
@@ -252,8 +270,8 @@ def _candidate_staging_targets(
     for info in plan_input.track_info:
         if info.track_name == source_track:
             continue
-        track = master.tracks.get(info.track_name)
-        if track is None or track.track_type not in STAGING_TRACK_TYPES:
+        type_priority = _staging_track_priority(master, info.track_name)
+        if type_priority is None:
             continue
         if any(info.track_name in vehicle_by_no[vehicle_no].goal.allowed_target_tracks for vehicle_no in block):
             continue
@@ -272,9 +290,33 @@ def _candidate_staging_targets(
             ]
             if follow_distances:
                 combined_distance = source_distance + min(follow_distances)
-        targets.append(((combined_distance, source_distance, info.track_name), info.track_name))
+        targets.append(((type_priority, combined_distance, source_distance, info.track_name), info.track_name))
     targets.sort(key=lambda item: item[0])
     return [track_name for _, track_name in targets]
+
+
+def _is_fallback_staging_track(
+    master: MasterData | None,
+    track_name: str,
+) -> bool:
+    type_priority = _staging_track_priority(master, track_name)
+    return type_priority == 1
+
+
+def _staging_track_priority(
+    master: MasterData | None,
+    track_name: str,
+) -> int | None:
+    if master is None:
+        return None
+    track = master.tracks.get(track_name)
+    if track is None:
+        return None
+    if track.track_type in PRIMARY_STAGING_TRACK_TYPES:
+        return 0
+    if track.track_type in FALLBACK_STAGING_TRACK_TYPES:
+        return 1
+    return None
 
 
 def _collect_staging_requests_for_source(
@@ -285,8 +327,8 @@ def _collect_staging_requests_for_source(
     goal_by_vehicle: dict,
     vehicle_by_no: dict,
     blocking_goal_targets_by_source: dict[str, set[str]],
-) -> list[tuple[int, tuple[str, ...]]]:
-    requests: dict[int, set[str]] = {}
+) -> list[tuple[tuple[int, ...], tuple[str, ...]]]:
+    requests: list[tuple[tuple[int, ...], tuple[str, ...]]] = []
     front_prefix_size = _front_blocker_prefix_size(source_track, seq, goal_by_vehicle)
     if front_prefix_size is not None:
         next_vehicle_no = seq[front_prefix_size]
@@ -296,43 +338,50 @@ def _collect_staging_requests_for_source(
             state,
             vehicle_by_no,
         )
-        _merge_staging_request(requests, front_prefix_size, target_hints)
+        requests.append(((front_prefix_size,), tuple(sorted(target_hints))))
 
     interfering_target_hints = blocking_goal_targets_by_source.get(source_track)
     if interfering_target_hints:
-        max_prefix_size = _largest_valid_staging_prefix(seq, vehicle_by_no)
-        if max_prefix_size is not None:
-            _merge_staging_request(requests, max_prefix_size, interfering_target_hints)
+        prefix_sizes = _descending_valid_staging_prefix_sizes(seq, vehicle_by_no)
+        if prefix_sizes:
+            requests.append((prefix_sizes, tuple(sorted(interfering_target_hints))))
 
-    return [
-        (prefix_size, tuple(sorted(targets)))
-        for prefix_size, targets in sorted(requests.items())
-    ]
+    return requests
 
 
-def _merge_staging_request(
-    requests: dict[int, set[str]],
-    prefix_size: int,
-    target_hints: list[str] | set[str],
-) -> None:
-    if prefix_size <= 0:
-        return
-    requests.setdefault(prefix_size, set()).update(target_hints)
-
-
-def _track_sequence_is_frozen(
+def _should_skip_pure_random_depot_rebalancing(
     *,
     source_track: str,
     seq: list[str],
+    block: list[str],
+    state: ReplayState,
     goal_by_vehicle: dict,
+    vehicle_by_no: dict,
     blocking_goal_targets_by_source: dict[str, set[str]],
 ) -> bool:
+    goal = goal_by_vehicle[block[0]]
+    if goal.target_area_code != "大库:RANDOM":
+        return False
+    if source_track not in goal.allowed_target_tracks:
+        return False
+    if any(
+        goal_by_vehicle[vehicle_no].allowed_target_tracks != goal.allowed_target_tracks
+        for vehicle_no in block
+    ):
+        return False
+    if any(
+        goal_by_vehicle[vehicle_no].target_area_code != goal.target_area_code
+        for vehicle_no in block
+    ):
+        return False
+    if any(
+        vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
+        for vehicle_no in block
+    ):
+        return False
     if source_track in blocking_goal_targets_by_source:
         return False
-    if len(seq) != 1:
-        return False
-    vehicle_no = seq[0]
-    return source_track in goal_by_vehicle[vehicle_no].allowed_target_tracks
+    return _front_blocker_prefix_size(source_track, seq, goal_by_vehicle) != len(block)
 
 
 def _front_blocker_prefix_size(
@@ -363,15 +412,16 @@ def _goal_key(goal: Any) -> tuple:
     )
 
 
-def _largest_valid_staging_prefix(
+def _descending_valid_staging_prefix_sizes(
     seq: list[str],
     vehicle_by_no: dict,
-) -> int | None:
+) -> tuple[int, ...]:
+    prefix_sizes: list[int] = []
     for prefix_size in range(len(seq), 0, -1):
         block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in seq[:prefix_size]]
         if not validate_hook_vehicle_group(block_vehicles):
-            return prefix_size
-    return None
+            prefix_sizes.append(prefix_size)
+    return tuple(prefix_sizes)
 
 
 def _collect_interfering_goal_targets_by_source(
@@ -458,12 +508,17 @@ def _build_candidate_move(
         if resolved_path_tracks is None:
             return None
         path_tracks = resolved_path_tracks
+        resolved_route = route_oracle.resolve_route(source_track, target_track)
+        if resolved_route is None:
+            return None
         route_result = route_oracle.validate_path(
             source_track=source_track,
             target_track=target_track,
             path_tracks=path_tracks,
             train_length_m=block_length,
             occupied_track_sequences=state.track_sequences,
+            expected_path_tracks=path_tracks,
+            route=resolved_route,
         )
         if not route_result.is_valid:
             return None

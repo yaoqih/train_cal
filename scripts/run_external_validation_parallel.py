@@ -18,6 +18,7 @@ from fzed_shunting.verify.replay import build_initial_state
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_inputs"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_parallel_runs"
+DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--timeout-seconds", type=int, default=20)
     parser.add_argument("--scenario", type=Path)
+    parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
     parser.add_argument("--worker", action="store_true")
     return parser.parse_args()
 
@@ -189,6 +191,62 @@ def run_parallel_scenarios(
     return results
 
 
+def recover_no_solution_results(
+    *,
+    master_dir: Path,
+    scenario_paths: list[Path],
+    solver: str,
+    beam_width: int | None,
+    heuristic_weight: float,
+    timeout_seconds: int,
+    max_workers: int,
+    retry_no_solution_beam_width: int | None,
+    initial_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if solver != "beam" or beam_width is None or retry_no_solution_beam_width is None:
+        return initial_results
+    if retry_no_solution_beam_width <= beam_width:
+        return initial_results
+
+    scenario_path_by_name = {scenario_path.name: scenario_path for scenario_path in scenario_paths}
+    retry_scenarios = [
+        scenario_path_by_name[result["scenario"]]
+        for result in initial_results
+        if (
+            not result.get("solved")
+            and "No solution found" in result.get("error", "")
+            and result["scenario"] in scenario_path_by_name
+        )
+    ]
+    if not retry_scenarios:
+        return initial_results
+
+    retry_results = run_parallel_scenarios(
+        master_dir=master_dir,
+        scenario_paths=retry_scenarios,
+        solver=solver,
+        beam_width=retry_no_solution_beam_width,
+        heuristic_weight=heuristic_weight,
+        timeout_seconds=timeout_seconds,
+        max_workers=max_workers,
+    )
+    retry_result_by_scenario = {
+        result["scenario"]: result
+        for result in retry_results
+        if result.get("solved")
+    }
+    merged_results: list[dict[str, Any]] = []
+    for result in initial_results:
+        recovered = retry_result_by_scenario.get(result["scenario"])
+        if recovered is None:
+            merged_results.append(result)
+            continue
+        recovered = dict(recovered)
+        recovered["recovery_beam_width"] = retry_no_solution_beam_width
+        merged_results.append(recovered)
+    return merged_results
+
+
 def _run_worker(args: argparse.Namespace) -> None:
     if args.scenario is None:
         raise SystemExit("--worker requires --scenario")
@@ -209,7 +267,10 @@ def main() -> None:
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    scenario_paths = sorted(args.input_dir.glob("validation_*.json"))
+    if args.scenario is not None:
+        scenario_paths = [args.scenario]
+    else:
+        scenario_paths = sorted(args.input_dir.glob("validation_*.json"))
     results = run_parallel_scenarios(
         master_dir=args.master_dir,
         scenario_paths=scenario_paths,
@@ -218,6 +279,17 @@ def main() -> None:
         heuristic_weight=args.heuristic_weight,
         timeout_seconds=args.timeout_seconds,
         max_workers=args.max_workers,
+    )
+    results = recover_no_solution_results(
+        master_dir=args.master_dir,
+        scenario_paths=scenario_paths,
+        solver=args.solver,
+        beam_width=args.beam_width,
+        heuristic_weight=args.heuristic_weight,
+        timeout_seconds=args.timeout_seconds,
+        max_workers=args.max_workers,
+        retry_no_solution_beam_width=args.retry_no_solution_beam_width,
+        initial_results=results,
     )
     summary = {
         "solver": args.solver,
