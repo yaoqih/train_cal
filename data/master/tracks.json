@@ -1,0 +1,795 @@
+[
+  {
+    "code": "联6",
+    "name": "联6线",
+    "track_type": "RUNNING",
+    "effective_length_m": 53,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "279",
+      "L1"
+    ],
+    "connection_nodes": [
+      "L1"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "联7",
+    "name": "联7线",
+    "track_type": "RUNNING",
+    "effective_length_m": 114,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L15",
+      "L16"
+    ],
+    "connection_nodes": [
+      "L15",
+      "L16"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡1",
+    "name": "辆渡1线",
+    "track_type": "RUNNING",
+    "effective_length_m": 37,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L1",
+      "L2"
+    ],
+    "connection_nodes": [
+      "L1",
+      "L2"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡2",
+    "name": "辆渡2线",
+    "track_type": "RUNNING",
+    "effective_length_m": 45.5,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L1",
+      "L3"
+    ],
+    "connection_nodes": [
+      "L1",
+      "L3"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡3",
+    "name": "辆渡3线",
+    "track_type": "RUNNING",
+    "effective_length_m": 45.4,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L3",
+      "L4"
+    ],
+    "connection_nodes": [
+      "L3",
+      "L4"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡4",
+    "name": "辆渡4线",
+    "track_type": "RUNNING",
+    "effective_length_m": 41.5,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L6",
+      "L7"
+    ],
+    "connection_nodes": [
+      "L6",
+      "L7"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡5",
+    "name": "辆渡5线",
+    "track_type": "RUNNING",
+    "effective_length_m": 40.6,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L6",
+      "Z1"
+    ],
+    "connection_nodes": [
+      "L6",
+      "Z1"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡6",
+    "name": "辆渡6线",
+    "track_type": "RUNNING",
+    "effective_length_m": 68.2,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "Z1",
+      "Z2"
+    ],
+    "connection_nodes": [
+      "Z1",
+      "Z2"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡7",
+    "name": "辆渡7线",
+    "track_type": "RUNNING",
+    "effective_length_m": 45.4,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "Z2",
+      "Z3"
+    ],
+    "connection_nodes": [
+      "Z2",
+      "Z3"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡8",
+    "name": "辆渡8线",
+    "track_type": "RUNNING",
+    "effective_length_m": 36.9,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L12",
+      "L13"
+    ],
+    "connection_nodes": [
+      "L12",
+      "L13"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡9",
+    "name": "辆渡9线",
+    "track_type": "RUNNING",
+    "effective_length_m": 41.5,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L13",
+      "L14"
+    ],
+    "connection_nodes": [
+      "L13",
+      "L14"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡10",
+    "name": "辆渡10线",
+    "track_type": "RUNNING",
+    "effective_length_m": 17.9,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L14",
+      "L15"
+    ],
+    "connection_nodes": [
+      "L14",
+      "L15"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡11",
+    "name": "辆渡11线",
+    "track_type": "RUNNING",
+    "effective_length_m": 27.2,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L16",
+      "L19"
+    ],
+    "connection_nodes": [
+      "L16",
+      "L19"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡12",
+    "name": "辆渡12线",
+    "track_type": "RUNNING",
+    "effective_length_m": 45.2,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L16",
+      "L17"
+    ],
+    "connection_nodes": [
+      "L16",
+      "L17"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "渡13",
+    "name": "辆渡13线",
+    "track_type": "RUNNING",
+    "effective_length_m": 55,
+    "allow_parking": false,
+    "allows_final_destination": false,
+    "description": "仅走行，不停放",
+    "endpoint_nodes": [
+      "L17",
+      "L18"
+    ],
+    "connection_nodes": [
+      "L17",
+      "L18"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "临1",
+    "name": "临停1线",
+    "track_type": "TEMPORARY",
+    "effective_length_m": 81.4,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "仅调车过程临停",
+    "endpoint_nodes": [
+      "L3",
+      "L5"
+    ],
+    "connection_nodes": [
+      "L3",
+      "L5"
+    ],
+    "terminal_branch": "L3-L5"
+  },
+  {
+    "code": "临2",
+    "name": "临停2线",
+    "track_type": "TEMPORARY",
+    "effective_length_m": 55.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "仅调车过程临停",
+    "endpoint_nodes": [
+      "L5",
+      "L6"
+    ],
+    "connection_nodes": [
+      "L5",
+      "L6"
+    ],
+    "terminal_branch": "L5-L6"
+  },
+  {
+    "code": "临3",
+    "name": "临停3线",
+    "track_type": "TEMPORARY",
+    "effective_length_m": 62.9,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "仅调车过程临停",
+    "endpoint_nodes": [
+      "L8",
+      "L9"
+    ],
+    "connection_nodes": [
+      "L8",
+      "L9"
+    ],
+    "terminal_branch": "L8-L9"
+  },
+  {
+    "code": "临4",
+    "name": "临停4线",
+    "track_type": "TEMPORARY",
+    "effective_length_m": 90.1,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "仅调车过程临停",
+    "endpoint_nodes": [
+      "L8",
+      "L14"
+    ],
+    "connection_nodes": [
+      "L8",
+      "L14"
+    ],
+    "terminal_branch": "L8-L11(L14)"
+  },
+  {
+    "code": "存1",
+    "name": "存1线",
+    "track_type": "STORAGE",
+    "effective_length_m": 113,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "存车，不检修",
+    "endpoint_nodes": [
+      "L5",
+      "Z2"
+    ],
+    "connection_nodes": [
+      "L5",
+      "Z2"
+    ],
+    "terminal_branch": "L5-Z2"
+  },
+  {
+    "code": "存2",
+    "name": "存2线",
+    "track_type": "STORAGE",
+    "effective_length_m": 239.2,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "存车，不检修",
+    "endpoint_nodes": [
+      "L4",
+      "Z3"
+    ],
+    "connection_nodes": [
+      "L4",
+      "Z3"
+    ],
+    "terminal_branch": "L4-Z3"
+  },
+  {
+    "code": "存3",
+    "name": "存3线",
+    "track_type": "STORAGE",
+    "effective_length_m": 258.5,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "存车，不检修",
+    "endpoint_nodes": [
+      "L4",
+      "Z4"
+    ],
+    "connection_nodes": [
+      "L4",
+      "Z4"
+    ],
+    "terminal_branch": "L4-Z4"
+  },
+  {
+    "code": "存4北",
+    "name": "存4线北",
+    "track_type": "DEPARTURE",
+    "effective_length_m": 317.8,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "正式出段集结线",
+    "endpoint_nodes": [
+      "L2",
+      "Z4"
+    ],
+    "connection_nodes": [
+      "L2",
+      "Z4"
+    ],
+    "terminal_branch": "L2-Z4"
+  },
+  {
+    "code": "存4南",
+    "name": "存4线南",
+    "track_type": "TEMPORARY",
+    "effective_length_m": 154.5,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "仅调车过程临停",
+    "endpoint_nodes": [
+      "Z4",
+      "L12"
+    ],
+    "connection_nodes": [
+      "Z4",
+      "L12"
+    ],
+    "terminal_branch": "Z4-L12"
+  },
+  {
+    "code": "存5北",
+    "name": "存5线北",
+    "track_type": "ARRIVAL",
+    "effective_length_m": 367,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进段接车、待分流",
+    "endpoint_nodes": [
+      "L2",
+      "存5中"
+    ],
+    "connection_nodes": [
+      "L2"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "存5南",
+    "name": "存5线南",
+    "track_type": "ARRIVAL",
+    "effective_length_m": 156,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进段接车、待分流",
+    "endpoint_nodes": [
+      "存5中",
+      "L12"
+    ],
+    "connection_nodes": [
+      "L12"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "机库",
+    "name": "调机库线",
+    "track_type": "SPECIAL",
+    "effective_length_m": 71.6,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "调车机停放、称重和存车使用",
+    "endpoint_nodes": [
+      "L7",
+      "机库尽头"
+    ],
+    "connection_nodes": [
+      "L7"
+    ],
+    "terminal_branch": "L7-机库尽头"
+  },
+  {
+    "code": "调北",
+    "name": "调梁线北",
+    "track_type": "STORAGE",
+    "effective_length_m": 70.1,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "存车，不检修",
+    "endpoint_nodes": [
+      "L7",
+      "调棚北口"
+    ],
+    "connection_nodes": [
+      "L7"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "调棚",
+    "name": "调梁棚",
+    "track_type": "WORK",
+    "effective_length_m": 174.3,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "调梁对位区与预修区复合线",
+    "endpoint_nodes": [
+      "调棚北口",
+      "调棚尽头"
+    ],
+    "connection_nodes": [
+      "L7"
+    ],
+    "terminal_branch": "L7-调梁尽头"
+  },
+  {
+    "code": "机北",
+    "name": "机走线北",
+    "track_type": "STORAGE",
+    "effective_length_m": 69.1,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "存车，不检修",
+    "endpoint_nodes": [
+      "Z1",
+      "机棚北口"
+    ],
+    "connection_nodes": [
+      "Z1"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "机棚",
+    "name": "机走棚",
+    "track_type": "WORK",
+    "effective_length_m": 105.8,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "补充预修，也可存车",
+    "endpoint_nodes": [
+      "机棚北口",
+      "L8"
+    ],
+    "connection_nodes": [
+      "Z1",
+      "L8"
+    ],
+    "terminal_branch": "Z1-L8",
+    "reverse_branches": [
+      "Z1-L8"
+    ]
+  },
+  {
+    "code": "预修",
+    "name": "预修线",
+    "track_type": "WORK",
+    "effective_length_m": 208.5,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "主预修线",
+    "endpoint_nodes": [
+      "Z3",
+      "L13"
+    ],
+    "connection_nodes": [
+      "Z3",
+      "L13"
+    ],
+    "terminal_branch": "Z3-L13"
+  },
+  {
+    "code": "洗北",
+    "name": "洗罐线北",
+    "track_type": "STORAGE",
+    "effective_length_m": 100,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "洗南前后缓存",
+    "endpoint_nodes": [
+      "L9",
+      "洗南北口"
+    ],
+    "connection_nodes": [
+      "L9"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "洗南",
+    "name": "洗罐线南",
+    "track_type": "WORK",
+    "effective_length_m": 88.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "洗罐作业线",
+    "endpoint_nodes": [
+      "洗南北口",
+      "洗南尽头"
+    ],
+    "connection_nodes": [
+      "L9"
+    ],
+    "terminal_branch": "L9-洗罐尽头"
+  },
+  {
+    "code": "抛",
+    "name": "抛丸线",
+    "track_type": "WORK",
+    "effective_length_m": 131.8,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "抛丸作业，也可存车",
+    "endpoint_nodes": [
+      "L15",
+      "抛尽头"
+    ],
+    "connection_nodes": [
+      "L15"
+    ],
+    "terminal_branch": "L15-抛丸尽头"
+  },
+  {
+    "code": "油",
+    "name": "油漆线",
+    "track_type": "WORK",
+    "effective_length_m": 124,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "油漆作业，停留边界受平过道限制",
+    "endpoint_nodes": [
+      "L9",
+      "油尽头"
+    ],
+    "connection_nodes": [
+      "L9"
+    ],
+    "terminal_branch": "L9-油漆尽头"
+  },
+  {
+    "code": "轮",
+    "name": "卸轮线",
+    "track_type": "WORK",
+    "effective_length_m": 118.2,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "运营能力，不作普通缓存线",
+    "endpoint_nodes": [
+      "L19",
+      "轮尽头"
+    ],
+    "connection_nodes": [
+      "L19"
+    ],
+    "terminal_branch": "L19-卸轮尽头"
+  },
+  {
+    "code": "修1库外",
+    "name": "修1线大库外",
+    "track_type": "STORAGE",
+    "effective_length_m": 49.3,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进出库衔接，不检修",
+    "endpoint_nodes": [
+      "L19",
+      "修1门"
+    ],
+    "connection_nodes": [
+      "L19"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "修2库外",
+    "name": "修2线大库外",
+    "track_type": "STORAGE",
+    "effective_length_m": 49.3,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进出库衔接，不检修",
+    "endpoint_nodes": [
+      "L17",
+      "修2门"
+    ],
+    "connection_nodes": [
+      "L17"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "修3库外",
+    "name": "修3线大库外",
+    "track_type": "STORAGE",
+    "effective_length_m": 49.3,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进出库衔接，不检修",
+    "endpoint_nodes": [
+      "L18",
+      "修3门"
+    ],
+    "connection_nodes": [
+      "L18"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "修4库外",
+    "name": "修4线大库外",
+    "track_type": "STORAGE",
+    "effective_length_m": 49.3,
+    "allow_parking": true,
+    "allows_final_destination": true,
+    "description": "进出库衔接，不检修",
+    "endpoint_nodes": [
+      "L18",
+      "修4门"
+    ],
+    "connection_nodes": [
+      "L18"
+    ],
+    "terminal_branch": null
+  },
+  {
+    "code": "修1库内",
+    "name": "修1线大库内",
+    "track_type": "WORK",
+    "effective_length_m": 151.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "大库检修",
+    "endpoint_nodes": [
+      "修1门",
+      "修1尽头"
+    ],
+    "connection_nodes": [
+      "L19"
+    ],
+    "terminal_branch": "L19-修1尽头"
+  },
+  {
+    "code": "修2库内",
+    "name": "修2线大库内",
+    "track_type": "WORK",
+    "effective_length_m": 151.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "大库检修",
+    "endpoint_nodes": [
+      "修2门",
+      "修2尽头"
+    ],
+    "connection_nodes": [
+      "L17"
+    ],
+    "terminal_branch": "L17-修2尽头"
+  },
+  {
+    "code": "修3库内",
+    "name": "修3线大库内",
+    "track_type": "WORK",
+    "effective_length_m": 151.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "大库检修",
+    "endpoint_nodes": [
+      "修3门",
+      "修3尽头"
+    ],
+    "connection_nodes": [
+      "L18"
+    ],
+    "terminal_branch": "L18-修3尽头"
+  },
+  {
+    "code": "修4库内",
+    "name": "修4线大库内",
+    "track_type": "WORK",
+    "effective_length_m": 151.7,
+    "allow_parking": true,
+    "allows_final_destination": false,
+    "description": "大库检修",
+    "endpoint_nodes": [
+      "修4门",
+      "修4尽头"
+    ],
+    "connection_nodes": [
+      "L18"
+    ],
+    "terminal_branch": "L18-修4尽头"
+  }
+]

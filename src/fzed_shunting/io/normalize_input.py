@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+from fzed_shunting.domain.master_data import MasterData
+
+
+class InputValidationError(ValueError):
+    """Raised when the input contract is invalid."""
+
+
+class GoalSpec(BaseModel):
+    target_mode: str
+    target_track: str
+    allowed_target_tracks: list[str] = Field(default_factory=list)
+    target_area_code: str | None = None
+    target_spot_code: str | None = None
+
+
+class NormalizedVehicle(BaseModel):
+    current_track: str
+    order: int
+    vehicle_model: str
+    vehicle_no: str
+    repair_process: str
+    vehicle_length: float
+    goal: GoalSpec
+    need_weigh: bool = False
+    is_heavy: bool = False
+    is_close_door: bool = False
+    raw_vehicle_attributes: str | None = None
+    raw_is_spotting: str | None = None
+
+
+class NormalizedTrackInfo(BaseModel):
+    track_name: str
+    track_distance: float
+
+
+class NormalizedPlanInput(BaseModel):
+    track_info: list[NormalizedTrackInfo] = Field(default_factory=list)
+    vehicles: list[NormalizedVehicle] = Field(default_factory=list)
+    loco_track_name: str
+    yard_mode: str
+
+
+WORK_AREA_DEFAULTS = {
+    "调棚": "调棚:PRE_REPAIR",
+    "洗南": "洗南:WORK",
+    "油": "油:WORK",
+    "抛": "抛:WORK",
+    "轮": "轮:OPERATE",
+    "大库": "大库:RANDOM",
+    "大库外": "大库外:RANDOM",
+    "修1库内": "大库:RANDOM",
+    "修2库内": "大库:RANDOM",
+    "修3库内": "大库:RANDOM",
+    "修4库内": "大库:RANDOM",
+}
+
+TRACK_MODE_ALLOWED = {
+    "存1",
+    "存2",
+    "存3",
+    "存5北",
+    "存5南",
+    "机北",
+    "调北",
+    "洗北",
+    "预修",
+    "机棚",
+    "机库",
+    "存4北",
+    "修1库外",
+    "修2库外",
+    "修3库外",
+    "修4库外",
+}
+
+AREA_ALLOWED_TRACKS = {
+    "调棚:WORK": ["调棚"],
+    "调棚:PRE_REPAIR": ["调棚"],
+    "洗南:WORK": ["洗南"],
+    "油:WORK": ["油"],
+    "抛:WORK": ["抛"],
+    "轮:OPERATE": ["轮"],
+    "大库:RANDOM": ["修1库内", "修2库内", "修3库内", "修4库内"],
+    "大库外:RANDOM": ["修1库外", "修2库外", "修3库外", "修4库外"],
+}
+
+
+def normalize_plan_input(
+    payload: dict,
+    master: MasterData,
+    *,
+    allow_internal_loco_tracks: bool = False,
+) -> NormalizedPlanInput:
+    yard_mode = "NORMAL"
+    loco_track_name = payload.get("locoTrackName") or "机库"
+    if allow_internal_loco_tracks:
+        if loco_track_name not in master.tracks:
+            raise InputValidationError(f"Unknown locoTrackName: {loco_track_name}")
+    elif loco_track_name not in {"机库", "机北"}:
+        raise InputValidationError(f"Unsupported locoTrackName: {loco_track_name}")
+    inspection_enabled = any(
+        (item.get("isSpotting") or "").strip() == "迎检"
+        for item in payload.get("vehicleInfo", [])
+    )
+    track_info = [
+        NormalizedTrackInfo(
+            track_name=item["trackName"],
+            track_distance=float(item["trackDistance"]),
+        )
+        for item in payload.get("trackInfo", [])
+    ]
+    vehicles: list[NormalizedVehicle] = []
+    seen_orders: set[tuple[str, int]] = set()
+    for raw in payload.get("vehicleInfo", []):
+        order = int(raw["order"])
+        order_key = (raw["trackName"], order)
+        if order_key in seen_orders:
+            raise InputValidationError(
+                f"Duplicate order on track {raw['trackName']}: {order}"
+            )
+        seen_orders.add(order_key)
+        if raw["trackName"] not in master.tracks:
+            raise InputValidationError(f"Unknown source track: {raw['trackName']}")
+        source_track = master.tracks[raw["trackName"]]
+        if source_track.track_type == "RUNNING":
+            raise InputValidationError(
+                f"Running track cannot be source track: {raw['trackName']}"
+            )
+        goal, vehicle_yard_mode = _normalize_goal(raw, master, inspection_enabled=inspection_enabled)
+        yard_mode = _merge_yard_mode(yard_mode, vehicle_yard_mode)
+        need_weigh, is_heavy, is_close_door = _parse_vehicle_attribute(
+            raw.get("vehicleAttributes", "")
+        )
+        vehicles.append(
+            NormalizedVehicle(
+                current_track=raw["trackName"],
+                order=order,
+                vehicle_model=raw["vehicleModel"],
+                vehicle_no=raw["vehicleNo"],
+                repair_process=raw["repairProcess"],
+                vehicle_length=float(raw["vehicleLength"]),
+                goal=goal,
+                need_weigh=need_weigh,
+                is_heavy=is_heavy,
+                is_close_door=is_close_door,
+                raw_vehicle_attributes=raw.get("vehicleAttributes", ""),
+                raw_is_spotting=raw.get("isSpotting", ""),
+            )
+        )
+    return NormalizedPlanInput(
+        track_info=track_info,
+        vehicles=vehicles,
+        loco_track_name=loco_track_name,
+        yard_mode=yard_mode,
+    )
+
+
+def _normalize_goal(
+    raw: dict,
+    master: MasterData,
+    inspection_enabled: bool = False,
+) -> tuple[GoalSpec, str]:
+    explicit_mode = (raw.get("targetMode") or "").strip().upper()
+    explicit_area_code = (raw.get("targetAreaCode") or "").strip() or None
+    explicit_spot_code = (raw.get("targetSpotCode") or "").strip() or None
+    if explicit_mode:
+        return _normalize_explicit_goal(
+            raw=raw,
+            master=master,
+            explicit_mode=explicit_mode,
+            explicit_area_code=explicit_area_code,
+            explicit_spot_code=explicit_spot_code,
+            inspection_enabled=inspection_enabled,
+        )
+
+    target_track = raw["targetTrack"]
+    if target_track != "大库" and target_track != "大库外" and target_track not in master.tracks:
+        raise InputValidationError(f"Unknown target track: {target_track}")
+
+    spotting = (raw.get("isSpotting") or "").strip()
+    vehicle_yard_mode = "NORMAL"
+
+    if target_track in master.tracks:
+        track = master.tracks[target_track]
+        if track.track_type == "RUNNING":
+            raise InputValidationError(f"Running track cannot be target: {target_track}")
+        if track.allows_final_destination is False and target_track == "存4南":
+            raise InputValidationError("存4南 cannot be a final target")
+
+    if spotting in ("", "否"):
+        if target_track in WORK_AREA_DEFAULTS:
+            area_code = WORK_AREA_DEFAULTS[target_track]
+            return (
+                GoalSpec(
+                    target_mode="AREA",
+                    target_track=_area_track(area_code, target_track),
+                    allowed_target_tracks=AREA_ALLOWED_TRACKS[area_code],
+                    target_area_code=area_code,
+                ),
+                vehicle_yard_mode,
+            )
+        if target_track not in TRACK_MODE_ALLOWED:
+            raise InputValidationError(f"Track target not allowed: {target_track}")
+        return (
+            GoalSpec(
+                target_mode="TRACK",
+                target_track=target_track,
+                allowed_target_tracks=[target_track],
+            ),
+            vehicle_yard_mode,
+        )
+
+    if spotting == "是":
+        if target_track == "调棚":
+            return (
+                GoalSpec(
+                    target_mode="AREA",
+                    target_track="调棚",
+                    allowed_target_tracks=["调棚"],
+                    target_area_code="调棚:WORK",
+                ),
+                vehicle_yard_mode,
+            )
+        if target_track in {"洗南", "油", "抛", "轮"}:
+            return (
+                GoalSpec(
+                    target_mode="AREA",
+                    target_track=target_track,
+                    allowed_target_tracks=[target_track],
+                    target_area_code=WORK_AREA_DEFAULTS[target_track],
+                ),
+                vehicle_yard_mode,
+            )
+        raise InputValidationError(f"AREA request invalid for target: {target_track}")
+
+    if spotting == "迎检":
+        if target_track != "大库":
+            raise InputValidationError("迎检 only allowed for 大库")
+        return (
+            GoalSpec(
+                target_mode="AREA",
+                target_track="修1库内",
+                allowed_target_tracks=AREA_ALLOWED_TRACKS["大库:RANDOM"],
+                target_area_code="大库:RANDOM",
+            ),
+            "INSPECTION",
+        )
+
+    if spotting.isdigit():
+        if len(spotting) != 3:
+            raise InputValidationError(f"Invalid spot code: {spotting}")
+        if spotting[1:] in {"06", "07"} and not inspection_enabled:
+            raise InputValidationError(f"Spot code not allowed in NORMAL mode: {spotting}")
+        depot_track = _spot_to_track(spotting)
+        if target_track not in {"大库", depot_track}:
+            raise InputValidationError(
+                f"Spot code {spotting} inconsistent with target {target_track}"
+            )
+        return (
+            GoalSpec(
+                target_mode="SPOT",
+                target_track=depot_track,
+                allowed_target_tracks=[depot_track],
+                target_spot_code=spotting,
+            ),
+            vehicle_yard_mode,
+        )
+
+    raise InputValidationError(f"Unsupported isSpotting value: {spotting}")
+
+
+def _normalize_explicit_goal(
+    *,
+    raw: dict,
+    master: MasterData,
+    explicit_mode: str,
+    explicit_area_code: str | None,
+    explicit_spot_code: str | None,
+    inspection_enabled: bool,
+) -> tuple[GoalSpec, str]:
+    target_track = raw["targetTrack"]
+    if target_track not in master.tracks and target_track not in {"大库", "大库外"}:
+        raise InputValidationError(f"Unknown target track: {target_track}")
+    if explicit_mode == "TRACK":
+        if target_track not in master.tracks:
+            raise InputValidationError(f"TRACK goal requires concrete track: {target_track}")
+        track = master.tracks[target_track]
+        if track.track_type == "RUNNING":
+            raise InputValidationError(f"Running track cannot be target: {target_track}")
+        if target_track == "存4南":
+            raise InputValidationError("存4南 cannot be a final target")
+        return (
+            GoalSpec(
+                target_mode="TRACK",
+                target_track=target_track,
+                allowed_target_tracks=[target_track],
+                target_area_code=explicit_area_code,
+                target_spot_code=explicit_spot_code,
+            ),
+            "INSPECTION" if inspection_enabled else "NORMAL",
+        )
+    if explicit_mode == "AREA":
+        if explicit_area_code is None:
+            raise InputValidationError("AREA goal requires targetAreaCode")
+        allowed_tracks = AREA_ALLOWED_TRACKS.get(explicit_area_code)
+        if allowed_tracks is None:
+            if target_track not in master.tracks:
+                raise InputValidationError(f"AREA goal requires concrete track: {target_track}")
+            allowed_tracks = [target_track]
+        return (
+            GoalSpec(
+                target_mode="AREA",
+                target_track=target_track,
+                allowed_target_tracks=list(allowed_tracks),
+                target_area_code=explicit_area_code,
+                target_spot_code=explicit_spot_code,
+            ),
+            "INSPECTION" if inspection_enabled else "NORMAL",
+        )
+    if explicit_mode == "SPOT":
+        if explicit_spot_code is None:
+            raise InputValidationError("SPOT goal requires targetSpotCode")
+        if target_track not in master.tracks and target_track != "大库":
+            raise InputValidationError(f"SPOT goal requires depot track: {target_track}")
+        if explicit_spot_code[1:] in {"06", "07"} and not inspection_enabled:
+            raise InputValidationError(f"Spot code not allowed in NORMAL mode: {explicit_spot_code}")
+        depot_track = _spot_to_track(explicit_spot_code)
+        if target_track not in {"大库", depot_track}:
+            raise InputValidationError(
+                f"Spot code {explicit_spot_code} inconsistent with target {target_track}"
+            )
+        return (
+            GoalSpec(
+                target_mode="SPOT",
+                target_track=depot_track,
+                allowed_target_tracks=[depot_track],
+                target_area_code=explicit_area_code,
+                target_spot_code=explicit_spot_code,
+            ),
+            "INSPECTION" if inspection_enabled else "NORMAL",
+        )
+    raise InputValidationError(f"Unsupported explicit targetMode: {explicit_mode}")
+
+
+def _area_track(area_code: str, fallback_track: str) -> str:
+    if area_code == "大库:RANDOM":
+        return "修1库内"
+    if area_code == "大库外:RANDOM":
+        return "修1库外"
+    if ":" in area_code:
+        return area_code.split(":", 1)[0]
+    return fallback_track
+
+
+def _spot_to_track(spot_code: str) -> str:
+    first = spot_code[0]
+    if first not in {"1", "2", "3", "4"}:
+        raise InputValidationError(f"Unsupported spot prefix: {spot_code}")
+    return f"修{first}库内"
+
+
+def _merge_yard_mode(current: str, incoming: str) -> str:
+    if current == incoming:
+        return current
+    if current == "NORMAL" and incoming == "INSPECTION":
+        return incoming
+    if current == "INSPECTION" and incoming == "NORMAL":
+        return current
+    raise InputValidationError(f"Conflicting yard modes: {current} vs {incoming}")
+
+
+def _parse_vehicle_attribute(value: str) -> tuple[bool, bool, bool]:
+    value = (value or "").strip()
+    if value == "称重":
+        return True, False, False
+    if value == "重车":
+        return False, True, False
+    if value == "关门车":
+        return False, False, True
+    return False, False, False

@@ -1,0 +1,298 @@
+[
+  {
+    "code": "大门L1",
+    "total_length_m": 190,
+    "status": "已确认",
+    "description": "大门至L1",
+    "left_node": "大门",
+    "right_node": "L1"
+  },
+  {
+    "code": "L1-L2",
+    "total_length_m": 37,
+    "status": "已确认",
+    "description": "L1到L2",
+    "left_node": "L1",
+    "right_node": "L2"
+  },
+  {
+    "code": "L1-L3",
+    "total_length_m": 45.5,
+    "status": "已确认",
+    "description": "L1到L3",
+    "left_node": "L1",
+    "right_node": "L3"
+  },
+  {
+    "code": "L3-L4",
+    "total_length_m": 45.4,
+    "status": "已确认",
+    "description": "L3到L4",
+    "left_node": "L3",
+    "right_node": "L4"
+  },
+  {
+    "code": "L2-L12",
+    "total_length_m": 626.3,
+    "status": "已确认",
+    "description": "L2警到L12警",
+    "left_node": "L2",
+    "right_node": "L12"
+  },
+  {
+    "code": "L2-Z4",
+    "total_length_m": 417.7,
+    "status": "已确认",
+    "description": "L2警到Z4警",
+    "left_node": "L2",
+    "right_node": "Z4"
+  },
+  {
+    "code": "L4-Z4",
+    "total_length_m": 359.2,
+    "status": "已确认",
+    "description": "L4警到Z4警",
+    "left_node": "L4",
+    "right_node": "Z4"
+  },
+  {
+    "code": "L4-Z3",
+    "total_length_m": 339.9,
+    "status": "已确认",
+    "description": "L4警到Z3警",
+    "left_node": "L4",
+    "right_node": "Z3"
+  },
+  {
+    "code": "L3-L5",
+    "total_length_m": 131.4,
+    "status": "已确认",
+    "description": "L3警到L5",
+    "left_node": "L3",
+    "right_node": "L5"
+  },
+  {
+    "code": "L5-L6",
+    "total_length_m": 105.7,
+    "status": "已确认",
+    "description": "L5警到L6",
+    "left_node": "L5",
+    "right_node": "L6"
+  },
+  {
+    "code": "L5-Z2",
+    "total_length_m": 211.4,
+    "status": "已确认",
+    "description": "L5警到Z2警",
+    "left_node": "L5",
+    "right_node": "Z2"
+  },
+  {
+    "code": "L6-Z1",
+    "total_length_m": 40.6,
+    "status": "已确认",
+    "description": "L6到Z1",
+    "left_node": "L6",
+    "right_node": "Z1"
+  },
+  {
+    "code": "Z1-Z2",
+    "total_length_m": 68.2,
+    "status": "已确认",
+    "description": "Z1到Z2",
+    "left_node": "Z1",
+    "right_node": "Z2"
+  },
+  {
+    "code": "Z2-Z3",
+    "total_length_m": 45.4,
+    "status": "已确认",
+    "description": "Z2到Z3",
+    "left_node": "Z2",
+    "right_node": "Z3"
+  },
+  {
+    "code": "L6-L7",
+    "total_length_m": 41.5,
+    "status": "已确认",
+    "description": "L6到L7",
+    "left_node": "L6",
+    "right_node": "L7"
+  },
+  {
+    "code": "L7-机库尽头",
+    "total_length_m": 196.9,
+    "status": "已确认",
+    "description": "L7到机库尽头",
+    "left_node": "L7",
+    "right_node": "机库尽头"
+  },
+  {
+    "code": "L7-调梁尽头",
+    "total_length_m": 296.2,
+    "status": "已确认",
+    "description": "L7到调梁尽头",
+    "left_node": "L7",
+    "right_node": "调梁尽头"
+  },
+  {
+    "code": "Z1-L8",
+    "total_length_m": 229.2,
+    "status": "已确认",
+    "description": "Z1到L8",
+    "left_node": "Z1",
+    "right_node": "L8"
+  },
+  {
+    "code": "Z3-L13",
+    "total_length_m": 262.6,
+    "status": "已确认",
+    "description": "Z3到L13",
+    "left_node": "Z3",
+    "right_node": "L13"
+  },
+  {
+    "code": "Z4-L12",
+    "total_length_m": 207,
+    "status": "已确认",
+    "description": "Z4到L12",
+    "left_node": "Z4",
+    "right_node": "L12"
+  },
+  {
+    "code": "L8-L9",
+    "total_length_m": 111.9,
+    "status": "已确认",
+    "description": "L8到L9",
+    "left_node": "L8",
+    "right_node": "L9"
+  },
+  {
+    "code": "L8-L11(L14)",
+    "total_length_m": 187.7,
+    "status": "已确认",
+    "description": "L8到L14",
+    "left_node": "L8",
+    "right_node": "L14"
+  },
+  {
+    "code": "L12-L13",
+    "total_length_m": 36.9,
+    "status": "已确认",
+    "description": "L12到L13",
+    "left_node": "L12",
+    "right_node": "L13"
+  },
+  {
+    "code": "L13-L14",
+    "total_length_m": 41.5,
+    "status": "已确认",
+    "description": "L13到L14",
+    "left_node": "L13",
+    "right_node": "L14"
+  },
+  {
+    "code": "L14-L15",
+    "total_length_m": 17.9,
+    "status": "已确认",
+    "description": "L14到L15",
+    "left_node": "L14",
+    "right_node": "L15"
+  },
+  {
+    "code": "L9-油漆尽头",
+    "total_length_m": 209,
+    "status": "已确认",
+    "description": "L9到油漆尽头",
+    "left_node": "L9",
+    "right_node": "油漆尽头"
+  },
+  {
+    "code": "L9-洗罐尽头",
+    "total_length_m": 242.1,
+    "status": "已确认",
+    "description": "L9到洗罐尽头",
+    "left_node": "L9",
+    "right_node": "洗罐尽头"
+  },
+  {
+    "code": "L15-抛丸尽头",
+    "total_length_m": 129.8,
+    "status": "已确认",
+    "description": "L15到抛丸尽头",
+    "left_node": "L15",
+    "right_node": "抛丸尽头"
+  },
+  {
+    "code": "L15-L16",
+    "total_length_m": 161.5,
+    "status": "已确认",
+    "description": "L15到L16",
+    "left_node": "L15",
+    "right_node": "L16"
+  },
+  {
+    "code": "L16-L17",
+    "total_length_m": 45.2,
+    "status": "已确认",
+    "description": "L16到L17",
+    "left_node": "L16",
+    "right_node": "L17"
+  },
+  {
+    "code": "L16-L19",
+    "total_length_m": 74.9,
+    "status": "已确认",
+    "description": "L16到L19",
+    "left_node": "L16",
+    "right_node": "L19"
+  },
+  {
+    "code": "L17-L18",
+    "total_length_m": 55,
+    "status": "已确认",
+    "description": "L17到L18",
+    "left_node": "L17",
+    "right_node": "L18"
+  },
+  {
+    "code": "L18-修4尽头",
+    "total_length_m": 289.2,
+    "status": "已确认",
+    "description": "L18到修4尽头",
+    "left_node": "L18",
+    "right_node": "修4尽头"
+  },
+  {
+    "code": "L18-修3尽头",
+    "total_length_m": 289.8,
+    "status": "已确认",
+    "description": "L18到修3尽头",
+    "left_node": "L18",
+    "right_node": "修3尽头"
+  },
+  {
+    "code": "L17-修2尽头",
+    "total_length_m": 346.7,
+    "status": "已确认",
+    "description": "L17到修2尽头",
+    "left_node": "L17",
+    "right_node": "修2尽头"
+  },
+  {
+    "code": "L19-修1尽头",
+    "total_length_m": 318.9,
+    "status": "已确认",
+    "description": "L19到修1尽头",
+    "left_node": "L19",
+    "right_node": "修1尽头"
+  },
+  {
+    "code": "L19-卸轮尽头",
+    "total_length_m": 160.9,
+    "status": "已确认",
+    "description": "L19到卸轮尽头",
+    "left_node": "L19",
+    "right_node": "卸轮尽头"
+  }
+]
