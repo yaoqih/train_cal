@@ -100,12 +100,31 @@ def spot_candidates_for_vehicle(
     if vehicle.need_weigh and target_track == "机库":
         return list(WORK_AREA_SPOTS["机库:WEIGH"])
     if vehicle.goal.target_mode == "SPOT":
+        work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
+        if work_area_spot is not None:
+            return work_area_spot
         return _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
     if vehicle.goal.target_area_code == "大库:RANDOM":
         return _random_depot_spot_candidates(vehicle, target_track, yard_mode)
     if vehicle.goal.target_area_code in WORK_AREA_SPOTS and vehicle.goal.target_track == target_track:
         return list(WORK_AREA_SPOTS[vehicle.goal.target_area_code])
     return []
+
+
+def _exact_work_area_spot_candidates(
+    vehicle: NormalizedVehicle,
+    target_track: str,
+) -> list[str] | None:
+    area_code = vehicle.goal.target_area_code
+    if area_code not in WORK_AREA_SPOTS:
+        return None
+    if vehicle.goal.target_track != target_track:
+        return []
+    target_spot_code = vehicle.goal.target_spot_code
+    available_spots = WORK_AREA_SPOTS[area_code]
+    if target_spot_code is None or target_spot_code not in available_spots:
+        return []
+    return [target_spot_code]
 
 
 def _exact_depot_spot_candidates(

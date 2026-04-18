@@ -88,6 +88,15 @@ AREA_ALLOWED_TRACKS = {
     "大库外:RANDOM": ["修1库外", "修2库外", "修3库外", "修4库外"],
 }
 
+VALID_IS_SPOTTING_LITERALS = {"", "否", "是", "迎检"}
+WORK_SPOT_BY_TARGET = {
+    "调棚": ("调棚:WORK", {"1", "2", "3", "4"}),
+    "洗南": ("洗南:WORK", {"1", "2", "3"}),
+    "油": ("油:WORK", {"1", "2"}),
+    "抛": ("抛:WORK", {"1", "2"}),
+}
+FORBIDDEN_FINAL_AREA_CODES = {"机库:WEIGH"}
+
 
 def normalize_plan_input(
     payload: dict,
@@ -159,11 +168,23 @@ def normalize_plan_input(
     )
 
 
+def _validate_is_spotting_literal(raw_value: str) -> None:
+    value = (raw_value or "").strip()
+    if not value:
+        return
+    if value in VALID_IS_SPOTTING_LITERALS:
+        return
+    if value.isdigit():
+        return
+    raise InputValidationError(f"Unsupported isSpotting value: {value}")
+
+
 def _normalize_goal(
     raw: dict,
     master: MasterData,
     inspection_enabled: bool = False,
 ) -> tuple[GoalSpec, str]:
+    _validate_is_spotting_literal(raw.get("isSpotting", ""))
     explicit_mode = (raw.get("targetMode") or "").strip().upper()
     explicit_area_code = (raw.get("targetAreaCode") or "").strip() or None
     explicit_spot_code = (raw.get("targetSpotCode") or "").strip() or None
@@ -188,8 +209,13 @@ def _normalize_goal(
         track = master.tracks[target_track]
         if track.track_type == "RUNNING":
             raise InputValidationError(f"Running track cannot be target: {target_track}")
-        if track.allows_final_destination is False and target_track == "存4南":
-            raise InputValidationError("存4南 cannot be a final target")
+        if (
+            track.allows_final_destination is False
+            and target_track not in WORK_AREA_DEFAULTS
+        ):
+            raise InputValidationError(
+                f"Track {target_track} cannot be a final target (allows_final_destination=False)"
+            )
 
     if spotting in ("", "否"):
         if target_track in WORK_AREA_DEFAULTS:
@@ -291,8 +317,13 @@ def _normalize_explicit_goal(
         track = master.tracks[target_track]
         if track.track_type == "RUNNING":
             raise InputValidationError(f"Running track cannot be target: {target_track}")
-        if target_track == "存4南":
-            raise InputValidationError("存4南 cannot be a final target")
+        if (
+            track.allows_final_destination is False
+            and target_track not in WORK_AREA_DEFAULTS
+        ):
+            raise InputValidationError(
+                f"Track {target_track} cannot be a final target (allows_final_destination=False)"
+            )
         return (
             GoalSpec(
                 target_mode="TRACK",
@@ -305,7 +336,16 @@ def _normalize_explicit_goal(
         )
     if explicit_mode == "AREA":
         if explicit_area_code is None:
-            raise InputValidationError("AREA goal requires targetAreaCode")
+            default_area_code = WORK_AREA_DEFAULTS.get(target_track)
+            if default_area_code is None:
+                raise InputValidationError(
+                    f"AREA goal requires targetAreaCode (no default for {target_track})"
+                )
+            explicit_area_code = default_area_code
+        if explicit_area_code in FORBIDDEN_FINAL_AREA_CODES:
+            raise InputValidationError(
+                f"{explicit_area_code} cannot be an upstream final target"
+            )
         allowed_tracks = AREA_ALLOWED_TRACKS.get(explicit_area_code)
         if allowed_tracks is None:
             if target_track not in master.tracks:
@@ -324,6 +364,23 @@ def _normalize_explicit_goal(
     if explicit_mode == "SPOT":
         if explicit_spot_code is None:
             raise InputValidationError("SPOT goal requires targetSpotCode")
+        work_spec = WORK_SPOT_BY_TARGET.get(target_track)
+        if work_spec is not None:
+            area_code, allowed_spots = work_spec
+            if explicit_spot_code not in allowed_spots:
+                raise InputValidationError(
+                    f"Spot code {explicit_spot_code} is not a valid {target_track} work spot"
+                )
+            return (
+                GoalSpec(
+                    target_mode="SPOT",
+                    target_track=target_track,
+                    allowed_target_tracks=[target_track],
+                    target_area_code=area_code,
+                    target_spot_code=f"{target_track}:{explicit_spot_code}",
+                ),
+                "INSPECTION" if inspection_enabled else "NORMAL",
+            )
         if target_track not in master.tracks and target_track != "大库":
             raise InputValidationError(f"SPOT goal requires depot track: {target_track}")
         if explicit_spot_code[1:] in {"06", "07"} and not inspection_enabled:

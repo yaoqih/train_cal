@@ -108,13 +108,20 @@ def verify_plan(
             if not track.allow_parking:
                 global_errors.append(f"Vehicle {vehicle.vehicle_no} parked on running track {final_track}")
 
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0) + vehicle.vehicle_length
+        )
     for track_code, seq in final_state.track_sequences.items():
         if track_code not in capacity_by_track:
             continue
         occupied = sum(length_by_vehicle[vehicle_no] for vehicle_no in seq)
-        if occupied > capacity_by_track[track_code] + 1e-9:
+        declared_cap = capacity_by_track[track_code]
+        effective_cap = max(declared_cap, initial_occupation_by_track.get(track_code, 0.0))
+        if occupied > effective_cap + 1e-9:
             global_errors.append(
-                f"Capacity overflow on track {track_code}: occupied {occupied} > {capacity_by_track[track_code]}"
+                f"Capacity overflow on track {track_code}: occupied {occupied} > {declared_cap}"
             )
 
     for hook in hook_plan:

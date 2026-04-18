@@ -186,6 +186,7 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
         heuristic_weight,  # noqa: ANN001, ARG001
         timeout_seconds,  # noqa: ANN001, ARG001
         max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
     ):
         calls.append(([path.name for path in scenario_paths], beam_width))
         return [
@@ -244,6 +245,7 @@ def test_recover_no_solution_results_retries_progressively_until_success(tmp_pat
         heuristic_weight,  # noqa: ANN001, ARG001
         timeout_seconds,  # noqa: ANN001, ARG001
         max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
     ):
         calls.append(beam_width)
         if beam_width == 16:
@@ -306,6 +308,7 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
         heuristic_weight,  # noqa: ANN001, ARG001
         timeout_seconds,  # noqa: ANN001, ARG001
         max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
     ):
         calls.append(("run", [path.name for path in scenario_paths], beam_width))
         return [{"scenario": "validation_single.json", "solved": True}]
@@ -321,6 +324,7 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
         max_workers,  # noqa: ANN001, ARG001
         retry_no_solution_beam_width,  # noqa: ANN001
         initial_results,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
     ):
         calls.append(("recover", [path.name for path in scenario_paths], retry_no_solution_beam_width))
         return initial_results

@@ -33,6 +33,15 @@ def generate_goal_moves(
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
     capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0) + vehicle.vehicle_length
+        )
+    effective_capacity_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
     if route_oracle is None and master is not None:
         route_oracle = RouteOracle(master)
     if blocking_goal_targets_by_source is None:
@@ -94,7 +103,7 @@ def generate_goal_moves(
                         block_vehicles=block_vehicles,
                         block_length=block_length,
                         state=state,
-                        capacity_by_track=capacity_by_track,
+                        capacity_by_track=effective_capacity_by_track,
                         length_by_vehicle=length_by_vehicle,
                         vehicle_by_no=vehicle_by_no,
                         plan_input=plan_input,
@@ -163,7 +172,7 @@ def generate_goal_moves(
                         block_vehicles=block_vehicles,
                         block_length=block_length,
                         state=state,
-                        capacity_by_track=capacity_by_track,
+                        capacity_by_track=effective_capacity_by_track,
                         length_by_vehicle=length_by_vehicle,
                         vehicle_by_no=vehicle_by_no,
                         plan_input=plan_input,
@@ -182,7 +191,24 @@ def generate_goal_moves(
                         break
                 if feasible_target_count > 0:
                     break
-    return moves
+    return _dedup_moves(moves)
+
+
+def _dedup_moves(moves: list[HookAction]) -> list[HookAction]:
+    seen: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
+    result: list[HookAction] = []
+    for move in moves:
+        key = (
+            move.source_track,
+            move.target_track,
+            tuple(move.vehicle_nos),
+            tuple(move.path_tracks),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(move)
+    return result
 
 
 def _should_skip_shorter_single_target_direct_move(
@@ -525,7 +551,7 @@ def _build_candidate_move(
 ) -> HookAction | None:
     if target_track == source_track:
         return None
-    if _violates_close_door_hook_rule(block, target_track, vehicle_by_no):
+    if _violates_close_door_hook_rule(block, target_track, vehicle_by_no, state):
         return None
     if not _fits_capacity(
         target_track,
@@ -576,8 +602,25 @@ def _violates_close_door_hook_rule(
     block: list[str],
     target_track: str,
     vehicle_by_no: dict,
+    state: ReplayState,
 ) -> bool:
     if target_track == "存4北":
+        existing_seq = state.track_sequences.get("存4北", [])
+        projected_seq = list(existing_seq) + list(block)
+        for position_index in range(min(3, len(projected_seq))):
+            vehicle_no = projected_seq[position_index]
+            vehicle = vehicle_by_no.get(vehicle_no)
+            if vehicle is None:
+                continue
+            if not vehicle.is_close_door:
+                continue
+            goal = vehicle.goal
+            if (
+                goal.target_mode == "TRACK"
+                and goal.target_track == "存4北"
+                and list(goal.allowed_target_tracks) == ["存4北"]
+            ):
+                return True
         return False
     if len(block) <= 10:
         return False

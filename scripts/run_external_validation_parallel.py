@@ -33,6 +33,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heuristic-weight", type=float, default=1.0)
     parser.add_argument("--max-workers", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument(
+        "--solver-time-budget-ms",
+        type=float,
+        default=None,
+        help="solver-internal budget (ms); default = timeout-seconds*1000 - 5000 grace",
+    )
+    parser.add_argument(
+        "--no-anytime-fallback",
+        dest="enable_anytime_fallback",
+        action="store_false",
+        default=True,
+        help="disable exact->weighted->beam fallback chain",
+    )
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
     parser.add_argument("--worker", action="store_true")
@@ -46,6 +59,8 @@ def solve_one(
     solver: str,
     beam_width: int | None,
     heuristic_weight: float,
+    time_budget_ms: float | None = None,
+    enable_anytime_fallback: bool = True,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -61,25 +76,42 @@ def solve_one(
             beam_width=beam_width,
             heuristic_weight=heuristic_weight,
             debug_stats=debug_stats,
+            time_budget_ms=time_budget_ms,
+            enable_anytime_fallback=enable_anytime_fallback,
         )
-        hook_plan = [
-            {
-                "hookNo": idx,
-                "actionType": move.action_type,
-                "sourceTrack": move.source_track,
-                "targetTrack": move.target_track,
-                "vehicleNos": move.vehicle_nos,
-                "pathTracks": move.path_tracks,
+        if not result.plan:
+            return {
+                "scenario": scenario_path.name,
+                "solved": False,
+                "error": "no solution within budget",
+                "fallback_stage": result.fallback_stage,
+                "expanded_nodes": result.expanded_nodes,
+                "generated_nodes": result.generated_nodes,
+                "elapsed_ms": result.elapsed_ms,
+                "debug_stats": debug_stats,
             }
-            for idx, move in enumerate(result.plan, start=1)
-        ]
-        verify_report = verify_plan(master, normalized, hook_plan)
+        report = result.verification_report
+        if report is None:
+            hook_plan = [
+                {
+                    "hookNo": idx,
+                    "actionType": move.action_type,
+                    "sourceTrack": move.source_track,
+                    "targetTrack": move.target_track,
+                    "vehicleNos": move.vehicle_nos,
+                    "pathTracks": move.path_tracks,
+                }
+                for idx, move in enumerate(result.plan, start=1)
+            ]
+            report = verify_plan(master, normalized, hook_plan)
         return {
             "scenario": scenario_path.name,
             "solved": True,
             "hook_count": len(result.plan),
-            "is_valid": verify_report.is_valid,
-            "verifier_errors": verify_report.errors,
+            "is_valid": report.is_valid,
+            "verifier_errors": report.errors,
+            "is_proven_optimal": result.is_proven_optimal,
+            "fallback_stage": result.fallback_stage,
             "expanded_nodes": result.expanded_nodes,
             "generated_nodes": result.generated_nodes,
             "closed_nodes": result.closed_nodes,
@@ -102,6 +134,8 @@ def _build_worker_command(
     solver: str,
     beam_width: int | None,
     heuristic_weight: float,
+    time_budget_ms: float | None = None,
+    enable_anytime_fallback: bool = True,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -118,6 +152,10 @@ def _build_worker_command(
     ]
     if beam_width is not None:
         cmd.extend(["--beam-width", str(beam_width)])
+    if time_budget_ms is not None:
+        cmd.extend(["--solver-time-budget-ms", str(time_budget_ms)])
+    if not enable_anytime_fallback:
+        cmd.append("--no-anytime-fallback")
     return cmd
 
 
@@ -129,6 +167,8 @@ def _run_scenario_subprocess(
     beam_width: int | None,
     heuristic_weight: float,
     timeout_seconds: int,
+    time_budget_ms: float | None = None,
+    enable_anytime_fallback: bool = True,
 ) -> dict[str, Any]:
     cmd = _build_worker_command(
         master_dir=master_dir,
@@ -136,6 +176,8 @@ def _run_scenario_subprocess(
         solver=solver,
         beam_width=beam_width,
         heuristic_weight=heuristic_weight,
+        time_budget_ms=time_budget_ms,
+        enable_anytime_fallback=enable_anytime_fallback,
     )
     process = subprocess.Popen(
         cmd,
@@ -183,6 +225,8 @@ def run_parallel_scenarios(
     heuristic_weight: float,
     timeout_seconds: int,
     max_workers: int,
+    time_budget_ms: float | None = None,
+    enable_anytime_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -195,6 +239,8 @@ def run_parallel_scenarios(
                 beam_width=beam_width,
                 heuristic_weight=heuristic_weight,
                 timeout_seconds=timeout_seconds,
+                time_budget_ms=time_budget_ms,
+                enable_anytime_fallback=enable_anytime_fallback,
             )
             for scenario_path in scenario_paths
         ]
@@ -215,6 +261,8 @@ def recover_no_solution_results(
     max_workers: int,
     retry_no_solution_beam_width: int | None,
     initial_results: list[dict[str, Any]],
+    time_budget_ms: float | None = None,
+    enable_anytime_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
         beam_width=beam_width,
@@ -256,6 +304,8 @@ def recover_no_solution_results(
             heuristic_weight=heuristic_weight,
             timeout_seconds=timeout_seconds,
             max_workers=max_workers,
+            time_budget_ms=time_budget_ms,
+            enable_anytime_fallback=enable_anytime_fallback,
         )
         for retry_result in retry_results:
             if not retry_result.get("solved"):
@@ -306,6 +356,8 @@ def _run_worker(args: argparse.Namespace) -> None:
         solver=args.solver,
         beam_width=args.beam_width,
         heuristic_weight=args.heuristic_weight,
+        time_budget_ms=getattr(args, "solver_time_budget_ms", None),
+        enable_anytime_fallback=getattr(args, "enable_anytime_fallback", True),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -321,6 +373,10 @@ def main() -> None:
         scenario_paths = [args.scenario]
     else:
         scenario_paths = sorted(args.input_dir.glob("validation_*.json"))
+    time_budget_ms = getattr(args, "solver_time_budget_ms", None)
+    enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
+    if time_budget_ms is None:
+        time_budget_ms = max(1000.0, args.timeout_seconds * 1000 - 5000)
     results = run_parallel_scenarios(
         master_dir=args.master_dir,
         scenario_paths=scenario_paths,
@@ -329,6 +385,8 @@ def main() -> None:
         heuristic_weight=args.heuristic_weight,
         timeout_seconds=args.timeout_seconds,
         max_workers=args.max_workers,
+        time_budget_ms=time_budget_ms,
+        enable_anytime_fallback=enable_anytime_fallback,
     )
     results = recover_no_solution_results(
         master_dir=args.master_dir,
@@ -340,12 +398,16 @@ def main() -> None:
         max_workers=args.max_workers,
         retry_no_solution_beam_width=args.retry_no_solution_beam_width,
         initial_results=results,
+        time_budget_ms=time_budget_ms,
+        enable_anytime_fallback=enable_anytime_fallback,
     )
     summary = {
         "solver": args.solver,
         "beam_width": args.beam_width,
         "heuristic_weight": args.heuristic_weight,
         "timeout_seconds": args.timeout_seconds,
+        "solver_time_budget_ms": time_budget_ms,
+        "enable_anytime_fallback": enable_anytime_fallback,
         "scenario_count": len(results),
         "results": results,
     }

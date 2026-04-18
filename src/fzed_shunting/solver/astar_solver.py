@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from heapq import heapify, heappop, heappush
 from itertools import count
 from time import perf_counter
@@ -10,6 +10,8 @@ from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_cand
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.budget import SearchBudget
+from fzed_shunting.solver.heuristic import make_state_heuristic
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
     generate_goal_moves,
@@ -38,7 +40,19 @@ class SolverResult:
     generated_nodes: int
     closed_nodes: int
     elapsed_ms: float
+    is_proven_optimal: bool = False
+    fallback_stage: str | None = None
+    verification_report: Any | None = None
     debug_stats: dict[str, Any] | None = None
+
+
+class PlanVerificationError(Exception):
+    def __init__(self, report: Any) -> None:
+        self.report = report
+        errors = getattr(report, "errors", None) or []
+        first = errors[0] if errors else "unknown verification failure"
+        suffix = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+        super().__init__(f"plan verification failed: {first}{suffix}")
 
 
 def solve_with_simple_astar(
@@ -49,6 +63,10 @@ def solve_with_simple_astar(
     heuristic_weight: float = 1.0,
     beam_width: int | None = None,
     debug_stats: dict[str, Any] | None = None,
+    time_budget_ms: float | None = None,
+    node_budget: int | None = None,
+    verify: bool = True,
+    enable_anytime_fallback: bool = True,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -58,6 +76,10 @@ def solve_with_simple_astar(
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
         debug_stats=debug_stats,
+        time_budget_ms=time_budget_ms,
+        node_budget=node_budget,
+        verify=verify,
+        enable_anytime_fallback=enable_anytime_fallback,
     ).plan
 
 
@@ -69,15 +91,23 @@ def solve_with_simple_astar_result(
     heuristic_weight: float = 1.0,
     beam_width: int | None = None,
     debug_stats: dict[str, Any] | None = None,
+    time_budget_ms: float | None = None,
+    node_budget: int | None = None,
+    verify: bool = True,
+    enable_anytime_fallback: bool = True,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
     )
+    if verify and master is None:
+        raise ValueError("verify=True requires master to be provided for plan_verifier")
     _validate_final_track_goal_capacities(plan_input)
+    started_at = perf_counter()
+    result: SolverResult
     if solver_mode == "lns":
-        return _solve_with_lns_result(
+        result = _solve_with_lns_result(
             plan_input=plan_input,
             initial_state=initial_state,
             master=master,
@@ -85,33 +115,220 @@ def solve_with_simple_astar_result(
             beam_width=beam_width,
             debug_stats=debug_stats,
         )
-    result = _solve_search_result(
-        plan_input=plan_input,
-        initial_state=initial_state,
-        master=master,
-        solver_mode=solver_mode,
-        heuristic_weight=heuristic_weight,
-        beam_width=beam_width,
-        debug_stats=debug_stats,
-    )
-    if solver_mode == "beam" and beam_width is not None:
-        improved = result
-        for _ in range(BEAM_POST_REPAIR_MAX_ROUNDS):
-            candidate = _improve_incumbent_result(
+    else:
+        exact_time_budget_ms: float | None = time_budget_ms
+        if (
+            solver_mode == "exact"
+            and enable_anytime_fallback
+            and time_budget_ms is not None
+        ):
+            exact_time_budget_ms = max(1.0, time_budget_ms * 0.4)
+        result = _solve_search_result(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            solver_mode=solver_mode,
+            heuristic_weight=heuristic_weight,
+            beam_width=beam_width,
+            debug_stats=debug_stats,
+            budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+        )
+        if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
+            result = _run_anytime_fallback_chain(
                 plan_input=plan_input,
                 initial_state=initial_state,
                 master=master,
-                incumbent=improved,
+                incumbent=result,
+                started_at=started_at,
+                time_budget_ms=time_budget_ms,
+                node_budget=node_budget,
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
-                repair_passes=BEAM_POST_REPAIR_PASSES,
-                max_rounds=1,
+                debug_stats=debug_stats,
             )
-            if len(candidate.plan) >= len(improved.plan):
-                break
-            improved = candidate
-        return improved
+        if solver_mode == "beam" and beam_width is not None:
+            improved = result
+            for _ in range(BEAM_POST_REPAIR_MAX_ROUNDS):
+                candidate = _improve_incumbent_result(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                    incumbent=improved,
+                    heuristic_weight=heuristic_weight,
+                    beam_width=beam_width,
+                    repair_passes=BEAM_POST_REPAIR_PASSES,
+                    max_rounds=1,
+                )
+                if len(candidate.plan) >= len(improved.plan):
+                    break
+                improved = candidate
+            result = improved
+    if verify:
+        result = _attach_verification(
+            result,
+            plan_input=plan_input,
+            master=master,
+            initial_state=initial_state,
+        )
     return result
+
+
+def _attach_verification(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    master: MasterData | None,
+    initial_state: ReplayState | None = None,
+) -> SolverResult:
+    if master is None:
+        return result
+    if not result.plan:
+        return result
+    from fzed_shunting.verify.plan_verifier import verify_plan
+
+    hook_plan = [
+        {
+            "hookNo": index,
+            "actionType": move.action_type,
+            "sourceTrack": move.source_track,
+            "targetTrack": move.target_track,
+            "vehicleNos": list(move.vehicle_nos),
+            "pathTracks": list(move.path_tracks),
+        }
+        for index, move in enumerate(result.plan, start=1)
+    ]
+    report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
+    if not report.is_valid:
+        raise PlanVerificationError(report)
+    return replace(result, verification_report=report)
+
+
+def _run_anytime_fallback_chain(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    incumbent: SolverResult,
+    started_at: float,
+    time_budget_ms: float | None,
+    node_budget: int | None,
+    heuristic_weight: float,
+    beam_width: int | None,
+    debug_stats: dict[str, Any] | None,
+) -> SolverResult:
+    fallback_stages: list[tuple[str, dict[str, Any], float]] = [
+        (
+            "weighted",
+            {
+                "solver_mode": "weighted",
+                "heuristic_weight": max(heuristic_weight, 1.5),
+                "beam_width": None,
+            },
+            0.08,
+        ),
+        (
+            "beam",
+            {
+                "solver_mode": "beam",
+                "heuristic_weight": max(heuristic_weight, 1.5),
+                "beam_width": beam_width or 64,
+            },
+            0.08,
+        ),
+        (
+            "beam_greedy_64",
+            {
+                "solver_mode": "beam",
+                "heuristic_weight": 5.0,
+                "beam_width": beam_width or 64,
+            },
+            0.08,
+        ),
+        (
+            "weighted_greedy",
+            {
+                "solver_mode": "weighted",
+                "heuristic_weight": 5.0,
+                "beam_width": None,
+            },
+            0.12,
+        ),
+        (
+            "beam_greedy_128",
+            {
+                "solver_mode": "beam",
+                "heuristic_weight": 5.0,
+                "beam_width": max(beam_width or 0, 128),
+            },
+            0.08,
+        ),
+        (
+            "beam_greedy_256",
+            {
+                "solver_mode": "beam",
+                "heuristic_weight": 5.0,
+                "beam_width": max(beam_width or 0, 256),
+            },
+            0.08,
+        ),
+        (
+            "weighted_very_greedy",
+            {
+                "solver_mode": "weighted",
+                "heuristic_weight": 10.0,
+                "beam_width": None,
+            },
+            0.08,
+        ),
+    ]
+    current = incumbent
+    for stage_name, stage_kwargs, budget_share in fallback_stages:
+        if current.plan:
+            break
+        remaining_ms = _remaining_budget_ms(started_at, time_budget_ms)
+        stage_time_budget_ms: float | None
+        if time_budget_ms is None:
+            stage_time_budget_ms = None
+        else:
+            share_ms = max(1.0, time_budget_ms * budget_share)
+            stage_time_budget_ms = share_ms if remaining_ms is None else min(remaining_ms, share_ms)
+            if stage_time_budget_ms <= 0:
+                break
+        remaining_nodes = _remaining_budget_nodes(node_budget, current.expanded_nodes)
+        if remaining_nodes is not None and remaining_nodes <= 0:
+            break
+        try:
+            candidate = _solve_search_result(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+                debug_stats=debug_stats,
+                budget=SearchBudget(
+                    time_budget_ms=stage_time_budget_ms,
+                    node_budget=remaining_nodes,
+                ),
+                **stage_kwargs,
+            )
+        except ValueError:
+            continue
+        if not candidate.plan:
+            continue
+        if not current.plan or len(candidate.plan) < len(current.plan):
+            current = replace(candidate, fallback_stage=stage_name)
+    return current
+
+
+def _remaining_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:
+    if time_budget_ms is None:
+        return None
+    elapsed = (perf_counter() - started_at) * 1000
+    return max(0.0, time_budget_ms - elapsed)
+
+
+def _remaining_budget_nodes(node_budget: int | None, expanded: int) -> int | None:
+    if node_budget is None:
+        return None
+    return max(0, node_budget - expanded)
 
 
 def _solve_search_result(
@@ -122,16 +339,22 @@ def _solve_search_result(
     heuristic_weight: float,
     beam_width: int | None,
     debug_stats: dict[str, Any] | None = None,
+    budget: SearchBudget | None = None,
 ) -> SolverResult:
-    started_at = perf_counter()
+    if budget is None:
+        budget = SearchBudget()
+    else:
+        budget.reset()
+    started_at = budget.started_at
     counter = count()
     queue: list[QueueItem] = []
     canonical_random_depot_vehicle_nos = _canonical_random_depot_vehicle_nos(plan_input)
+    state_heuristic = make_state_heuristic(plan_input)
     initial_key = _state_key(
         initial_state,
         canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
     )
-    initial_heuristic = _heuristic(plan_input, initial_state)
+    initial_heuristic = state_heuristic(initial_state)
     heappush(
         queue,
         QueueItem(
@@ -155,25 +378,37 @@ def _solve_search_result(
     goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
     route_oracle = RouteOracle(master) if master is not None else None
     _initialize_debug_stats(debug_stats, generated_nodes=generated_nodes)
+    best_goal_plan: list[HookAction] | None = None
+    budget_exhausted = False
     while queue:
+        if budget.exhausted():
+            budget_exhausted = True
+            break
         current = heappop(queue)
         current_cost = len(current.plan)
         if best_cost.get(current.state_key) != current_cost:
             continue
         expanded_nodes += 1
+        budget.tick_expand()
         closed_state_keys.add(current.state_key)
         if debug_stats is not None:
             debug_stats["expanded_states"] = expanded_nodes
             debug_stats["closed_states"] = len(closed_state_keys)
         if _is_goal(plan_input, current.state):
-            return SolverResult(
-                plan=current.plan,
-                expanded_nodes=expanded_nodes,
-                generated_nodes=generated_nodes,
-                closed_nodes=len(closed_state_keys),
-                elapsed_ms=(perf_counter() - started_at) * 1000,
-                debug_stats=debug_stats,
-            )
+            if best_goal_plan is None or len(current.plan) < len(best_goal_plan):
+                best_goal_plan = current.plan
+            if solver_mode == "exact":
+                return SolverResult(
+                    plan=current.plan,
+                    expanded_nodes=expanded_nodes,
+                    generated_nodes=generated_nodes,
+                    closed_nodes=len(closed_state_keys),
+                    elapsed_ms=(perf_counter() - started_at) * 1000,
+                    is_proven_optimal=True,
+                    fallback_stage="exact",
+                    debug_stats=debug_stats,
+                )
+            continue
         move_stats = {} if debug_stats is not None else None
         blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
             plan_input=plan_input,
@@ -213,7 +448,7 @@ def _solve_search_result(
             if state_key in best_cost and best_cost[state_key] <= cost:
                 continue
             best_cost[state_key] = cost
-            heuristic = _heuristic(plan_input, next_state)
+            heuristic = state_heuristic(next_state)
             blocker_bonus = _blocking_goal_target_bonus(
                 state=current.state,
                 move=move,
@@ -240,7 +475,30 @@ def _solve_search_result(
                 debug_stats["generated_nodes"] = generated_nodes
         if solver_mode == "beam" and beam_width is not None:
             _prune_queue(queue, best_cost, beam_width)
-    raise ValueError("No solution found")
+    if best_goal_plan is None:
+        if budget_exhausted:
+            return SolverResult(
+                plan=[],
+                expanded_nodes=expanded_nodes,
+                generated_nodes=generated_nodes,
+                closed_nodes=len(closed_state_keys),
+                elapsed_ms=(perf_counter() - started_at) * 1000,
+                is_proven_optimal=False,
+                fallback_stage=solver_mode,
+                debug_stats=debug_stats,
+            )
+        raise ValueError("No solution found")
+    proven_optimal = (not budget_exhausted) and solver_mode == "exact"
+    return SolverResult(
+        plan=best_goal_plan,
+        expanded_nodes=expanded_nodes,
+        generated_nodes=generated_nodes,
+        closed_nodes=len(closed_state_keys),
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+        is_proven_optimal=proven_optimal,
+        fallback_stage=solver_mode,
+        debug_stats=debug_stats,
+    )
 
 
 def _initialize_debug_stats(
@@ -301,13 +559,9 @@ def _is_goal(plan_input: NormalizedPlanInput, state: ReplayState) -> bool:
 
 
 def _heuristic(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
-    current_track_by_vehicle = _vehicle_track_lookup(state)
-    remaining = 0
-    for vehicle in plan_input.vehicles:
-        current_track = current_track_by_vehicle[vehicle.vehicle_no]
-        if current_track not in vehicle.goal.allowed_target_tracks:
-            remaining += 1
-    return remaining
+    from fzed_shunting.solver.heuristic import compute_admissible_heuristic
+
+    return compute_admissible_heuristic(plan_input, state)
 
 
 def _vehicle_track_lookup(state: ReplayState) -> dict[str, str]:
@@ -458,6 +712,11 @@ def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> No
         info.track_name: info.track_distance
         for info in plan_input.track_info
     }
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0) + vehicle.vehicle_length
+        )
     final_length_by_track: dict[str, float] = {}
     for vehicle in plan_input.vehicles:
         if vehicle.goal.target_mode != "TRACK":
@@ -469,7 +728,8 @@ def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> No
         capacity = capacity_by_track.get(track_name)
         if capacity is None:
             raise ValueError(f"Missing capacity for final arrangement track: {track_name}")
-        if total_length > capacity + 1e-9:
+        effective_capacity = max(capacity, initial_occupation_by_track.get(track_name, 0.0))
+        if total_length > effective_capacity + 1e-9:
             raise ValueError(
                 f"final arrangement exceeds track capacity: {track_name} "
                 f"requires {total_length:.1f}m but capacity is {capacity:.1f}m"
