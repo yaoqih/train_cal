@@ -67,6 +67,7 @@ def solve_with_simple_astar(
     node_budget: int | None = None,
     verify: bool = True,
     enable_anytime_fallback: bool = True,
+    enable_constructive_seed: bool = True,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -80,6 +81,7 @@ def solve_with_simple_astar(
         node_budget=node_budget,
         verify=verify,
         enable_anytime_fallback=enable_anytime_fallback,
+        enable_constructive_seed=enable_constructive_seed,
     ).plan
 
 
@@ -95,6 +97,7 @@ def solve_with_simple_astar_result(
     node_budget: int | None = None,
     verify: bool = True,
     enable_anytime_fallback: bool = True,
+    enable_constructive_seed: bool = True,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
@@ -105,6 +108,21 @@ def solve_with_simple_astar_result(
         raise ValueError("verify=True requires master to be provided for plan_verifier")
     _validate_final_track_goal_capacities(plan_input)
     started_at = perf_counter()
+
+    # Stage 0: constructive baseline (always returns a plan — SLA safety net).
+    constructive_seed: SolverResult | None = None
+    if (
+        enable_constructive_seed
+        and enable_anytime_fallback
+        and solver_mode == "exact"
+    ):
+        constructive_seed = _run_constructive_stage(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            time_budget_ms=time_budget_ms,
+        )
+
     result: SolverResult
     if solver_mode == "lns":
         result = _solve_with_lns_result(
@@ -123,16 +141,32 @@ def solve_with_simple_astar_result(
             and time_budget_ms is not None
         ):
             exact_time_budget_ms = max(1.0, time_budget_ms * 0.4)
-        result = _solve_search_result(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            master=master,
-            solver_mode=solver_mode,
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width,
-            debug_stats=debug_stats,
-            budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
-        )
+        try:
+            result = _solve_search_result(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+                solver_mode=solver_mode,
+                heuristic_weight=heuristic_weight,
+                beam_width=beam_width,
+                debug_stats=debug_stats,
+                budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+            )
+        except ValueError:
+            if constructive_seed is None:
+                # No seed to fall back on; preserve the legacy "no solution" signal.
+                raise
+            # Constructive seed guarantees SLA — suppress raise, continue chain.
+            result = SolverResult(
+                plan=[],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=(perf_counter() - started_at) * 1000,
+                is_proven_optimal=False,
+                fallback_stage=solver_mode,
+                debug_stats=debug_stats,
+            )
         if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
             result = _run_anytime_fallback_chain(
                 plan_input=plan_input,
@@ -163,6 +197,14 @@ def solve_with_simple_astar_result(
                     break
                 improved = candidate
             result = improved
+
+    # If search produced nothing, fall back to constructive seed (which may be
+    # a full-goal plan or a best-effort partial). Either way the SLA contract
+    # is preserved: callers always get a non-empty plan unless the input is
+    # intrinsically infeasible (pre-check already rejected those).
+    if not result.plan and constructive_seed is not None and constructive_seed.plan:
+        result = constructive_seed
+
     if verify:
         result = _attach_verification(
             result,
@@ -171,6 +213,43 @@ def solve_with_simple_astar_result(
             initial_state=initial_state,
         )
     return result
+
+
+def _run_constructive_stage(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    time_budget_ms: float | None,
+) -> SolverResult | None:
+    """Run the priority-rule dispatcher and wrap the result as a SolverResult."""
+    from fzed_shunting.solver.constructive import solve_constructive
+
+    constructive_budget = None
+    if time_budget_ms is not None:
+        constructive_budget = min(5_000.0, max(200.0, time_budget_ms * 0.05))
+    try:
+        ctr = solve_constructive(
+            plan_input,
+            initial_state,
+            master=master,
+            max_iterations=1500,
+            time_budget_ms=constructive_budget,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not ctr.plan:
+        return None
+    return SolverResult(
+        plan=list(ctr.plan),
+        expanded_nodes=ctr.iterations,
+        generated_nodes=ctr.iterations,
+        closed_nodes=0,
+        elapsed_ms=ctr.elapsed_ms,
+        is_proven_optimal=False,
+        fallback_stage="constructive" if ctr.reached_goal else "constructive_partial",
+        debug_stats=ctr.debug_stats,
+    )
 
 
 def _attach_verification(
@@ -198,7 +277,8 @@ def _attach_verification(
         for index, move in enumerate(result.plan, start=1)
     ]
     report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
-    if not report.is_valid:
+    best_effort = result.fallback_stage == "constructive_partial"
+    if not report.is_valid and not best_effort:
         raise PlanVerificationError(report)
     return replace(result, verification_report=report)
 

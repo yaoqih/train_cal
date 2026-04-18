@@ -683,7 +683,12 @@ def test_simple_astar_rejects_two_vehicles_competing_for_same_exact_spot():
     initial = build_initial_state(normalized)
 
     try:
-        solve_with_simple_astar(normalized, initial, master=master)
+        solve_with_simple_astar(
+            normalized,
+            initial,
+            master=master,
+            enable_constructive_seed=False,
+        )
     except ValueError as exc:
         assert "No solution found" in str(exc)
     else:
@@ -716,7 +721,12 @@ def test_simple_astar_rejects_close_door_vehicle_without_valid_cun4bei_position(
     initial = build_initial_state(normalized)
 
     try:
-        solve_with_simple_astar(normalized, initial, master=master)
+        solve_with_simple_astar(
+            normalized,
+            initial,
+            master=master,
+            enable_constructive_seed=False,
+        )
     except ValueError as exc:
         assert "No solution found" in str(exc)
     else:

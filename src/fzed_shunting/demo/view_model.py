@@ -212,7 +212,10 @@ def build_demo_view_model(
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
             )
-            solver_hook_count = len(solver_plan)
+            if solver_plan:
+                solver_hook_count = len(solver_plan)
+            else:
+                solver_error = "No solution found"
         except Exception as exc:  # noqa: BLE001
             solver_error = str(exc)
         external_hook_count = len(hook_plan)
