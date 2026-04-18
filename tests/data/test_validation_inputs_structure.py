@@ -144,3 +144,58 @@ def test_baseline_files_exist_and_parse():
         assert "trackInfo" in payload and payload["trackInfo"], path
         assert "vehicleInfo" in payload, path
         assert payload.get("locoTrackName") is not None, path
+
+
+EXPECTED_COUNTS = {
+    # (spec_section): (positive_count, negative_count)
+    "3.2": (5, 0),
+    "3.3": (6, 6),
+    "3.4": (8, 0),
+    "4.3.1": (5, 0),
+    "4.3.2": (0, 1),
+    "4.3.4": (4, 0),
+    "4.3.5": (3, 0),
+    "4.3.6": (5, 0),
+    "4.3.7": (0, 1),
+    "5.1": (0, 6),
+    "5.2": (4, 4),
+    "5.3": (1, 1),
+    "5.5": (3, 1),
+    "6.1": (4, 5),
+    "7.1": (4, 0),
+    "7.2": (3, 0),
+    "7.3": (1, 0),
+    "8.1": (3, 1),
+    "8.2": (5, 0),
+    "8.3": (0, 1),
+}
+
+
+def _count_by_spec_section(folder: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in _iter_cases(folder):
+        meta = _load(path)["metadata"]
+        section = meta["spec_section"]
+        counts[section] = counts.get(section, 0) + 1
+    return counts
+
+
+def test_coverage_counts_match_spec():
+    pos_counts = _count_by_spec_section(POSITIVE_DIR)
+    neg_counts = _count_by_spec_section(NEGATIVE_DIR)
+    mismatches = []
+    for section, (exp_pos, exp_neg) in EXPECTED_COUNTS.items():
+        got_pos = pos_counts.get(section, 0)
+        got_neg = neg_counts.get(section, 0)
+        if got_pos != exp_pos or got_neg != exp_neg:
+            mismatches.append(
+                f"{section}: expected {exp_pos}+/{exp_neg}-, got {got_pos}+/{got_neg}-"
+            )
+    assert not mismatches, "\n".join(mismatches)
+
+
+def test_total_case_count():
+    pos = len(_iter_cases(POSITIVE_DIR))
+    neg = len(_iter_cases(NEGATIVE_DIR))
+    assert pos == 64, f"expected 64 positive cases, got {pos}"
+    assert neg == 27, f"expected 27 negative cases, got {neg}"
