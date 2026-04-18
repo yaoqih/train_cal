@@ -1179,8 +1179,8 @@ def test_beam_stops_after_first_local_repair_round_when_second_round_does_not_im
         )
 
     with patch("fzed_shunting.solver.astar_solver._solve_search_result", side_effect=fake_solve_search_result):
-        with patch("fzed_shunting.solver.astar_solver._candidate_repair_cut_points", side_effect=fake_candidate_repair_cut_points):
-            with patch("fzed_shunting.solver.astar_solver.replay_plan", side_effect=fake_replay_plan):
+        with patch("fzed_shunting.solver.lns._candidate_repair_cut_points", side_effect=fake_candidate_repair_cut_points):
+            with patch("fzed_shunting.solver.lns.replay_plan", side_effect=fake_replay_plan):
                 result = solve_with_simple_astar_result(
                     plan_input=normalize_plan_input(
                         {
@@ -1489,8 +1489,8 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
         )
 
     with patch("fzed_shunting.solver.astar_solver._solve_search_result", side_effect=fake_solve_search_result):
-        with patch("fzed_shunting.solver.astar_solver._candidate_repair_cut_points", side_effect=fake_candidate_repair_cut_points):
-            with patch("fzed_shunting.solver.astar_solver.replay_plan", side_effect=fake_replay_plan):
+        with patch("fzed_shunting.solver.lns._candidate_repair_cut_points", side_effect=fake_candidate_repair_cut_points):
+            with patch("fzed_shunting.solver.lns.replay_plan", side_effect=fake_replay_plan):
                 result = solve_with_simple_astar_result(
                     plan_input=normalize_plan_input(
                         {

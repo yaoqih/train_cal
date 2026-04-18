@@ -1,58 +1,46 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from heapq import heapify, heappop, heappush
-from itertools import count
+from dataclasses import replace
 from time import perf_counter
 from typing import Any
 
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_candidates_for_vehicle
 from fzed_shunting.domain.master_data import MasterData
-from fzed_shunting.domain.route_oracle import RouteOracle
-from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.io.normalize_input import NormalizedPlanInput
+from fzed_shunting.solver.anytime import (
+    _remaining_budget_ms,
+    _remaining_budget_nodes,
+    _run_anytime_fallback_chain as _anytime_run_fallback_chain,
+)
 from fzed_shunting.solver.budget import SearchBudget
-from fzed_shunting.solver.heuristic import make_state_heuristic
-from fzed_shunting.solver.move_generator import (
-    _collect_interfering_goal_targets_by_source,
-    generate_goal_moves,
+from fzed_shunting.solver.lns import (
+    _improve_incumbent_result,
+    _solve_with_lns_result,
+)
+from fzed_shunting.solver.result import PlanVerificationError, SolverResult
+from fzed_shunting.solver.search import (
+    BEAM_SHALLOW_RESERVE,
+    QueueItem,
+    _accumulate_move_debug_stats,
+    _blocking_goal_target_bonus,
+    _initialize_debug_stats,
+    _merge_counter_dict,
+    _priority,
+    _prune_queue,
+    _solve_search_result,
+)
+from fzed_shunting.solver.state import (
+    _apply_move,
+    _canonical_random_depot_vehicle_nos,
+    _is_goal,
+    _locate_vehicle,
+    _state_key,
+    _vehicle_track_lookup,
 )
 from fzed_shunting.solver.types import HookAction
-from fzed_shunting.verify.replay import ReplayState, replay_plan
+from fzed_shunting.verify.replay import ReplayState
 
 BEAM_POST_REPAIR_PASSES = 1
 BEAM_POST_REPAIR_MAX_ROUNDS = 1
-BEAM_SHALLOW_RESERVE = 1
-
-
-@dataclass(order=True)
-class QueueItem:
-    priority: tuple[float, int, int, int, int]
-    seq: int
-    state_key: tuple
-    state: ReplayState
-    plan: list[HookAction]
-
-
-@dataclass(frozen=True)
-class SolverResult:
-    plan: list[HookAction]
-    expanded_nodes: int
-    generated_nodes: int
-    closed_nodes: int
-    elapsed_ms: float
-    is_proven_optimal: bool = False
-    fallback_stage: str | None = None
-    verification_report: Any | None = None
-    debug_stats: dict[str, Any] | None = None
-
-
-class PlanVerificationError(Exception):
-    def __init__(self, report: Any) -> None:
-        self.report = report
-        errors = getattr(report, "errors", None) or []
-        first = errors[0] if errors else "unknown verification failure"
-        suffix = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
-        super().__init__(f"plan verification failed: {first}{suffix}")
 
 
 def solve_with_simple_astar(
@@ -132,6 +120,8 @@ def solve_with_simple_astar_result(
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
             debug_stats=debug_stats,
+            repair_passes=4,
+            solve_search_result=_solve_search_result,
         )
     else:
         exact_time_budget_ms: float | None = time_budget_ms
@@ -168,7 +158,7 @@ def solve_with_simple_astar_result(
                 debug_stats=debug_stats,
             )
         if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
-            result = _run_anytime_fallback_chain(
+            result = _anytime_run_fallback_chain(
                 plan_input=plan_input,
                 initial_state=initial_state,
                 master=master,
@@ -179,6 +169,7 @@ def solve_with_simple_astar_result(
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
                 debug_stats=debug_stats,
+                solve_search_result=_solve_search_result,
             )
         if solver_mode == "beam" and beam_width is not None:
             improved = result
@@ -192,6 +183,7 @@ def solve_with_simple_astar_result(
                     beam_width=beam_width,
                     repair_passes=BEAM_POST_REPAIR_PASSES,
                     max_rounds=1,
+                    solve_search_result=_solve_search_result,
                 )
                 if len(candidate.plan) >= len(improved.plan):
                     break
@@ -282,510 +274,10 @@ def _attach_verification(
         raise PlanVerificationError(report)
     return replace(result, verification_report=report)
 
-
-def _run_anytime_fallback_chain(
-    *,
-    plan_input: NormalizedPlanInput,
-    initial_state: ReplayState,
-    master: MasterData | None,
-    incumbent: SolverResult,
-    started_at: float,
-    time_budget_ms: float | None,
-    node_budget: int | None,
-    heuristic_weight: float,
-    beam_width: int | None,
-    debug_stats: dict[str, Any] | None,
-) -> SolverResult:
-    fallback_stages: list[tuple[str, dict[str, Any], float]] = [
-        (
-            "weighted",
-            {
-                "solver_mode": "weighted",
-                "heuristic_weight": max(heuristic_weight, 1.5),
-                "beam_width": None,
-            },
-            0.08,
-        ),
-        (
-            "beam",
-            {
-                "solver_mode": "beam",
-                "heuristic_weight": max(heuristic_weight, 1.5),
-                "beam_width": beam_width or 64,
-            },
-            0.08,
-        ),
-        (
-            "beam_greedy_64",
-            {
-                "solver_mode": "beam",
-                "heuristic_weight": 5.0,
-                "beam_width": beam_width or 64,
-            },
-            0.08,
-        ),
-        (
-            "weighted_greedy",
-            {
-                "solver_mode": "weighted",
-                "heuristic_weight": 5.0,
-                "beam_width": None,
-            },
-            0.12,
-        ),
-        (
-            "beam_greedy_128",
-            {
-                "solver_mode": "beam",
-                "heuristic_weight": 5.0,
-                "beam_width": max(beam_width or 0, 128),
-            },
-            0.08,
-        ),
-        (
-            "beam_greedy_256",
-            {
-                "solver_mode": "beam",
-                "heuristic_weight": 5.0,
-                "beam_width": max(beam_width or 0, 256),
-            },
-            0.08,
-        ),
-        (
-            "weighted_very_greedy",
-            {
-                "solver_mode": "weighted",
-                "heuristic_weight": 10.0,
-                "beam_width": None,
-            },
-            0.08,
-        ),
-    ]
-    current = incumbent
-    for stage_name, stage_kwargs, budget_share in fallback_stages:
-        if current.plan:
-            break
-        remaining_ms = _remaining_budget_ms(started_at, time_budget_ms)
-        stage_time_budget_ms: float | None
-        if time_budget_ms is None:
-            stage_time_budget_ms = None
-        else:
-            share_ms = max(1.0, time_budget_ms * budget_share)
-            stage_time_budget_ms = share_ms if remaining_ms is None else min(remaining_ms, share_ms)
-            if stage_time_budget_ms <= 0:
-                break
-        remaining_nodes = _remaining_budget_nodes(node_budget, current.expanded_nodes)
-        if remaining_nodes is not None and remaining_nodes <= 0:
-            break
-        try:
-            candidate = _solve_search_result(
-                plan_input=plan_input,
-                initial_state=initial_state,
-                master=master,
-                debug_stats=debug_stats,
-                budget=SearchBudget(
-                    time_budget_ms=stage_time_budget_ms,
-                    node_budget=remaining_nodes,
-                ),
-                **stage_kwargs,
-            )
-        except ValueError:
-            continue
-        if not candidate.plan:
-            continue
-        if not current.plan or len(candidate.plan) < len(current.plan):
-            current = replace(candidate, fallback_stage=stage_name)
-    return current
-
-
-def _remaining_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:
-    if time_budget_ms is None:
-        return None
-    elapsed = (perf_counter() - started_at) * 1000
-    return max(0.0, time_budget_ms - elapsed)
-
-
-def _remaining_budget_nodes(node_budget: int | None, expanded: int) -> int | None:
-    if node_budget is None:
-        return None
-    return max(0, node_budget - expanded)
-
-
-def _solve_search_result(
-    plan_input: NormalizedPlanInput,
-    initial_state: ReplayState,
-    master: MasterData | None,
-    solver_mode: str,
-    heuristic_weight: float,
-    beam_width: int | None,
-    debug_stats: dict[str, Any] | None = None,
-    budget: SearchBudget | None = None,
-) -> SolverResult:
-    if budget is None:
-        budget = SearchBudget()
-    else:
-        budget.reset()
-    started_at = budget.started_at
-    counter = count()
-    queue: list[QueueItem] = []
-    canonical_random_depot_vehicle_nos = _canonical_random_depot_vehicle_nos(plan_input)
-    state_heuristic = make_state_heuristic(plan_input)
-    initial_key = _state_key(
-        initial_state,
-        canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
-    )
-    initial_heuristic = state_heuristic(initial_state)
-    heappush(
-        queue,
-        QueueItem(
-            priority=_priority(
-                cost=0,
-                heuristic=initial_heuristic,
-                solver_mode=solver_mode,
-                heuristic_weight=heuristic_weight,
-            ),
-            seq=next(counter),
-            state_key=initial_key,
-            state=initial_state,
-            plan=[],
-        ),
-    )
-    best_cost = {initial_key: 0}
-    generated_nodes = 1
-    expanded_nodes = 0
-    closed_state_keys: set[tuple] = set()
-    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
-    goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
-    route_oracle = RouteOracle(master) if master is not None else None
-    _initialize_debug_stats(debug_stats, generated_nodes=generated_nodes)
-    best_goal_plan: list[HookAction] | None = None
-    budget_exhausted = False
-    while queue:
-        if budget.exhausted():
-            budget_exhausted = True
-            break
-        current = heappop(queue)
-        current_cost = len(current.plan)
-        if best_cost.get(current.state_key) != current_cost:
-            continue
-        expanded_nodes += 1
-        budget.tick_expand()
-        closed_state_keys.add(current.state_key)
-        if debug_stats is not None:
-            debug_stats["expanded_states"] = expanded_nodes
-            debug_stats["closed_states"] = len(closed_state_keys)
-        if _is_goal(plan_input, current.state):
-            if best_goal_plan is None or len(current.plan) < len(best_goal_plan):
-                best_goal_plan = current.plan
-            if solver_mode == "exact":
-                return SolverResult(
-                    plan=current.plan,
-                    expanded_nodes=expanded_nodes,
-                    generated_nodes=generated_nodes,
-                    closed_nodes=len(closed_state_keys),
-                    elapsed_ms=(perf_counter() - started_at) * 1000,
-                    is_proven_optimal=True,
-                    fallback_stage="exact",
-                    debug_stats=debug_stats,
-                )
-            continue
-        move_stats = {} if debug_stats is not None else None
-        blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
-            plan_input=plan_input,
-            state=current.state,
-            goal_by_vehicle=goal_by_vehicle,
-            vehicle_by_no=vehicle_by_no,
-            route_oracle=route_oracle,
-        )
-        moves = generate_goal_moves(
-            plan_input,
-            current.state,
-            master=master,
-            route_oracle=route_oracle,
-            blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-            debug_stats=move_stats,
-        )
-        if debug_stats is not None:
-            _accumulate_move_debug_stats(
-                debug_stats=debug_stats,
-                state=current.state,
-                plan_len=len(current.plan),
-                move_stats=move_stats or {},
-            )
-        for move in moves:
-            next_state = _apply_move(
-                state=current.state,
-                move=move,
-                plan_input=plan_input,
-                vehicle_by_no=vehicle_by_no,
-            )
-            next_plan = current.plan + [move]
-            cost = len(next_plan)
-            state_key = _state_key(
-                next_state,
-                canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
-            )
-            if state_key in best_cost and best_cost[state_key] <= cost:
-                continue
-            best_cost[state_key] = cost
-            heuristic = state_heuristic(next_state)
-            blocker_bonus = _blocking_goal_target_bonus(
-                state=current.state,
-                move=move,
-                blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-            )
-            heappush(
-                queue,
-                QueueItem(
-                    priority=_priority(
-                        cost=cost,
-                        heuristic=heuristic,
-                        blocker_bonus=blocker_bonus,
-                        solver_mode=solver_mode,
-                        heuristic_weight=heuristic_weight,
-                    ),
-                    seq=next(counter),
-                    state_key=state_key,
-                    state=next_state,
-                    plan=next_plan,
-                ),
-            )
-            generated_nodes += 1
-            if debug_stats is not None:
-                debug_stats["generated_nodes"] = generated_nodes
-        if solver_mode == "beam" and beam_width is not None:
-            _prune_queue(queue, best_cost, beam_width)
-    if best_goal_plan is None:
-        if budget_exhausted:
-            return SolverResult(
-                plan=[],
-                expanded_nodes=expanded_nodes,
-                generated_nodes=generated_nodes,
-                closed_nodes=len(closed_state_keys),
-                elapsed_ms=(perf_counter() - started_at) * 1000,
-                is_proven_optimal=False,
-                fallback_stage=solver_mode,
-                debug_stats=debug_stats,
-            )
-        raise ValueError("No solution found")
-    proven_optimal = (not budget_exhausted) and solver_mode == "exact"
-    return SolverResult(
-        plan=best_goal_plan,
-        expanded_nodes=expanded_nodes,
-        generated_nodes=generated_nodes,
-        closed_nodes=len(closed_state_keys),
-        elapsed_ms=(perf_counter() - started_at) * 1000,
-        is_proven_optimal=proven_optimal,
-        fallback_stage=solver_mode,
-        debug_stats=debug_stats,
-    )
-
-
-def _initialize_debug_stats(
-    debug_stats: dict[str, Any] | None,
-    *,
-    generated_nodes: int,
-) -> None:
-    if debug_stats is None:
-        return
-    debug_stats.clear()
-    debug_stats.update(
-        {
-            "expanded_states": 0,
-            "generated_nodes": generated_nodes,
-            "closed_states": 0,
-            "move_generation_calls": 0,
-            "candidate_moves_total": 0,
-            "candidate_direct_moves": 0,
-            "candidate_staging_moves": 0,
-            "max_candidate_moves_per_state": 0,
-            "states_with_zero_moves": 0,
-            "moves_by_target": {},
-            "moves_by_source": {},
-            "moves_by_block_size": {},
-            "top_expansions": [],
-        }
-    )
-
-
-def _is_goal(plan_input: NormalizedPlanInput, state: ReplayState) -> bool:
-    current_track_by_vehicle = _vehicle_track_lookup(state)
-    for vehicle in plan_input.vehicles:
-        current_track = current_track_by_vehicle[vehicle.vehicle_no]
-        if current_track not in vehicle.goal.allowed_target_tracks:
-            return False
-        if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
-            return False
-        if vehicle.goal.target_mode == "SPOT":
-            if state.spot_assignments.get(vehicle.vehicle_no) != vehicle.goal.target_spot_code:
-                return False
-        if vehicle.goal.target_area_code == "大库:RANDOM" and current_track in vehicle.goal.allowed_target_tracks:
-            assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                return False
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, current_track, plan_input.yard_mode):
-                return False
-        if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
-            assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                return False
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, current_track, plan_input.yard_mode):
-                return False
-        if vehicle.is_close_door and current_track == "存4北":
-            final_seq = state.track_sequences.get("存4北", [])
-            if final_seq.index(vehicle.vehicle_no) < 3:
-                return False
-    return True
-
-
 def _heuristic(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
     from fzed_shunting.solver.heuristic import compute_admissible_heuristic
 
     return compute_admissible_heuristic(plan_input, state)
-
-
-def _vehicle_track_lookup(state: ReplayState) -> dict[str, str]:
-    return {
-        vehicle_no: track_name
-        for track_name, seq in state.track_sequences.items()
-        for vehicle_no in seq
-    }
-
-
-def _locate_vehicle(state: ReplayState, vehicle_no: str) -> str:
-    for track, seq in state.track_sequences.items():
-        if vehicle_no in seq:
-            return track
-    raise ValueError(f"Vehicle not found in state: {vehicle_no}")
-
-
-def _canonical_random_depot_vehicle_nos(plan_input: NormalizedPlanInput) -> frozenset[str]:
-    if any(vehicle.goal.target_mode == "SPOT" for vehicle in plan_input.vehicles):
-        return frozenset()
-    return frozenset(
-        vehicle.vehicle_no
-        for vehicle in plan_input.vehicles
-        if vehicle.goal.target_area_code == "大库:RANDOM"
-    )
-
-
-def _apply_move(
-    *,
-    state: ReplayState,
-    move: HookAction,
-    plan_input: NormalizedPlanInput,
-    vehicle_by_no: dict[str, NormalizedVehicle],
-) -> ReplayState:
-    source_seq = state.track_sequences.get(move.source_track, [])
-    if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-        raise ValueError("Vehicle block is not at the north-end prefix of source track")
-
-    next_track_sequences = dict(state.track_sequences)
-    next_track_sequences[move.source_track] = list(source_seq[len(move.vehicle_nos):])
-    next_target_seq = list(state.track_sequences.get(move.target_track, []))
-    next_target_seq.extend(move.vehicle_nos)
-    next_track_sequences[move.target_track] = next_target_seq
-
-    next_spot_assignments = dict(state.spot_assignments)
-    for vehicle_no in move.vehicle_nos:
-        next_spot_assignments.pop(vehicle_no, None)
-    block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in move.vehicle_nos]
-    new_spot_assignments = allocate_spots_for_block(
-        vehicles=block_vehicles,
-        target_track=move.target_track,
-        yard_mode=plan_input.yard_mode,
-        occupied_spot_assignments=next_spot_assignments,
-    )
-    if new_spot_assignments is None:
-        raise ValueError(
-            f"No available depot spot for hook to {move.target_track}: {move.vehicle_nos}"
-        )
-    next_spot_assignments.update(new_spot_assignments)
-
-    next_weighed_vehicle_nos = set(state.weighed_vehicle_nos)
-    if move.target_track == "机库":
-        next_weighed_vehicle_nos.update(move.vehicle_nos)
-
-    return ReplayState(
-        track_sequences=next_track_sequences,
-        loco_track_name=move.target_track,
-        weighed_vehicle_nos=next_weighed_vehicle_nos,
-        spot_assignments=next_spot_assignments,
-    )
-
-
-def _state_key(
-    state: ReplayState,
-    plan_input: NormalizedPlanInput | None = None,
-    *,
-    canonical_random_depot_vehicle_nos: frozenset[str] | None = None,
-) -> tuple:
-    if canonical_random_depot_vehicle_nos is None:
-        canonical_random_depot_vehicle_nos = (
-            _canonical_random_depot_vehicle_nos(plan_input)
-            if plan_input is not None
-            else frozenset()
-        )
-    spot_items = tuple(
-        (vehicle_no, spot_code)
-        for vehicle_no, spot_code in sorted(state.spot_assignments.items())
-        if not (
-            vehicle_no in canonical_random_depot_vehicle_nos
-            and spot_code.isdigit()
-        )
-    )
-    return (
-        tuple(
-            (track, tuple(seq))
-            for track, seq in sorted(state.track_sequences.items())
-            if seq
-        ),
-        tuple(sorted(state.weighed_vehicle_nos)),
-        spot_items,
-    )
-
-
-def _priority(
-    *,
-    cost: int,
-    heuristic: int,
-    blocker_bonus: int = 0,
-    solver_mode: str,
-    heuristic_weight: float,
-) -> tuple[float, int, int, int, int]:
-    if solver_mode == "beam":
-        beam_heuristic_credit = 1 if blocker_bonus > 0 else 0
-        adjusted_heuristic = heuristic - beam_heuristic_credit
-        return (
-            cost + adjusted_heuristic,
-            cost,
-            adjusted_heuristic,
-            -blocker_bonus,
-            heuristic,
-        )
-    if solver_mode == "weighted":
-        return (cost + heuristic_weight * heuristic, cost, heuristic, -blocker_bonus)
-    return (cost + heuristic, cost, heuristic, -blocker_bonus)
-
-
-def _blocking_goal_target_bonus(
-    *,
-    state: ReplayState,
-    move: HookAction,
-    blocking_goal_targets_by_source: dict[str, set[str]],
-) -> int:
-    blocking_targets = blocking_goal_targets_by_source.get(move.source_track)
-    if not blocking_targets:
-        return 0
-    if move.target_track not in blocking_targets:
-        return 0
-    source_seq = state.track_sequences.get(move.source_track, [])
-    if len(move.vehicle_nos) != len(source_seq):
-        return 0
-    if tuple(source_seq[: len(move.vehicle_nos)]) != tuple(move.vehicle_nos):
-        return 0
-    return len(blocking_targets)
-
 
 def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> None:
     capacity_by_track = {
@@ -832,395 +324,18 @@ def _validate_solver_options(
         raise ValueError("beam_width is required when solver_mode=beam")
 
 
-def _prune_queue(
-    queue: list[QueueItem],
-    best_cost: dict[tuple, int],
-    beam_width: int,
-) -> None:
-    if len(queue) <= beam_width:
-        return
-    ranked = sorted(queue)
-    if beam_width <= 1:
-        kept = ranked[:beam_width]
-    else:
-        kept: list[QueueItem] = []
-        kept_ids: set[int] = set()
-        shallow_depth = min(len(item.plan) for item in ranked)
-        shallow_candidates = [
-            item
-            for item in ranked
-            if len(item.plan) == shallow_depth
-        ]
-        for item in shallow_candidates[:BEAM_SHALLOW_RESERVE]:
-            kept.append(item)
-            kept_ids.add(id(item))
-        blocker_candidates = [
-            item
-            for item in ranked
-            if item.priority[3] < 0 and id(item) not in kept_ids
-        ]
-        if blocker_candidates:
-            blocker_item = blocker_candidates[0]
-            kept.append(blocker_item)
-            kept_ids.add(id(blocker_item))
-        for item in ranked:
-            if len(kept) >= beam_width:
-                break
-            if id(item) in kept_ids:
-                continue
-            kept.append(item)
-            kept_ids.add(id(item))
-        kept.sort()
-    kept_ids = {id(item) for item in kept}
-    pruned = [item for item in ranked if id(item) not in kept_ids]
-    queue[:] = kept
-    heapify(queue)
-    for item in pruned:
-        if best_cost.get(item.state_key) == len(item.plan):
-            del best_cost[item.state_key]
 
-
-def _solve_with_lns_result(
-    plan_input: NormalizedPlanInput,
-    initial_state: ReplayState,
-    master: MasterData | None,
-    heuristic_weight: float,
-    beam_width: int | None,
-    repair_passes: int = 4,
-    debug_stats: dict[str, Any] | None = None,
-) -> SolverResult:
-    started_at = perf_counter()
-    seed_solver_mode = "beam" if beam_width is not None else "weighted"
-    seed_debug_stats = debug_stats if debug_stats is not None else None
-    incumbent = _solve_search_result(
-        plan_input=plan_input,
-        initial_state=initial_state,
-        master=master,
-        solver_mode=seed_solver_mode,
-        heuristic_weight=max(heuristic_weight, 1.5),
-        beam_width=beam_width,
-        debug_stats=seed_debug_stats,
-    )
-    improved = _improve_incumbent_result(
-        plan_input=plan_input,
-        initial_state=initial_state,
-        master=master,
-        incumbent=incumbent,
-        heuristic_weight=heuristic_weight,
-        beam_width=beam_width,
-        repair_passes=repair_passes,
-        max_rounds=None,
-    )
-    return SolverResult(
-        plan=improved.plan,
-        expanded_nodes=improved.expanded_nodes,
-        generated_nodes=improved.generated_nodes,
-        closed_nodes=improved.closed_nodes,
-        elapsed_ms=(perf_counter() - started_at) * 1000,
-        debug_stats=debug_stats,
-    )
-
-
-def _improve_incumbent_result(
-    *,
-    plan_input: NormalizedPlanInput,
-    initial_state: ReplayState,
-    master: MasterData | None,
-    incumbent: SolverResult,
-    heuristic_weight: float,
-    beam_width: int | None,
-    repair_passes: int,
-    max_rounds: int | None,
-) -> SolverResult:
-    if repair_passes <= 0 or not incumbent.plan:
-        return incumbent
-
-    started_at = perf_counter()
-    incumbent_plan = list(incumbent.plan)
-    total_expanded = incumbent.expanded_nodes
-    total_generated = incumbent.generated_nodes
-    total_closed = incumbent.closed_nodes
-    route_oracle = RouteOracle(master) if master is not None else None
-    rounds = 0
-
-    while max_rounds is None or rounds < max_rounds:
-        rounds += 1
-        snapshots = replay_plan(
-            initial_state,
-            [_to_hook_dict(move) for move in incumbent_plan],
-            plan_input=plan_input,
-        ).snapshots
-        improved = False
-        for cut_index in _candidate_repair_cut_points(incumbent_plan, repair_passes):
-            prefix = incumbent_plan[:cut_index]
-            start_state = snapshots[cut_index]
-            repair_input = _build_repair_plan_input(plan_input, start_state)
-            try:
-                repaired = _solve_search_result(
-                    plan_input=repair_input,
-                    initial_state=start_state,
-                    master=master,
-                    solver_mode="exact" if beam_width is None else "beam",
-                    heuristic_weight=heuristic_weight,
-                    beam_width=beam_width,
-                    debug_stats=None,
-                )
-            except ValueError:
-                continue
-            total_expanded += repaired.expanded_nodes
-            total_generated += repaired.generated_nodes
-            total_closed += repaired.closed_nodes
-            candidate_plan = prefix + repaired.plan
-            if _is_better_plan(candidate_plan, incumbent_plan, route_oracle):
-                incumbent_plan = candidate_plan
-                improved = True
-                break
-        if not improved:
-            break
-
-    return SolverResult(
-        plan=incumbent_plan,
-        expanded_nodes=total_expanded,
-        generated_nodes=total_generated,
-        closed_nodes=total_closed,
-        elapsed_ms=incumbent.elapsed_ms + (perf_counter() - started_at) * 1000,
-        debug_stats=incumbent.debug_stats,
-    )
-
-
-def _accumulate_move_debug_stats(
-    *,
-    debug_stats: dict[str, Any],
-    state: ReplayState,
-    plan_len: int,
-    move_stats: dict[str, Any],
-) -> None:
-    move_count = int(move_stats.get("total_moves", 0))
-    debug_stats["move_generation_calls"] += 1
-    debug_stats["candidate_moves_total"] += move_count
-    debug_stats["candidate_direct_moves"] += int(move_stats.get("direct_moves", 0))
-    debug_stats["candidate_staging_moves"] += int(move_stats.get("staging_moves", 0))
-    debug_stats["max_candidate_moves_per_state"] = max(
-        debug_stats["max_candidate_moves_per_state"],
-        move_count,
-    )
-    if move_count == 0:
-        debug_stats["states_with_zero_moves"] += 1
-    _merge_counter_dict(debug_stats["moves_by_target"], move_stats.get("moves_by_target", {}))
-    _merge_counter_dict(debug_stats["moves_by_source"], move_stats.get("moves_by_source", {}))
-    _merge_counter_dict(debug_stats["moves_by_block_size"], move_stats.get("moves_by_block_size", {}))
-    top_expansions = debug_stats["top_expansions"]
-    top_expansions.append(
-        {
-            "plan_len": plan_len,
-            "loco_track": state.loco_track_name,
-            "move_count": move_count,
-            "direct_moves": int(move_stats.get("direct_moves", 0)),
-            "staging_moves": int(move_stats.get("staging_moves", 0)),
-            "sources": move_stats.get("moves_by_source", {}),
-            "targets": move_stats.get("moves_by_target", {}),
-        }
-    )
-    top_expansions.sort(key=lambda item: item["move_count"], reverse=True)
-    del top_expansions[10:]
-
-
-def _merge_counter_dict(target: dict[str, int], incoming: dict[Any, int]) -> None:
-    for key, value in incoming.items():
-        target[str(key)] = target.get(str(key), 0) + int(value)
-
-
-def _candidate_repair_cut_points(plan: list[HookAction], repair_passes: int) -> list[int]:
-    """Generate diverse cut-point candidates for LNS repair.
-
-    Combines four destroy operators (round-robin across the requested passes)
-    to widen the search neighbourhood beyond pure hotspot detection:
-
-    - **hotspot**: tracks touched many times (existing behavior).
-    - **worst-cost**: hooks whose route is long or touches many branches.
-    - **target-cluster**: first index of adjacent same-target runs (merge
-      candidates).
-    - **equidistant**: evenly spaced indexes spanning the plan (diversifier).
-
-    Deduplicated and capped at ``repair_passes``.
-    """
-    if not plan:
-        return []
-    plan_length = len(plan)
-    per_strategy = max(1, repair_passes // 4)
-    touch_count_by_track: dict[str, int] = {}
-    for move in plan:
-        touch_count_by_track[move.source_track] = touch_count_by_track.get(move.source_track, 0) + 1
-        touch_count_by_track[move.target_track] = touch_count_by_track.get(move.target_track, 0) + 1
-
-    hotspot_cuts = _cut_points_hotspot(plan, touch_count_by_track, per_strategy)
-    worst_cuts = _cut_points_worst_cost(plan, per_strategy)
-    target_cuts = _cut_points_target_cluster(plan, per_strategy)
-    equi_cuts = _cut_points_equidistant(plan_length, per_strategy)
-
-    merged: list[int] = []
-    seen: set[int] = set()
-    for cut in (*hotspot_cuts, *worst_cuts, *target_cuts, *equi_cuts):
-        if cut in seen or cut < 0 or cut >= plan_length:
-            continue
-        seen.add(cut)
-        merged.append(cut)
-        if len(merged) >= repair_passes:
-            break
-    return merged
-
-
-def _cut_points_hotspot(
-    plan: list[HookAction],
-    touch_count_by_track: dict[str, int],
-    limit: int,
-) -> list[int]:
-    scored = sorted(
-        enumerate(plan),
-        key=lambda item: _repair_cut_score(item[0], item[1], touch_count_by_track),
-    )
-    return [idx for idx, _ in scored[:limit]]
-
-
-def _cut_points_worst_cost(plan: list[HookAction], limit: int) -> list[int]:
-    scored = sorted(
-        enumerate(plan),
-        key=lambda item: -(len(item[1].path_tracks) * 100 + len(item[1].vehicle_nos)),
-    )
-    return [idx for idx, _ in scored[:limit]]
-
-
-def _cut_points_target_cluster(plan: list[HookAction], limit: int) -> list[int]:
-    clusters: list[int] = []
-    i = 0
-    while i < len(plan) and len(clusters) < limit:
-        j = i + 1
-        while j < len(plan) and plan[j].target_track == plan[i].target_track:
-            j += 1
-        if j - i >= 2:
-            clusters.append(i)
-        i = j
-    return clusters
-
-
-def _cut_points_equidistant(plan_length: int, limit: int) -> list[int]:
-    if plan_length == 0 or limit == 0:
-        return []
-    step = max(1, plan_length // (limit + 1))
-    return [step * i for i in range(1, limit + 1) if step * i < plan_length]
-
-
-def _repair_cut_score(
-    index: int,
-    move: HookAction,
-    touch_count_by_track: dict[str, int],
-) -> tuple[int, int, int, int]:
-    hotspot_score = max(
-        touch_count_by_track.get(move.source_track, 0),
-        touch_count_by_track.get(move.target_track, 0),
-    )
-    staging_flag = int(
-        move.source_track.startswith("临")
-        or move.target_track.startswith("临")
-        or move.source_track == "存4南"
-        or move.target_track == "存4南"
-    )
-    repeated_touch_flag = int(hotspot_score > 1)
-    return (
-        -repeated_touch_flag,
-        -staging_flag,
-        -hotspot_score,
-        index,
-    )
-
-
-def _is_better_plan(
-    candidate_plan: list[HookAction],
-    incumbent_plan: list[HookAction],
-    route_oracle: RouteOracle | None,
-) -> bool:
-    candidate_metrics = _plan_quality(candidate_plan, route_oracle)
-    incumbent_metrics = _plan_quality(incumbent_plan, route_oracle)
-    return candidate_metrics < incumbent_metrics
-
-
-def _plan_quality(
-    plan: list[HookAction],
-    route_oracle: RouteOracle | None,
-) -> tuple[int, int, float]:
-    total_length_m = 0.0
-    total_branch_count = 0
-    if route_oracle is None:
-        total_length_m = float(sum(len(move.path_tracks) for move in plan))
-        total_branch_count = int(sum(max(len(move.path_tracks) - 1, 0) for move in plan))
-    else:
-        for move in plan:
-            route = route_oracle.resolve_route(move.source_track, move.target_track)
-            if route is not None:
-                total_length_m += route.total_length_m
-                total_branch_count += len(route.branch_codes)
-            else:
-                total_branch_count += max(len(move.path_tracks) - 1, 0)
-                total_length_m += float(len(move.path_tracks))
-    return (len(plan), total_branch_count, total_length_m)
-
-
-def _build_repair_plan_input(
-    plan_input: NormalizedPlanInput,
-    snapshot: ReplayState,
-) -> NormalizedPlanInput:
-    localized_vehicles: list[NormalizedVehicle] = []
-    for vehicle in plan_input.vehicles:
-        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        frozen_goal = vehicle.goal
-        goal_satisfied = (
-            current_track in vehicle.goal.allowed_target_tracks
-            and (not vehicle.need_weigh or vehicle.vehicle_no in snapshot.weighed_vehicle_nos)
-            and _spot_goal_satisfied(vehicle, snapshot)
-        )
-        if goal_satisfied:
-            frozen_goal = GoalSpec(
-                target_mode="TRACK",
-                target_track=current_track,
-                allowed_target_tracks=[current_track],
-                target_area_code=vehicle.goal.target_area_code,
-                target_spot_code=snapshot.spot_assignments.get(vehicle.vehicle_no),
-            )
-        localized_vehicles.append(
-            vehicle.model_copy(
-                update={
-                    "current_track": current_track,
-                    "goal": frozen_goal,
-                }
-            )
-        )
-    return plan_input.model_copy(
-        update={
-            "vehicles": localized_vehicles,
-            "loco_track_name": snapshot.loco_track_name,
-        }
-    )
-
-
-def _spot_goal_satisfied(vehicle: NormalizedVehicle, snapshot: ReplayState) -> bool:
-    assigned_spot = snapshot.spot_assignments.get(vehicle.vehicle_no)
-    if vehicle.goal.target_mode == "SPOT":
-        return assigned_spot == vehicle.goal.target_spot_code
-    if vehicle.goal.target_area_code == "大库:RANDOM":
-        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, current_track, "NORMAL")
-    if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
-        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, current_track, "NORMAL")
-    return True
-
-
-def _to_hook_dict(move: HookAction) -> dict:
-    return {
-        "hookNo": 1,
-        "actionType": move.action_type,
-        "sourceTrack": move.source_track,
-        "targetTrack": move.target_track,
-        "vehicleNos": move.vehicle_nos,
-        "pathTracks": move.path_tracks,
-    }
+# Backward-compat re-exports; prefer importing from the submodules directly.
+from fzed_shunting.solver.lns import (  # noqa: E402,F401
+    _build_repair_plan_input,
+    _candidate_repair_cut_points,
+    _cut_points_equidistant,
+    _cut_points_hotspot,
+    _cut_points_target_cluster,
+    _cut_points_worst_cost,
+    _is_better_plan,
+    _plan_quality,
+    _repair_cut_score,
+    _spot_goal_satisfied,
+    _to_hook_dict,
+)
