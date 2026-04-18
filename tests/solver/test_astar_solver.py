@@ -1540,6 +1540,8 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
 
 
 def test_candidate_repair_cut_points_prioritize_repeated_touch_before_unrelated_long_path():
+    from fzed_shunting.solver.astar_solver import _cut_points_hotspot
+
     plan = [
         HookAction(
             source_track="存5北",
@@ -1567,9 +1569,48 @@ def test_candidate_repair_cut_points_prioritize_repeated_touch_before_unrelated_
         ),
     ]
 
-    ranked = _candidate_repair_cut_points(plan, repair_passes=4)
+    touch_count_by_track: dict[str, int] = {}
+    for move in plan:
+        touch_count_by_track[move.source_track] = touch_count_by_track.get(move.source_track, 0) + 1
+        touch_count_by_track[move.target_track] = touch_count_by_track.get(move.target_track, 0) + 1
+
+    ranked = _cut_points_hotspot(plan, touch_count_by_track, limit=4)
 
     assert ranked[:4] == [1, 2, 0, 3]
+
+
+def test_candidate_repair_cut_points_mixes_multiple_strategies():
+    plan = [
+        HookAction(
+            source_track="存5北",
+            target_track="调北",
+            vehicle_nos=["A"],
+            path_tracks=["存5北", "调北"],
+        ),
+        HookAction(
+            source_track="调北",
+            target_track="存4北",
+            vehicle_nos=["A"],
+            path_tracks=["调北", "存4北"],
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="调北",
+            vehicle_nos=["B"],
+            path_tracks=["存5北", "调北"],
+        ),
+        HookAction(
+            source_track="调北",
+            target_track="存4北",
+            vehicle_nos=["B"],
+            path_tracks=["调北", "存4北"],
+        ),
+    ]
+    cuts = _candidate_repair_cut_points(plan, repair_passes=4)
+    # union of 4 strategies should produce at least 2 distinct cut points
+    assert len(cuts) >= 2
+    assert all(0 <= c < len(plan) for c in cuts)
+
 
 
 def test_build_repair_plan_input_freezes_already_satisfied_vehicle_goal_at_snapshot():

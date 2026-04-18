@@ -1031,18 +1031,83 @@ def _merge_counter_dict(target: dict[str, int], incoming: dict[Any, int]) -> Non
 
 
 def _candidate_repair_cut_points(plan: list[HookAction], repair_passes: int) -> list[int]:
+    """Generate diverse cut-point candidates for LNS repair.
+
+    Combines four destroy operators (round-robin across the requested passes)
+    to widen the search neighbourhood beyond pure hotspot detection:
+
+    - **hotspot**: tracks touched many times (existing behavior).
+    - **worst-cost**: hooks whose route is long or touches many branches.
+    - **target-cluster**: first index of adjacent same-target runs (merge
+      candidates).
+    - **equidistant**: evenly spaced indexes spanning the plan (diversifier).
+
+    Deduplicated and capped at ``repair_passes``.
+    """
     if not plan:
         return []
+    plan_length = len(plan)
+    per_strategy = max(1, repair_passes // 4)
     touch_count_by_track: dict[str, int] = {}
     for move in plan:
         touch_count_by_track[move.source_track] = touch_count_by_track.get(move.source_track, 0) + 1
         touch_count_by_track[move.target_track] = touch_count_by_track.get(move.target_track, 0) + 1
 
+    hotspot_cuts = _cut_points_hotspot(plan, touch_count_by_track, per_strategy)
+    worst_cuts = _cut_points_worst_cost(plan, per_strategy)
+    target_cuts = _cut_points_target_cluster(plan, per_strategy)
+    equi_cuts = _cut_points_equidistant(plan_length, per_strategy)
+
+    merged: list[int] = []
+    seen: set[int] = set()
+    for cut in (*hotspot_cuts, *worst_cuts, *target_cuts, *equi_cuts):
+        if cut in seen or cut < 0 or cut >= plan_length:
+            continue
+        seen.add(cut)
+        merged.append(cut)
+        if len(merged) >= repair_passes:
+            break
+    return merged
+
+
+def _cut_points_hotspot(
+    plan: list[HookAction],
+    touch_count_by_track: dict[str, int],
+    limit: int,
+) -> list[int]:
     scored = sorted(
         enumerate(plan),
         key=lambda item: _repair_cut_score(item[0], item[1], touch_count_by_track),
     )
-    return [idx for idx, _ in scored[:repair_passes]]
+    return [idx for idx, _ in scored[:limit]]
+
+
+def _cut_points_worst_cost(plan: list[HookAction], limit: int) -> list[int]:
+    scored = sorted(
+        enumerate(plan),
+        key=lambda item: -(len(item[1].path_tracks) * 100 + len(item[1].vehicle_nos)),
+    )
+    return [idx for idx, _ in scored[:limit]]
+
+
+def _cut_points_target_cluster(plan: list[HookAction], limit: int) -> list[int]:
+    clusters: list[int] = []
+    i = 0
+    while i < len(plan) and len(clusters) < limit:
+        j = i + 1
+        while j < len(plan) and plan[j].target_track == plan[i].target_track:
+            j += 1
+        if j - i >= 2:
+            clusters.append(i)
+        i = j
+    return clusters
+
+
+def _cut_points_equidistant(plan_length: int, limit: int) -> list[int]:
+    if plan_length == 0 or limit == 0:
+        return []
+    step = max(1, plan_length // (limit + 1))
+    return [step * i for i in range(1, limit + 1) if step * i < plan_length]
 
 
 def _repair_cut_score(
