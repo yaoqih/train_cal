@@ -13,24 +13,24 @@ BASELINE_DIR = CORPUS_ROOT / "_baselines"
 POSITIVE_DIR = CORPUS_ROOT / "positive"
 NEGATIVE_DIR = CORPUS_ROOT / "negative"
 
-ALLOWED_BASELINES = {
+ALLOWED_BASELINES = frozenset({
     "B1_clean",
     "B2_busy_storage",
     "B3_busy_yard_normal",
     "B4_busy_yard_inspection",
     "B5_busy_shed",
-}
+})
 
-ALLOWED_ERROR_CATEGORIES = {
+ALLOWED_ERROR_CATEGORIES = frozenset({
     "illegal_input",
     "capacity_overflow",
     "tow_limit_exceeded",
     "close_door_violation",
     "yard_allocation_violation",
-}
+})
 
 FILENAME_RE = re.compile(
-    r"^case_(\d+_\d+(?:_\d+)?)_([a-z0-9_]+)(?:_(\w+))?\.json$"
+    r"^case_\d+_\d+(?:_\d+)?_[a-z0-9_]+\.json$"
 )
 SPEC_SECTION_RE = re.compile(r"^\d+\.\d+(\.\d+)?$")
 
@@ -42,8 +42,11 @@ def _iter_cases(folder: Path):
 
 
 def _load(path: Path):
-    with path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except json.JSONDecodeError as exc:
+        pytest.fail(f"{path.name} is not valid JSON: {exc}")
 
 
 @pytest.mark.parametrize("folder", [POSITIVE_DIR, NEGATIVE_DIR])
@@ -103,7 +106,12 @@ def test_vehicle_track_references_exist():
             payload = _load(path)
             meta = payload["metadata"]
             if meta.get("allow_unknown_trackname") is True:
+                assert folder == NEGATIVE_DIR, (
+                    f"{path.name} allow_unknown_trackname is only valid for negative cases"
+                )
                 continue
+            assert "trackInfo" in payload, f"{path.name} missing top-level trackInfo"
+            assert "vehicleInfo" in payload, f"{path.name} missing top-level vehicleInfo"
             tracks = {row["trackName"] for row in payload["trackInfo"]}
             missing = {
                 row["trackName"]
