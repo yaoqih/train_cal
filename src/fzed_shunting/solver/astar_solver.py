@@ -219,6 +219,47 @@ def solve_with_simple_astar_result(
     if not result.plan and constructive_seed is not None and constructive_seed.plan:
         result = constructive_seed
 
+    # Post-search LNS polish: on fallback-stage plans (non-exact), spend any
+    # remaining budget compressing hook count via destroy/repair. Exact plans
+    # are already proven optimal, so skip them. Worth doing when the plan is
+    # long — the fixed per-pass cost amortises better on 50+ hook cases.
+    # Skip ``solver_mode == "beam"`` because that path already has a dedicated
+    # post-repair loop above with its own tuned budget.
+    if (
+        solver_mode != "beam"
+        and result.plan
+        and not result.is_proven_optimal
+        and result.fallback_stage not in {"constructive_partial", "constructive"}
+        and len(result.plan) > 40
+    ):
+        remaining_ms = None
+        if time_budget_ms is not None:
+            remaining_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        # Spend at most half of the remaining budget (or skip if < 2 sec left).
+        if remaining_ms is None or remaining_ms > 2000:
+            _ts = perf_counter()
+            # Cap the polish pass at half the remaining budget to preserve
+            # time for verify; on large plans this also prevents the inner
+            # search calls from monopolising the wall clock.
+            polish_budget_ms = None
+            if remaining_ms is not None:
+                polish_budget_ms = remaining_ms * 0.5
+            polished = _improve_incumbent_result(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+                incumbent=result,
+                heuristic_weight=heuristic_weight,
+                beam_width=beam_width or 128,
+                repair_passes=8,
+                max_rounds=3,
+                solve_search_result=_solve_search_result,
+                time_budget_ms=polish_budget_ms,
+            )
+            if len(polished.plan) < len(result.plan):
+                result = polished
+            phase_timings["lns_ms"] += (perf_counter() - _ts) * 1000
+
     if verify:
         _ts = perf_counter()
         result = _attach_verification(

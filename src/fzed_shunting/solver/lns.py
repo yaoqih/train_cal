@@ -10,9 +10,23 @@ from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.result import SolverResult
-from fzed_shunting.solver.state import _locate_vehicle
+from fzed_shunting.solver.state import _is_goal, _locate_vehicle
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState, replay_plan
+
+
+def _is_goal_after_prefix(
+    *,
+    plan_input: NormalizedPlanInput,
+    start_state: ReplayState,
+) -> bool:
+    """True when the state at the cut point already satisfies the goal.
+
+    Only in that case is it safe to accept a prefix + empty-repair cut:
+    the prefix alone already solves the problem, so skipping the suffix
+    is a strict improvement.
+    """
+    return _is_goal(plan_input, start_state)
 
 
 def _solve_with_lns_result(
@@ -70,9 +84,12 @@ def _improve_incumbent_result(
     repair_passes: int,
     max_rounds: int | None,
     solve_search_result,
+    time_budget_ms: float | None = None,
 ) -> SolverResult:
     if repair_passes <= 0 or not incumbent.plan:
         return incumbent
+
+    from fzed_shunting.solver.budget import SearchBudget
 
     started_at = perf_counter()
     incumbent_plan = list(incumbent.plan)
@@ -82,8 +99,15 @@ def _improve_incumbent_result(
     route_oracle = RouteOracle(master) if master is not None else None
     rounds = 0
 
+    def _remaining_ms() -> float | None:
+        if time_budget_ms is None:
+            return None
+        return max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000)
+
     while max_rounds is None or rounds < max_rounds:
         rounds += 1
+        if time_budget_ms is not None and _remaining_ms() <= 0:
+            break
         snapshots = replay_plan(
             initial_state,
             [_to_hook_dict(move) for move in incumbent_plan],
@@ -91,9 +115,19 @@ def _improve_incumbent_result(
         ).snapshots
         improved = False
         for cut_index in _candidate_repair_cut_points(incumbent_plan, repair_passes):
+            remaining = _remaining_ms()
+            if remaining is not None and remaining <= 0:
+                break
             prefix = incumbent_plan[:cut_index]
             start_state = snapshots[cut_index]
             repair_input = _build_repair_plan_input(plan_input, start_state)
+            per_call_budget = None
+            if remaining is not None:
+                # Spread remaining time across expected remaining calls
+                # (passes × rounds_left). Floor at 100ms to avoid useless
+                # micro-budgets.
+                rounds_left = 1 if max_rounds is None else max(1, max_rounds - rounds + 1)
+                per_call_budget = max(100.0, remaining / (repair_passes * rounds_left))
             try:
                 repaired = solve_search_result(
                     plan_input=repair_input,
@@ -103,8 +137,18 @@ def _improve_incumbent_result(
                     heuristic_weight=heuristic_weight,
                     beam_width=beam_width,
                     debug_stats=None,
+                    budget=SearchBudget(time_budget_ms=per_call_budget),
                 )
             except ValueError:
+                continue
+            # Reject timed-out sub-searches: a budget-exhausted inner call
+            # returns plan=[] which, combined with the prefix, yields an
+            # incomplete plan that would fool the length comparator into
+            # accepting it. Only cuts that actually re-solve to goal win.
+            if not repaired.plan and not _is_goal_after_prefix(
+                plan_input=plan_input,
+                start_state=start_state,
+            ):
                 continue
             total_expanded += repaired.expanded_nodes
             total_generated += repaired.generated_nodes
