@@ -167,6 +167,8 @@ def _improve_incumbent_result(
         generated_nodes=total_generated,
         closed_nodes=total_closed,
         elapsed_ms=incumbent.elapsed_ms + (perf_counter() - started_at) * 1000,
+        is_proven_optimal=incumbent.is_proven_optimal,
+        fallback_stage=incumbent.fallback_stage,
         debug_stats=incumbent.debug_stats,
     )
 
