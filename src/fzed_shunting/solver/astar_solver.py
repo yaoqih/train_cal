@@ -16,7 +16,6 @@ from fzed_shunting.solver.lns import (
     _improve_incumbent_result,
     _solve_with_lns_result,
 )
-from fzed_shunting.solver.preallocation import preallocate_random_depot_targets
 from fzed_shunting.solver.result import (
     PlanVerificationError,
     SolverResult,
@@ -62,7 +61,6 @@ def solve_with_simple_astar(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
-    enable_random_depot_preallocation: bool = False,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -77,7 +75,6 @@ def solve_with_simple_astar(
         verify=verify,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_constructive_seed=enable_constructive_seed,
-        enable_random_depot_preallocation=enable_random_depot_preallocation,
     ).plan
 
 
@@ -94,7 +91,6 @@ def solve_with_simple_astar_result(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
-    enable_random_depot_preallocation: bool = False,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
@@ -104,8 +100,6 @@ def solve_with_simple_astar_result(
     if verify and master is None:
         raise ValueError("verify=True requires master to be provided for plan_verifier")
     _validate_final_track_goal_capacities(plan_input)
-    if enable_random_depot_preallocation:
-        plan_input = preallocate_random_depot_targets(plan_input, initial_state, master=master)
     started_at = perf_counter()
     phase_timings: dict[str, float] = {
         "constructive_ms": 0.0,
