@@ -75,6 +75,11 @@ def allocate_spots_for_block(
     taken_spots = set(occupied_spot_assignments.values())
     allocations: dict[str, str] = {}
     for vehicle in vehicles:
+        # Only vehicles that actually need a spot participate in allocation.
+        # Non-spot vehicles riding along (e.g. a blocker cadet coming to 机库
+        # together with a weigh vehicle) simply occupy no spot.
+        if not _requires_spot_assignment(vehicle, target_track):
+            continue
         candidate_spots = spot_candidates_for_vehicle(vehicle, target_track, yard_mode)
         if not candidate_spots:
             return None

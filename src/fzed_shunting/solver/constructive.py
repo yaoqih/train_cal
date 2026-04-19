@@ -86,8 +86,9 @@ def solve_constructive(
         "tier1_weigh_to_jiku": 0,
         "tier2_blocker_clearance": 0,
         "tier3_goal_satisfaction": 0,
-        "tier4_consolidation": 0,
-        "tier5_staging": 0,
+        "tier4_dig_out_buried_seeker": 0,
+        "tier5_lateral": 0,
+        "tier6_staging": 0,
     }
 
     for iteration in range(max_iterations):
@@ -182,8 +183,9 @@ _TIER_NAMES = {
     1: "weigh_to_jiku",
     2: "blocker_clearance",
     3: "goal_satisfaction",
-    4: "consolidation",
-    5: "staging",
+    4: "dig_out_buried_seeker",
+    5: "lateral",
+    6: "staging",
 }
 
 
@@ -252,13 +254,22 @@ def _is_inverse_of_recent(
 ) -> bool:
     if not recent_moves:
         return False
-    move_vehicles = tuple(move.vehicle_nos)
+    move_vehicles = set(move.vehicle_nos)
     for prev_source, prev_target, prev_vehicles in recent_moves:
-        if (
-            prev_source == move.target_track
-            and prev_target == move.source_track
-            and set(prev_vehicles) == set(move_vehicles)
-        ):
+        if prev_source != move.target_track or prev_target != move.source_track:
+            continue
+        prev_set = set(prev_vehicles)
+        # Widened inverse: a move counts as inverse if it returns any non-trivial
+        # overlap (not just the exact same set). Prevents dig-out/dig-back
+        # oscillation when the return move carries a subset of the just-moved
+        # block (e.g. 7 of 8 cars going back because one was buried deeper).
+        overlap = move_vehicles & prev_set
+        if not overlap:
+            continue
+        # At least half of either side must be in overlap to be considered
+        # reversing the prior intent. Permits small reshuffles that happen to
+        # share one car.
+        if len(overlap) * 2 >= min(len(move_vehicles), len(prev_set)):
             return True
     return False
 
@@ -305,6 +316,14 @@ def _score_move(
             goal_tracks_needed=goal_tracks_needed,
         )
     )
+    exposes_buried_seeker = (
+        delta <= 0
+        and _move_exposes_buried_goal_seeker(
+            move=move,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+        )
+    )
     is_staging = target_track in STAGING_TRACKS
 
     tier: int
@@ -316,17 +335,29 @@ def _score_move(
         tier = 2  # forward progress (includes SPOT/AREA/TRACK satisfaction)
     elif clears_blocker:
         tier = 3  # evacuates a blocked goal track without lateral progress
+    elif exposes_buried_seeker:
+        tier = 4  # purposeful regression: digs out a buried goal seeker
     elif delta == 0 and not is_staging:
-        tier = 4  # lateral, non-staging (rare; generally avoid)
+        tier = 5  # lateral, non-staging (rare; generally avoid)
     elif delta == 0 and is_staging:
-        tier = 5  # staging — last resort for progress
+        tier = 6  # staging — last resort for progress
     else:
-        tier = 6  # delta < 0, actively regressing; strongly discouraged
+        tier = 7  # delta < 0 with no buried seeker, actively regressing
 
     block_size = len(move.vehicle_nos)
     path_length = len(move.path_tracks)
+    # SPOT/AREA finalizations are "pinpoint" goals: the vehicle only reaches
+    # its objective if it lands on the exact spot/area. Prefer these over
+    # block moves that merely inch other vehicles forward with bulk-delta
+    # wins — otherwise a large return block can outrank a single SPOT finish.
+    is_spot_or_area_finalization = delta > 0 and any(
+        target_track in v.goal.allowed_target_tracks
+        and (v.goal.target_mode == "SPOT" or v.goal.target_area_code is not None)
+        for v in block_vehicles
+    )
     score = (
         tier,
+        0 if is_spot_or_area_finalization else 1,
         -delta,
         -block_size,
         path_length,
@@ -359,5 +390,43 @@ def _move_clears_goal_blocker(
         if vehicle is None:
             continue
         if source_track in vehicle.goal.allowed_target_tracks:
+            return True
+    return False
+
+def _move_exposes_buried_goal_seeker(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    """True when the north-end block move reveals a buried vehicle whose goal
+    cannot be satisfied while it remains at ``source_track`` — i.e. purposeful
+    dig-out.
+
+    Covers two categories of buried goal seekers:
+
+    1. Vehicle whose target track is **elsewhere** (needs to leave source).
+    2. Vehicle that needs weighing and has not yet been weighed. Even if its
+       target track IS source_track, the weigh goal still requires visiting
+       机库 — otherwise the goal is permanently unmet.
+    """
+    source_track = move.source_track
+    source_seq = state.track_sequences.get(source_track, [])
+    if not source_seq:
+        return False
+    block_set = set(move.vehicle_nos)
+    prefix_matches = source_seq[: len(move.vehicle_nos)] == list(move.vehicle_nos)
+    if not prefix_matches:
+        return False
+    remaining = [vn for vn in source_seq if vn not in block_set]
+    if not remaining:
+        return False
+    for vn in remaining:
+        vehicle = vehicle_by_no.get(vn)
+        if vehicle is None:
+            continue
+        if source_track not in vehicle.goal.allowed_target_tracks:
+            return True
+        if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
             return True
     return False

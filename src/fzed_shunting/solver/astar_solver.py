@@ -16,7 +16,12 @@ from fzed_shunting.solver.lns import (
     _improve_incumbent_result,
     _solve_with_lns_result,
 )
-from fzed_shunting.solver.result import PlanVerificationError, SolverResult
+from fzed_shunting.solver.result import (
+    PlanVerificationError,
+    SolverResult,
+    SolverTelemetry,
+    emit_telemetry,
+)
 from fzed_shunting.solver.search import (
     BEAM_SHALLOW_RESERVE,
     QueueItem,
@@ -96,6 +101,13 @@ def solve_with_simple_astar_result(
         raise ValueError("verify=True requires master to be provided for plan_verifier")
     _validate_final_track_goal_capacities(plan_input)
     started_at = perf_counter()
+    phase_timings: dict[str, float] = {
+        "constructive_ms": 0.0,
+        "exact_ms": 0.0,
+        "anytime_ms": 0.0,
+        "lns_ms": 0.0,
+        "verify_ms": 0.0,
+    }
 
     # Stage 0: constructive baseline (always returns a plan — SLA safety net).
     constructive_seed: SolverResult | None = None
@@ -104,15 +116,18 @@ def solve_with_simple_astar_result(
         and enable_anytime_fallback
         and solver_mode == "exact"
     ):
+        _ts = perf_counter()
         constructive_seed = _run_constructive_stage(
             plan_input=plan_input,
             initial_state=initial_state,
             master=master,
             time_budget_ms=time_budget_ms,
         )
+        phase_timings["constructive_ms"] = (perf_counter() - _ts) * 1000
 
     result: SolverResult
     if solver_mode == "lns":
+        _ts = perf_counter()
         result = _solve_with_lns_result(
             plan_input=plan_input,
             initial_state=initial_state,
@@ -123,6 +138,7 @@ def solve_with_simple_astar_result(
             repair_passes=4,
             solve_search_result=_solve_search_result,
         )
+        phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
     else:
         exact_time_budget_ms: float | None = time_budget_ms
         if (
@@ -131,6 +147,7 @@ def solve_with_simple_astar_result(
             and time_budget_ms is not None
         ):
             exact_time_budget_ms = max(1.0, time_budget_ms * 0.4)
+        _ts = perf_counter()
         try:
             result = _solve_search_result(
                 plan_input=plan_input,
@@ -157,7 +174,9 @@ def solve_with_simple_astar_result(
                 fallback_stage=solver_mode,
                 debug_stats=debug_stats,
             )
+        phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
+            _ts = perf_counter()
             result = _anytime_run_fallback_chain(
                 plan_input=plan_input,
                 initial_state=initial_state,
@@ -171,7 +190,9 @@ def solve_with_simple_astar_result(
                 debug_stats=debug_stats,
                 solve_search_result=_solve_search_result,
             )
+            phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "beam" and beam_width is not None:
+            _ts = perf_counter()
             improved = result
             for _ in range(BEAM_POST_REPAIR_MAX_ROUNDS):
                 candidate = _improve_incumbent_result(
@@ -189,6 +210,7 @@ def solve_with_simple_astar_result(
                     break
                 improved = candidate
             result = improved
+            phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
 
     # If search produced nothing, fall back to constructive seed (which may be
     # a full-goal plan or a best-effort partial). Either way the SLA contract
@@ -198,13 +220,63 @@ def solve_with_simple_astar_result(
         result = constructive_seed
 
     if verify:
+        _ts = perf_counter()
         result = _attach_verification(
             result,
             plan_input=plan_input,
             master=master,
             initial_state=initial_state,
         )
-    return result
+        phase_timings["verify_ms"] = (perf_counter() - _ts) * 1000
+
+    telemetry = _build_telemetry(
+        plan_input=plan_input,
+        result=result,
+        phase_timings=phase_timings,
+        total_ms=(perf_counter() - started_at) * 1000,
+        time_budget_ms=time_budget_ms,
+        node_budget=node_budget,
+    )
+    emit_telemetry(telemetry)
+    return replace(result, telemetry=telemetry)
+
+
+def _build_telemetry(
+    *,
+    plan_input: NormalizedPlanInput,
+    result: SolverResult,
+    phase_timings: dict[str, float],
+    total_ms: float,
+    time_budget_ms: float | None,
+    node_budget: int | None,
+) -> SolverTelemetry:
+    weigh_count = sum(1 for v in plan_input.vehicles if v.need_weigh)
+    close_door_count = sum(1 for v in plan_input.vehicles if v.is_close_door)
+    spot_count = sum(1 for v in plan_input.vehicles if v.goal.target_mode == "SPOT")
+    area_count = sum(1 for v in plan_input.vehicles if v.goal.target_area_code is not None)
+    is_valid: bool | None = None
+    if result.verification_report is not None:
+        is_valid = bool(result.verification_report.is_valid)
+    return SolverTelemetry(
+        input_vehicle_count=len(plan_input.vehicles),
+        input_track_count=len(plan_input.track_info),
+        input_weigh_count=weigh_count,
+        input_close_door_count=close_door_count,
+        input_spot_count=spot_count,
+        input_area_count=area_count,
+        constructive_ms=phase_timings.get("constructive_ms", 0.0),
+        exact_ms=phase_timings.get("exact_ms", 0.0),
+        anytime_ms=phase_timings.get("anytime_ms", 0.0),
+        lns_ms=phase_timings.get("lns_ms", 0.0),
+        verify_ms=phase_timings.get("verify_ms", 0.0),
+        total_ms=total_ms,
+        plan_hook_count=len(result.plan),
+        fallback_stage=result.fallback_stage,
+        is_valid=is_valid,
+        is_proven_optimal=result.is_proven_optimal,
+        time_budget_ms=time_budget_ms,
+        node_budget=node_budget,
+    )
 
 
 def _run_constructive_stage(
