@@ -94,22 +94,26 @@ def reorder_depot_late(
     initial_state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> list[HookAction]:
-    """Greedy topological reorder that pushes depot hooks as late as possible.
+    """Greedy adjacent-swap pass that pushes depot hooks toward the tail.
 
-    Builds a conservative dependency graph from the original plan (edge i -> j
-    iff j must come after i). Dependency exists when hooks i<j touch
-    overlapping tracks or share vehicles. Greedily topo-sorts: at each step
-    among the "ready" hooks (all deps satisfied), prefer a non-depot hook if
-    any exists; otherwise take the earliest-original-index ready hook.
+    Tries each adjacent ``(depot, non-depot)`` pair for a swap. A swap is
+    accepted iff:
+    1. The swapped plan replays legally from ``initial_state`` via
+       ``_apply_move`` (each hook's source prefix condition holds at the
+       point it is applied).
+    2. The final state after replay matches the original plan's final
+       state via ``_canonicalize_state`` (``track_sequences``,
+       ``weighed_vehicle_nos``, ``spot_assignments``; ``loco_track_name``
+       is excluded since it trivially tracks the last hook's target).
 
-    The conservative edge rule (any shared track or vehicle → dependency)
-    over-approximates real dependencies but is safe: any valid topological
-    order under these edges is a valid replay order modulo the terminal state
-    check below.
+    This is strictly earliness-improving: every accepted swap moves a
+    depot hook one position later without changing the hook set or the
+    primary objective (plan length). Worst-case O(N^3) — up to N passes
+    of N-1 adjacent checks, each check doing a full O(N) replay. In
+    practice N<=50 in this project and the pass terminates quickly.
 
-    Validates the output by replaying from ``initial_state`` and comparing to
-    the original plan's final state. On mismatch or replay failure, returns
-    the original plan unchanged (safe fallback).
+    On any failure the swap is discarded; worst case this function
+    returns the input plan unchanged.
     """
     result = list(plan)
     if not result:
@@ -139,52 +143,22 @@ def reorder_depot_late(
         return list(plan)
     baseline_key = _canonicalize_state(baseline_state)
 
-    # Build conservative dependency graph: edge i -> j iff original i<j and
-    # hooks i and j touch overlapping tracks or share vehicles.
-    n = len(result)
-    indegree = [0] * n
-    successors: list[list[int]] = [[] for _ in range(n)]
-    for i in range(n):
-        hi = result[i]
-        vi = set(hi.vehicle_nos)
-        for j in range(i + 1, n):
-            hj = result[j]
-            overlap_tracks = (
-                hi.source_track == hj.source_track
-                or hi.target_track == hj.source_track
-                or hi.source_track == hj.target_track
-                or hi.target_track == hj.target_track
-            )
-            shared_vehicles = bool(vi & set(hj.vehicle_nos))
-            if overlap_tracks or shared_vehicles:
-                successors[i].append(j)
-                indegree[j] += 1
-
-    # Greedy topo sort with non-depot preference; stable fallback on
-    # earliest-original-index.
-    ready = [i for i in range(n) if indegree[i] == 0]
-    ordered: list[int] = []
-    while ready:
-        ready.sort(key=lambda i: (is_depot_hook(result[i]), i))
-        pick = ready.pop(0)
-        ordered.append(pick)
-        for successor in successors[pick]:
-            indegree[successor] -= 1
-            if indegree[successor] == 0:
-                ready.append(successor)
-
-    if len(ordered) != n:
-        # Cycle or missing nodes — shouldn't happen given indexes form a DAG
-        # by construction (edges only go forward), but fall back safely.
-        return list(plan)
-
-    candidate = [result[i] for i in ordered]
-    new_state = simulate(candidate)
-    if new_state is None:
-        return list(plan)
-    if _canonicalize_state(new_state) != baseline_key:
-        return list(plan)
-    return candidate
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(result) - 1):
+            a, b = result[i], result[i + 1]
+            if is_depot_hook(a) and not is_depot_hook(b):
+                candidate = list(result)
+                candidate[i], candidate[i + 1] = b, a
+                new_state = simulate(candidate)
+                if new_state is None:
+                    continue
+                if _canonicalize_state(new_state) != baseline_key:
+                    continue
+                result = candidate
+                improved = True
+    return result
 
 
 def _canonicalize_state(state: ReplayState) -> tuple:
