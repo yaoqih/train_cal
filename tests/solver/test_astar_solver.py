@@ -317,7 +317,7 @@ def test_prune_queue_rescues_20260309w_blocker_move_just_outside_beam_width():
         route_oracle=route_oracle,
     )
 
-    ranked_states: list[tuple[tuple[float, int, int, int], int, HookAction, ReplayState]] = []
+    ranked_states: list[tuple[tuple, int, HookAction, ReplayState]] = []
     blocker_rank = None
     blocker_move = None
 
@@ -390,7 +390,7 @@ def test_prune_queue_rescues_20260309w_blocker_move_just_outside_beam_width():
 def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
     def build_item(
         seq: int,
-        priority: tuple[float, int, int, int, int],
+        priority: tuple[float, int, int, int, int, int],
         state_key: tuple[str],
     ) -> QueueItem:
         return QueueItem(
@@ -406,10 +406,12 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
             plan=[],
         )
 
-    first = build_item(1, (10, 0, 10, 0, 10), ("A",))
-    second = build_item(2, (11, 0, 11, 0, 11), ("B",))
-    non_blocker = build_item(3, (12, 0, 12, 0, 12), ("C",))
-    blocker = build_item(4, (13, 0, 13, -2, 15), ("D",))
+    # Beam priority tuple shape: (f, cost, neg_depot_key, adj_h, -blocker, h).
+    # neg_depot_key held at 0 (feature flag off) for legacy parity.
+    first = build_item(1, (10, 0, 0, 10, 0, 10), ("A",))
+    second = build_item(2, (11, 0, 0, 11, 0, 11), ("B",))
+    non_blocker = build_item(3, (12, 0, 0, 12, 0, 12), ("C",))
+    blocker = build_item(4, (13, 0, 0, 13, -2, 15), ("D",))
     queue = [non_blocker, blocker, second, first]
     best_cost = {item.state_key: 0 for item in queue}
 
@@ -426,7 +428,7 @@ def test_prune_queue_keeps_best_shallow_state_even_when_deeper_states_have_bette
     def build_item(
         *,
         seq: int,
-        priority: tuple[float, int, int, int, int],
+        priority: tuple[float, int, int, int, int, int],
         state_key: tuple[str],
         plan_len: int,
     ) -> QueueItem:
@@ -449,27 +451,28 @@ def test_prune_queue_keeps_best_shallow_state_even_when_deeper_states_have_bette
             plan=[move for _ in range(plan_len)],
         )
 
+    # Beam priority tuple shape: (f, cost, neg_depot_key, adj_h, -blocker, h).
     shallow = build_item(
         seq=1,
-        priority=(30, 2, 28, 0, 28),
+        priority=(30, 2, 0, 28, 0, 28),
         state_key=("shallow",),
         plan_len=2,
     )
     deep_a = build_item(
         seq=2,
-        priority=(20, 12, 8, 0, 8),
+        priority=(20, 12, 0, 8, 0, 8),
         state_key=("deep_a",),
         plan_len=12,
     )
     deep_b = build_item(
         seq=3,
-        priority=(21, 13, 8, 0, 8),
+        priority=(21, 13, 0, 8, 0, 8),
         state_key=("deep_b",),
         plan_len=13,
     )
     deep_c = build_item(
         seq=4,
-        priority=(22, 14, 8, 0, 8),
+        priority=(22, 14, 0, 8, 0, 8),
         state_key=("deep_c",),
         plan_len=14,
     )

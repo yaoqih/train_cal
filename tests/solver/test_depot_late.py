@@ -295,3 +295,65 @@ class TestReorderDepotLate:
         assert [h.vehicle_nos for h in reordered] == [["V3"], ["V1"], ["V2"]]
         # Earliness strictly improved (V1 moved from index 1 to index 2).
         assert depot_earliness(reordered) < depot_earliness(plan)
+
+
+from fzed_shunting.solver.search import _priority
+
+
+class TestSearchPriorityDepotSecondary:
+    def test_flag_off_default_priority_unchanged_exact(self) -> None:
+        # Baseline parity: neg_depot_index_sum=0 keeps the classic tuple shape.
+        legacy = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="exact", heuristic_weight=1.0,
+        )
+        # Position 0: f=cost+h=8; position 1: cost; position 2: neg_depot_key
+        # (0 when flag off); position 3: heuristic; position 4: -blocker_bonus.
+        assert legacy[0] == 8
+        assert legacy[1] == 3
+        assert legacy[2] == 0
+        assert legacy[3] == 5
+        assert legacy[4] == 0
+
+    def test_flag_on_smaller_neg_index_sum_preferred(self) -> None:
+        # Two nodes same (cost, heuristic). Node A has depot at index 3
+        # (index_sum=3, neg=-3); Node B at index 1 (index_sum=1, neg=-1).
+        # A should have smaller priority tuple (more negative secondary).
+        priority_a = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="exact", heuristic_weight=1.0,
+            neg_depot_index_sum=-3,
+        )
+        priority_b = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="exact", heuristic_weight=1.0,
+            neg_depot_index_sum=-1,
+        )
+        assert priority_a < priority_b
+
+    def test_flag_on_does_not_override_cost(self) -> None:
+        # Node A has later depot but higher cost; cost must still win.
+        priority_a = _priority(
+            cost=4, heuristic=5, blocker_bonus=0,
+            solver_mode="exact", heuristic_weight=1.0,
+            neg_depot_index_sum=-100,
+        )
+        priority_b = _priority(
+            cost=3, heuristic=6, blocker_bonus=0,
+            solver_mode="exact", heuristic_weight=1.0,
+            neg_depot_index_sum=0,
+        )
+        # Both f = 9 (tied on position 0). Cost tie-breaks at position 1.
+        # B has cost=3 < A's cost=4, so B < A.
+        assert priority_b < priority_a
+
+    def test_beam_mode_preserves_blocker_index(self) -> None:
+        # Regression guard for _prune_queue: it reads priority[?] for blocker.
+        # After secondary insert, blocker_bonus lives at index 4.
+        p = _priority(
+            cost=2, heuristic=3, blocker_bonus=1,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=0,
+        )
+        # beam: (f, cost, neg_depot, adj_h, -blocker, h)
+        assert p[4] == -1

@@ -37,7 +37,7 @@ BEAM_SHALLOW_RESERVE = 1
 
 @dataclass(order=True)
 class QueueItem:
-    priority: tuple[float, int, int, int, int]
+    priority: tuple
     seq: int
     state_key: tuple
     state: ReplayState
@@ -53,6 +53,7 @@ def _solve_search_result(
     beam_width: int | None,
     debug_stats: dict[str, Any] | None = None,
     budget: SearchBudget | None = None,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
     if budget is None:
         budget = SearchBudget()
@@ -76,6 +77,7 @@ def _solve_search_result(
                 heuristic=initial_heuristic,
                 solver_mode=solver_mode,
                 heuristic_weight=heuristic_weight,
+                neg_depot_index_sum=0,
             ),
             seq=next(counter),
             state_key=initial_key,
@@ -167,6 +169,13 @@ def _solve_search_result(
                 move=move,
                 blocking_goal_targets_by_source=blocking_goal_targets_by_source,
             )
+            neg_depot_index_sum = 0
+            if enable_depot_late_scheduling:
+                # O(N) per expansion — acceptable when N<=50; switch to
+                # incremental maintenance via QueueItem state if Task 7
+                # benchmarks show >5% overhead on flag-on runs.
+                from fzed_shunting.solver.depot_late import depot_index_sum
+                neg_depot_index_sum = -depot_index_sum(next_plan)
             heappush(
                 queue,
                 QueueItem(
@@ -176,6 +185,7 @@ def _solve_search_result(
                         blocker_bonus=blocker_bonus,
                         solver_mode=solver_mode,
                         heuristic_weight=heuristic_weight,
+                        neg_depot_index_sum=neg_depot_index_sum,
                     ),
                     seq=next(counter),
                     state_key=state_key,
@@ -221,20 +231,34 @@ def _priority(
     blocker_bonus: int = 0,
     solver_mode: str,
     heuristic_weight: float,
-) -> tuple[float, int, int, int, int]:
+    neg_depot_index_sum: int = 0,
+) -> tuple:
     if solver_mode == "beam":
         beam_heuristic_credit = 1 if blocker_bonus > 0 else 0
         adjusted_heuristic = heuristic - beam_heuristic_credit
         return (
             cost + adjusted_heuristic,
             cost,
+            neg_depot_index_sum,
             adjusted_heuristic,
             -blocker_bonus,
             heuristic,
         )
     if solver_mode == "weighted":
-        return (cost + heuristic_weight * heuristic, cost, heuristic, -blocker_bonus)
-    return (cost + heuristic, cost, heuristic, -blocker_bonus)
+        return (
+            cost + heuristic_weight * heuristic,
+            cost,
+            neg_depot_index_sum,
+            heuristic,
+            -blocker_bonus,
+        )
+    return (
+        cost + heuristic,
+        cost,
+        neg_depot_index_sum,
+        heuristic,
+        -blocker_bonus,
+    )
 
 
 def _blocking_goal_target_bonus(
@@ -281,7 +305,7 @@ def _prune_queue(
         blocker_candidates = [
             item
             for item in ranked
-            if item.priority[3] < 0 and id(item) not in kept_ids
+            if item.priority[4] < 0 and id(item) not in kept_ids
         ]
         if blocker_candidates:
             blocker_item = blocker_candidates[0]
