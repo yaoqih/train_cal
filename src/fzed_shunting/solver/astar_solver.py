@@ -61,6 +61,7 @@ def solve_with_simple_astar(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -75,6 +76,7 @@ def solve_with_simple_astar(
         verify=verify,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_constructive_seed=enable_constructive_seed,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     ).plan
 
 
@@ -91,6 +93,7 @@ def solve_with_simple_astar_result(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
@@ -122,6 +125,7 @@ def solve_with_simple_astar_result(
             initial_state=initial_state,
             master=master,
             time_budget_ms=time_budget_ms,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         phase_timings["constructive_ms"] = (perf_counter() - _ts) * 1000
 
@@ -137,6 +141,7 @@ def solve_with_simple_astar_result(
             debug_stats=debug_stats,
             repair_passes=4,
             solve_search_result=_solve_search_result,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
     else:
@@ -158,6 +163,7 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
         except ValueError:
             if constructive_seed is None:
@@ -189,6 +195,7 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 solve_search_result=_solve_search_result,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
             phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "beam" and beam_width is not None:
@@ -205,6 +212,7 @@ def solve_with_simple_astar_result(
                     repair_passes=BEAM_POST_REPAIR_PASSES,
                     max_rounds=1,
                     solve_search_result=_solve_search_result,
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
                 )
                 if len(candidate.plan) >= len(improved.plan):
                     break
@@ -255,10 +263,31 @@ def solve_with_simple_astar_result(
                 max_rounds=3,
                 solve_search_result=_solve_search_result,
                 time_budget_ms=polish_budget_ms,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
             if len(polished.plan) < len(result.plan):
                 result = polished
             phase_timings["lns_ms"] += (perf_counter() - _ts) * 1000
+
+    # Depot-late post-processing: only when the flag is on and we have a plan.
+    # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
+    # toward the tail, preserving replay-equivalent final state. On failure
+    # the plan is left unchanged.
+    if enable_depot_late_scheduling and result.plan:
+        from fzed_shunting.solver.depot_late import reorder_depot_late
+
+        reordered_plan = reorder_depot_late(result.plan, initial_state, plan_input)
+        if reordered_plan != result.plan:
+            result = replace(result, plan=reordered_plan)
+
+    # Populate depot observability fields on every return path (flag on or off).
+    from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
+
+    result = replace(
+        result,
+        depot_earliness=depot_earliness(result.plan),
+        depot_hook_count=sum(1 for h in result.plan if is_depot_hook(h)),
+    )
 
     if verify:
         _ts = perf_counter()
@@ -326,6 +355,7 @@ def _run_constructive_stage(
     initial_state: ReplayState,
     master: MasterData | None,
     time_budget_ms: float | None,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult | None:
     """Run the priority-rule dispatcher and wrap the result as a SolverResult."""
     from fzed_shunting.solver.constructive import solve_constructive
@@ -340,6 +370,7 @@ def _run_constructive_stage(
             master=master,
             max_iterations=1500,
             time_budget_ms=constructive_budget,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
     except Exception:  # noqa: BLE001
         return None

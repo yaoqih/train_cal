@@ -32,6 +32,7 @@ def _run_anytime_fallback_chain(
     beam_width: int | None,
     debug_stats: dict[str, Any] | None,
     solve_search_result,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
     fallback_stages: list[tuple[str, dict[str, Any], float]] = [
         (
@@ -124,6 +125,7 @@ def _run_anytime_fallback_chain(
                     time_budget_ms=stage_time_budget_ms,
                     node_budget=remaining_nodes,
                 ),
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
                 **stage_kwargs,
             )
         except ValueError:

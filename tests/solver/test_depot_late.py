@@ -466,3 +466,44 @@ class TestConstructiveDepotPenalty:
             enable_depot_late_scheduling=True, plan_input=plan_input,
         )
         assert score_v2[1] == 0  # late phase -> no penalty
+
+
+from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
+
+
+class TestAstarSolverDepotLateFlag:
+    def test_result_exposes_depot_earliness_when_flag_off(self) -> None:
+        # Small trivially-solvable input. Flag off still populates fields.
+        vehicles = [_vehicle("V1", "存1", ["存4北"])]
+        plan_input = _plan_input(vehicles)
+        initial = build_initial_state(plan_input)
+        result = solve_with_simple_astar_result(
+            plan_input=plan_input,
+            initial_state=initial,
+            time_budget_ms=5_000,
+            verify=False,
+        )
+        assert result.depot_earliness is not None
+        assert result.depot_hook_count is not None
+        assert result.depot_hook_count == 0
+        assert result.depot_earliness == 0
+
+    def test_flag_toggle_preserves_hook_count(self) -> None:
+        vehicles = [
+            _vehicle("V1", "存1", ["存4北"]),
+            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+        ]
+        plan_input = _plan_input(vehicles)
+        initial = build_initial_state(plan_input)
+        off = solve_with_simple_astar_result(
+            plan_input=plan_input, initial_state=initial,
+            time_budget_ms=5_000, verify=False,
+            enable_depot_late_scheduling=False,
+        )
+        on = solve_with_simple_astar_result(
+            plan_input=plan_input, initial_state=initial,
+            time_budget_ms=5_000, verify=False,
+            enable_depot_late_scheduling=True,
+        )
+        assert len(on.plan) == len(off.plan)
+        assert on.depot_earliness <= off.depot_earliness
