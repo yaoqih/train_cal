@@ -94,26 +94,33 @@ def reorder_depot_late(
     initial_state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> list[HookAction]:
-    """Greedy adjacent-swap pass that pushes depot hooks toward the tail.
+    """Semantic-dep topological reorder that pushes depot hooks toward the tail.
 
-    Tries each adjacent ``(depot, non-depot)`` pair for a swap. A swap is
-    accepted iff:
-    1. The swapped plan replays legally from ``initial_state`` via
-       ``_apply_move`` (each hook's source prefix condition holds at the
-       point it is applied).
-    2. The final state after replay matches the original plan's final
-       state via ``_canonicalize_state`` (``track_sequences``,
-       ``weighed_vehicle_nos``, ``spot_assignments``; ``loco_track_name``
-       is excluded since it trivially tracks the last hook's target).
+    Builds a semantic dependency graph over the plan's hooks (O(N^2) pair
+    tests, each doing a full O(N) replay), then performs a greedy
+    topological sort preferring non-depot hooks. This is strictly stronger
+    than adjacent-swap bubble: any reorder reachable by a chain of
+    state-preserving adjacent swaps is also a valid topological order under
+    the semantic dep graph, and the topo approach can additionally jump a
+    hook past a dep-blocked intermediate pair that adjacent-swap can't
+    cross.
 
-    This is strictly earliness-improving: every accepted swap moves a
-    depot hook one position later without changing the hook set or the
-    primary objective (plan length). Worst-case O(N^3) — up to N passes
-    of N-1 adjacent checks, each check doing a full O(N) replay. In
-    practice N<=50 in this project and the pass terminates quickly.
+    Algorithm:
+    1. Baseline simulate the original plan and canonicalize its terminal
+       state. If the input is itself invalid, bail out unchanged.
+    2. For each pair (i, j) with i < j, test whether hook j can be placed
+       at position i (shifting plan[i..j-1] one slot right) while the
+       modified plan still replays legally AND reaches the same terminal
+       state. If not, add edge i -> j (j must stay after i).
+    3. Greedy topological sort: at each step pick the ready hook with the
+       lowest (is_depot, original_index) key — non-depot first, tiebreak
+       by original position.
+    4. Validate the final order by replaying from the initial state; if
+       the terminal state diverges or replay fails, fall back to the
+       original plan.
 
-    On any failure the swap is discarded; worst case this function
-    returns the input plan unchanged.
+    Complexity: O(N^3). On any failure anywhere in the pipeline the
+    function returns ``list(plan)`` unchanged.
     """
     result = list(plan)
     if not result:
@@ -143,22 +150,49 @@ def reorder_depot_late(
         return list(plan)
     baseline_key = _canonicalize_state(baseline_state)
 
-    improved = True
-    while improved:
-        improved = False
-        for i in range(len(result) - 1):
-            a, b = result[i], result[i + 1]
-            if is_depot_hook(a) and not is_depot_hook(b):
-                candidate = list(result)
-                candidate[i], candidate[i + 1] = b, a
-                new_state = simulate(candidate)
-                if new_state is None:
-                    continue
-                if _canonicalize_state(new_state) != baseline_key:
-                    continue
-                result = candidate
-                improved = True
-    return result
+    n = len(result)
+
+    def can_move_j_before_i(i: int, j: int) -> bool:
+        """True iff hook at index j can be placed at position i while
+        preserving terminal state (track_sequences, weighed, spots)."""
+        modified = list(result[:i]) + [result[j]] + list(result[i:j]) + list(result[j + 1:])
+        final = simulate(modified)
+        if final is None:
+            return False
+        return _canonicalize_state(final) == baseline_key
+
+    # Build semantic dep graph.
+    indegree = [0] * n
+    successors: list[list[int]] = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if not can_move_j_before_i(i, j):
+                successors[i].append(j)
+                indegree[j] += 1
+
+    # Greedy topological sort with non-depot preference.
+    ready = [i for i in range(n) if indegree[i] == 0]
+    ordered: list[int] = []
+    while ready:
+        ready.sort(key=lambda idx: (is_depot_hook(result[idx]), idx))
+        pick = ready.pop(0)
+        ordered.append(pick)
+        for j in successors[pick]:
+            indegree[j] -= 1
+            if indegree[j] == 0:
+                ready.append(j)
+
+    if len(ordered) != n:
+        # Cycle — shouldn't happen with a valid DAG; fall back.
+        return list(plan)
+
+    candidate = [result[i] for i in ordered]
+
+    # Final safety check.
+    final_state = simulate(candidate)
+    if final_state is None or _canonicalize_state(final_state) != baseline_key:
+        return list(plan)
+    return candidate
 
 
 def _canonicalize_state(state: ReplayState) -> tuple:
