@@ -403,7 +403,6 @@ def _run_constructive_stage(
             master=master,
             max_iterations=1500,
             time_budget_ms=constructive_budget,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
     except Exception:  # noqa: BLE001
         return None
