@@ -27,6 +27,7 @@ from typing import Any
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.depot_late import DEPOT_INNER_TRACKS
 from fzed_shunting.solver.heuristic import make_state_heuristic
 from fzed_shunting.solver.move_generator import generate_goal_moves
 from fzed_shunting.solver.types import HookAction
@@ -34,7 +35,6 @@ from fzed_shunting.verify.replay import ReplayState
 
 
 STAGING_TRACKS = frozenset({"临1", "临2", "临3", "临4", "存4南"})
-DEPOT_INNER_TRACKS = frozenset({"修1库内", "修2库内", "修3库内", "修4库内"})
 _INVERSE_GUARD_WINDOW = 12
 
 
