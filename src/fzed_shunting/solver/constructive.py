@@ -57,6 +57,7 @@ def solve_constructive(
     stuck_threshold: int = 6,
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
+    enable_depot_late_scheduling: bool = False,
 ) -> ConstructiveResult:
     """Priority-rule dispatcher, guaranteed to return a ``ConstructiveResult``.
 
@@ -136,6 +137,8 @@ def solve_constructive(
             vehicle_by_no=vehicle_by_no,
             goal_tracks_needed=goal_tracks_needed,
             recent_moves=recent_moves,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            plan_input=plan_input,
         )
         stats[f"tier{best_tier}_" + _TIER_NAMES[best_tier]] = (
             stats.get(f"tier{best_tier}_" + _TIER_NAMES[best_tier], 0) + 1
@@ -228,6 +231,8 @@ def _choose_best_move(
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
+    enable_depot_late_scheduling: bool = False,
+    plan_input: NormalizedPlanInput | None = None,
 ) -> tuple[HookAction, int]:
     scored: list[tuple[tuple, int, HookAction, bool]] = []
     for move in moves:
@@ -236,6 +241,8 @@ def _choose_best_move(
             state=state,
             vehicle_by_no=vehicle_by_no,
             goal_tracks_needed=goal_tracks_needed,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            plan_input=plan_input,
         )
         is_inverse = _is_inverse_of_recent(move, recent_moves)
         scored.append((score, tier, move, is_inverse))
@@ -280,6 +287,8 @@ def _score_move(
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
+    enable_depot_late_scheduling: bool = False,
+    plan_input: NormalizedPlanInput | None = None,
 ) -> tuple[tuple, int]:
     block_vehicles = [vehicle_by_no[vn] for vn in move.vehicle_nos]
     source_track = move.source_track
@@ -355,8 +364,17 @@ def _score_move(
         and (v.goal.target_mode == "SPOT" or v.goal.target_area_code is not None)
         for v in block_vehicles
     )
+
+    depot_late_penalty = 0
+    if enable_depot_late_scheduling and plan_input is not None:
+        from fzed_shunting.solver.depot_late import is_depot_hook, _is_early_depot_phase
+
+        if is_depot_hook(move) and _is_early_depot_phase(state, plan_input):
+            depot_late_penalty = 1
+
     score = (
         tier,
+        depot_late_penalty,
         0 if is_spot_or_area_finalization else 1,
         -delta,
         -block_size,

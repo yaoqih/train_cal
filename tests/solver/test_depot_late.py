@@ -388,3 +388,81 @@ class TestLnsPlanQualityDepotAware:
         assert _is_better_plan(
             plan_short_early_depot, plan_long_late_depot, route_oracle=None, depot_late=True
         ) is True
+
+
+from fzed_shunting.solver.constructive import _score_move
+from fzed_shunting.verify.replay import build_initial_state
+
+
+class TestConstructiveDepotPenalty:
+    def test_flag_off_depot_and_nondepot_at_same_tier_unchanged(self) -> None:
+        vehicles = [
+            _vehicle("V1", "存1", ["存4北"]),
+            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+        ]
+        plan_input = _plan_input(vehicles)
+        state = build_initial_state(plan_input)
+        vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+        goal_tracks = {"存4北", "修1库内"}
+        move_v1 = _hook("存1", "存4北", ["V1"])
+        move_v2 = _hook("存2", "修1库内", ["V2"])
+        score_v1_off, _ = _score_move(
+            move=move_v1,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks,
+            enable_depot_late_scheduling=False,
+            plan_input=plan_input,
+        )
+        score_v2_off, _ = _score_move(
+            move=move_v2,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks,
+            enable_depot_late_scheduling=False,
+            plan_input=plan_input,
+        )
+        assert score_v1_off[0] == score_v2_off[0]  # same tier
+        assert score_v1_off[1] == 0
+        assert score_v2_off[1] == 0
+
+    def test_flag_on_early_phase_non_depot_beats_depot(self) -> None:
+        vehicles = [
+            _vehicle("V1", "存1", ["存4北"]),
+            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+        ]
+        plan_input = _plan_input(vehicles)
+        state = build_initial_state(plan_input)
+        vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+        goal_tracks = {"存4北", "修1库内"}
+        move_v1 = _hook("存1", "存4北", ["V1"])
+        move_v2 = _hook("存2", "修1库内", ["V2"])
+        score_v1_on, _ = _score_move(
+            move=move_v1, state=state, vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks,
+            enable_depot_late_scheduling=True, plan_input=plan_input,
+        )
+        score_v2_on, _ = _score_move(
+            move=move_v2, state=state, vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks,
+            enable_depot_late_scheduling=True, plan_input=plan_input,
+        )
+        assert score_v1_on[0] == score_v2_on[0]  # still same tier
+        assert score_v1_on[1] < score_v2_on[1]
+
+    def test_flag_on_late_phase_no_penalty(self) -> None:
+        vehicles = [
+            _vehicle("V1", "存4北", ["存4北"]),  # already at goal
+            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+        ]
+        plan_input = _plan_input(vehicles)
+        state = build_initial_state(plan_input)
+        vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+        goal_tracks = {"存4北", "修1库内"}
+        move_v2 = _hook("存2", "修1库内", ["V2"])
+        score_v2, _ = _score_move(
+            move=move_v2, state=state, vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks,
+            enable_depot_late_scheduling=True, plan_input=plan_input,
+        )
+        assert score_v2[1] == 0  # late phase -> no penalty
