@@ -472,8 +472,8 @@ from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
 
 
 class TestAstarSolverDepotLateFlag:
-    def test_result_exposes_depot_earliness_when_flag_off(self) -> None:
-        # Small trivially-solvable input. Flag off still populates fields.
+    def test_result_exposes_depot_earliness_when_default(self) -> None:
+        # Small trivially-solvable input. Default (flag on) populates fields.
         vehicles = [_vehicle("V1", "存1", ["存4北"])]
         plan_input = _plan_input(vehicles)
         initial = build_initial_state(plan_input)

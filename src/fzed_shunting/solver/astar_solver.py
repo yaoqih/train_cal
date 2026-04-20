@@ -61,7 +61,7 @@ def solve_with_simple_astar(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -93,7 +93,7 @@ def solve_with_simple_astar_result(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
@@ -272,13 +272,46 @@ def solve_with_simple_astar_result(
     # Depot-late post-processing: only when the flag is on and we have a plan.
     # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
     # toward the tail, preserving replay-equivalent final state. On failure
-    # the plan is left unchanged.
+    # (either an internal simulate rejection or a full-verifier rejection of
+    # the reordered plan — e.g. intermediate route interference that
+    # _apply_move doesn't detect) the plan is left unchanged.
     if enable_depot_late_scheduling and result.plan:
         from fzed_shunting.solver.depot_late import reorder_depot_late
 
         reordered_plan = reorder_depot_late(result.plan, initial_state, plan_input)
         if reordered_plan != result.plan:
-            result = replace(result, plan=reordered_plan)
+            # Route-level verification guard: reorder_depot_late's internal
+            # simulate only replays via _apply_move and compares terminal
+            # state; it does not detect intermediate route interference that
+            # the full plan_verifier catches. Run the verifier on the
+            # candidate and fall back to the original plan on failure.
+            candidate_is_safe = True
+            if master is not None:
+                from fzed_shunting.verify.plan_verifier import verify_plan
+
+                hook_plan = [
+                    {
+                        "hookNo": index,
+                        "actionType": move.action_type,
+                        "sourceTrack": move.source_track,
+                        "targetTrack": move.target_track,
+                        "vehicleNos": list(move.vehicle_nos),
+                        "pathTracks": list(move.path_tracks),
+                    }
+                    for index, move in enumerate(reordered_plan, start=1)
+                ]
+                try:
+                    candidate_report = verify_plan(
+                        master,
+                        plan_input,
+                        hook_plan,
+                        initial_state_override=initial_state,
+                    )
+                    candidate_is_safe = bool(candidate_report.is_valid)
+                except Exception:  # noqa: BLE001
+                    candidate_is_safe = False
+            if candidate_is_safe:
+                result = replace(result, plan=reordered_plan)
 
     # Populate depot observability fields on every return path (flag on or off).
     from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook

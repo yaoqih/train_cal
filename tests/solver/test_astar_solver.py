@@ -1912,7 +1912,9 @@ from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
 VALIDATION_FIXTURES = [
     "validation_20260104W.json",
     "validation_20260110W.json",
+    "validation_20260112W.json",
     "validation_20260115W.json",
+    "validation_20260116W.json",
 ]
 
 
@@ -1937,7 +1939,7 @@ def _depot_hook_count(plan):
 
 @pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
 def test_depot_late_flag_off_matches_baseline(fixture_name):
-    """Flag off: plan byte-equal to the default-baseline plan."""
+    """Flag off: plan byte-equal to the default-off baseline plan."""
     master, plan_input, initial = _load_depot_late_scenario(fixture_name)
     baseline = solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -1945,6 +1947,7 @@ def test_depot_late_flag_off_matches_baseline(fixture_name):
         master=master,
         time_budget_ms=10_000,
         verify=True,
+        enable_depot_late_scheduling=False,
     )
     flagged_off = solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -1959,7 +1962,7 @@ def test_depot_late_flag_off_matches_baseline(fixture_name):
 
 @pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
 def test_depot_late_flag_on_preserves_hook_count(fixture_name):
-    """Flag on: hook count <= baseline (lexicographic secondary preserves primary)."""
+    """Flag on: hook count <= flag-off baseline (lexicographic secondary preserves primary)."""
     master, plan_input, initial = _load_depot_late_scenario(fixture_name)
     baseline = solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -1967,6 +1970,7 @@ def test_depot_late_flag_on_preserves_hook_count(fixture_name):
         master=master,
         time_budget_ms=10_000,
         verify=True,
+        enable_depot_late_scheduling=False,
     )
     flagged_on = solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -1984,7 +1988,7 @@ def test_depot_late_flag_on_preserves_hook_count(fixture_name):
 
 @pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
 def test_depot_late_flag_on_preserves_validity(fixture_name):
-    """Flag on: verifier still passes when baseline is valid."""
+    """Flag on: verifier still passes when flag-off baseline is valid."""
     master, plan_input, initial = _load_depot_late_scenario(fixture_name)
     baseline = solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -1992,6 +1996,7 @@ def test_depot_late_flag_on_preserves_validity(fixture_name):
         master=master,
         time_budget_ms=10_000,
         verify=True,
+        enable_depot_late_scheduling=False,
     )
     if baseline.verification_report is None or not baseline.verification_report.is_valid:
         pytest.skip(f"{fixture_name} baseline not valid; depot-late not evaluated here")
@@ -2011,7 +2016,7 @@ def test_depot_late_flag_on_preserves_validity(fixture_name):
 
 @pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
 def test_depot_late_flag_on_does_not_increase_earliness(fixture_name):
-    """Flag on: depot_earliness <= baseline (strict or equal).
+    """Flag on: depot_earliness <= flag-off baseline (strict or equal).
 
     The comparison is only meaningful when the two plans contain the same
     number of depot-touching hooks — earliness scales with depot-hook count,
@@ -2026,6 +2031,7 @@ def test_depot_late_flag_on_does_not_increase_earliness(fixture_name):
         master=master,
         time_budget_ms=10_000,
         verify=False,
+        enable_depot_late_scheduling=False,
     )
     baseline_depot_count = _depot_hook_count(baseline.plan)
     if baseline_depot_count == 0:

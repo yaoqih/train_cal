@@ -170,10 +170,14 @@ def _solve_search_result(
                 blocking_goal_targets_by_source=blocking_goal_targets_by_source,
             )
             neg_depot_index_sum = 0
-            if enable_depot_late_scheduling:
-                # O(N) per expansion — acceptable when N<=50; switch to
-                # incremental maintenance via QueueItem state if Task 7
-                # benchmarks show >5% overhead on flag-on runs.
+            if enable_depot_late_scheduling and solver_mode == "exact":
+                # Secondary key is only engaged in exact mode where the
+                # admissible heuristic guarantees f-tie tiebreaking preserves
+                # optimality. In heuristic modes (weighted/beam/greedy) an
+                # injected secondary can redirect search into worse
+                # primary-objective regions, so leave priority unchanged
+                # there and rely on LNS and post-processing reorder for
+                # depot-lateness.
                 from fzed_shunting.solver.depot_late import depot_index_sum
                 neg_depot_index_sum = -depot_index_sum(next_plan)
             heappush(
