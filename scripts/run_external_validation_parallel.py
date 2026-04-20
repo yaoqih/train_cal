@@ -125,6 +125,8 @@ def solve_one(
             "generated_nodes": result.generated_nodes,
             "closed_nodes": result.closed_nodes,
             "elapsed_ms": result.elapsed_ms,
+            "depot_earliness": result.depot_earliness,
+            "depot_hook_count": result.depot_hook_count,
             "debug_stats": debug_stats,
         }
     except Exception as exc:  # noqa: BLE001
