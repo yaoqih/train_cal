@@ -357,3 +357,34 @@ class TestSearchPriorityDepotSecondary:
         )
         # beam: (f, cost, neg_depot, adj_h, -blocker, h)
         assert p[4] == -1
+
+
+from fzed_shunting.solver.lns import _is_better_plan, _plan_quality
+
+
+class TestLnsPlanQualityDepotAware:
+    def test_flag_off_ignores_earliness(self) -> None:
+        # Same hook count, same branch/length → equivalent when flag off.
+        plan_early_depot = [_hook("修1库内", "存4北"), _hook("存1", "调北")]
+        plan_late_depot = [_hook("存1", "调北"), _hook("修1库内", "存4北")]
+        q_early = _plan_quality(plan_early_depot, route_oracle=None, depot_late=False)
+        q_late = _plan_quality(plan_late_depot, route_oracle=None, depot_late=False)
+        assert q_early == q_late
+
+    def test_flag_on_prefers_later_depot(self) -> None:
+        plan_early_depot = [_hook("修1库内", "存4北"), _hook("存1", "调北")]
+        plan_late_depot = [_hook("存1", "调北"), _hook("修1库内", "存4北")]
+        assert _is_better_plan(plan_late_depot, plan_early_depot, route_oracle=None, depot_late=True) is True
+        assert _is_better_plan(plan_early_depot, plan_late_depot, route_oracle=None, depot_late=True) is False
+
+    def test_flag_on_still_minimises_hook_count(self) -> None:
+        # Shorter plan wins even if it has an earlier depot hook.
+        plan_short_early_depot = [_hook("修1库内", "存4北")]
+        plan_long_late_depot = [
+            _hook("存1", "调北"),
+            _hook("调北", "预修"),
+            _hook("修1库内", "存4北"),
+        ]
+        assert _is_better_plan(
+            plan_short_early_depot, plan_long_late_depot, route_oracle=None, depot_late=True
+        ) is True
