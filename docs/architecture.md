@@ -119,26 +119,47 @@ Partial plan（`fallback_stage="constructive_partial"`）不会抛出 `PlanVerif
 - 线上 p99 复杂场景：`time_budget_ms=30_000`
 - 离线 benchmark：`time_budget_ms=180_000`
 
-## Benchmark 基线
+## 当前求解状态
 
-最新执行（`scripts/run_external_validation_parallel.py --solver exact --max-workers 8 --timeout-seconds 180`）：
+### 109 全量外部验证
 
-| 数据集 | 总数 | 求解成功 | 空返 | 验证失败 | 预检拒绝 |
-|---|---|---|---|---|---|
-| `external_validation_inputs` | 109 | 99 / 99 可解 | 0 | 0 | 10（容量溢出） |
+最新基线跑的是 `exact` 模式、180s 超时（单条预算 175s）、8 worker 并发。工件：`artifacts/external_validation_parallel_runs/summary.json`。
 
-耗时分布（99 solved）：`p50=914ms, p90=14s, max=67s`
+当前状态应当拆开看，而不是简单说"99/99 可解"：
 
-Fallback 阶段分布：
+| 数据集 | 总数 | 返回 plan | verifier 通过 | verifier 失败 | 预检拒绝 | 空返 |
+|---|---|---:|---:|---:|---:|---:|
+| `external_validation_inputs` | 109 | 99 | 97 | 2 | 10 | 0 |
 
-| 阶段 | 次数 | 说明 |
-|---|---|---|
-| `beam` | 80 | 最常见命中阶段 |
-| `weighted` | 13 | 启发式加权 |
-| `exact` | 3 | 最优解 |
-| `weighted_very_greedy` | 1 | 深度回退 |
-| `constructive` | 1 | 保底兜底 |
-| `constructive_partial` | 1 | 部分保底（SLA 终极救援）|
+说明：
+
+- `99` 条返回了 plan，其中 `97` 条 `is_valid=true`
+- `2` 条是"有 plan 但 verifier 未通过"，都落在 `fallback_stage=constructive_partial`
+- `10` 条不是搜索失败，而是最终容量预检阶段直接拒绝
+
+**验证失败的 2 条**：
+
+- `validation_20260105W.json`
+- `validation_20260310W.json`
+
+这 2 条的共同特征：构造保底层给出了可执行的 partial plan，但最终落位没有满足所有车辆的允许终点约束。详细勾数分布、阶段命中、耗时统计见 `docs/solver-deep-dive.md` §17。
+
+### Fixed Valid 工件
+
+本轮也用 `exact` 口径复核了两套固定验证工件：
+
+| 工件 | 场景数 | valid | 总勾数 |
+|---|---:|---:|---:|
+| `typical_suite` | 13 | 13 | 21 |
+| `typical_workflow_suite` | 17 | 17 | 39 |
+
+固定集是稳定的。109 全量外部验证上更精确的表述是：
+
+- `97/109` 达到"返回 plan 且 verifier 通过"
+- `2/109` 仅达到"partial constructive plan 可返回，但 verifier 失败"
+- `10/109` 在容量预检阶段被拒绝
+
+离群点 `validation_20260205W`（89 车、20 个随机仓库目标）当前落在 200+ 勾；尝试过归一化前预分配和 move_generator top-1 候选两种压缩方案都破坏了搜索弹性，已回滚。下一步压缩需要 CP-SAT 子问题分解或 landmark 启发式。
 
 ## 贡献指南
 

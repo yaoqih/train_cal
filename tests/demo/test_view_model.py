@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from fzed_shunting.demo import view_model as view_model_module
 from fzed_shunting.demo.view_model import build_demo_view_model, select_demo_payload
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.sim.generator import generate_typical_suite
@@ -77,6 +78,50 @@ def test_build_demo_view_model_keeps_verifier_errors():
 
     assert view.summary.is_valid is True
     assert [step.hook.target_track for step in view.steps[1:] if step.hook] == ["机库", "存4北"]
+
+
+def test_build_demo_view_model_skips_external_plan_comparison_by_default(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CMP_SKIP_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    plan_payload = [
+        {
+            "hookNo": 1,
+            "actionType": "PUT",
+            "sourceTrack": "存5北",
+            "targetTrack": "机库",
+            "vehicleNos": ["CMP_SKIP_1"],
+            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        }
+    ]
+
+    def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("solve_with_simple_astar should not run for external plan replay by default")
+
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar", fail_if_called)
+
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+
+    assert view.summary.is_valid is True
+    assert view.comparison_summary is None
 
 
 def test_build_demo_view_model_supports_weighted_solver_mode():
@@ -243,7 +288,7 @@ def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
         }
     ]
 
-    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
 
     assert view.summary.is_valid is False
     assert view.failed_hook_nos == [1]
@@ -289,7 +334,7 @@ def test_build_demo_view_model_computes_external_plan_comparison_summary():
         }
     ]
 
-    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
 
     assert view.comparison_summary is not None
     assert view.comparison_summary["solverHookCount"] == 1

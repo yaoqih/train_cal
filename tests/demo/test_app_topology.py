@@ -52,7 +52,7 @@ def test_build_topology_graph_dot_marks_active_and_inactive_edges():
     assert '"机库" [label="机库\\n机车 / 占用 1"' in dot
 
 
-def test_build_topology_svg_contains_geometry_tracks_and_motion_marker():
+def test_build_topology_svg_contains_schematic_areas_and_motion_marker():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -84,10 +84,10 @@ def test_build_topology_svg_contains_geometry_tracks_and_motion_marker():
     )
 
     assert svg.startswith("<svg")
-    assert 'class="track-path active-path"' in svg
-    assert 'class="moving-block-marker"' in svg
+    assert "schematic-track-mainline" in svg
     assert ">存5北<" in svg
-    assert ">机库<" in svg
+    assert 'class="moving-block-marker"' in svg
+    assert 'class="topology-background"' not in svg
 
 
 def test_build_topology_svg_can_emit_animated_route():
@@ -125,8 +125,121 @@ def test_build_topology_svg_can_emit_animated_route():
     assert "route-motion-path" in svg
 
 
+def test_build_topology_svg_promotes_active_and_target_track_labels():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SVG3",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    view = build_demo_view_model(master, payload)
+    svg = app._build_topology_svg(
+        view.steps[-1].topology_graph,
+        view.steps[-1].track_map,
+        hook=view.steps[-1].hook,
+    )
+
+    assert 'schematic-track-label-active' in svg
+    assert ">机库<" in svg
+    assert ">存4北<" in svg
+
+
+def test_build_topology_svg_does_not_render_all_track_labels_by_default():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SVG4",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    view = build_demo_view_model(master, payload)
+
+    svg = app._build_topology_svg(
+        view.steps[1].topology_graph,
+        view.steps[1].track_map,
+        hook=view.steps[1].hook,
+    )
+
+    assert 'class="topology-background"' not in svg
+    assert "schematic-track-active" in svg
+    assert ">存3<" not in svg
+    assert ">联6<" not in svg
+
+
+def test_build_topology_svg_uses_schematic_points_for_current_track_and_loco_markers():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SVG5",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    view = build_demo_view_model(master, payload)
+    frame = view.steps[1].transition_frames[2]
+
+    svg = app._build_topology_svg(
+        view.steps[1].topology_graph,
+        view.steps[1].track_map,
+        hook=view.steps[1].hook,
+        transition_frame=frame,
+    )
+
+    assert 'class="moving-block-marker"' in svg
+    assert 'class="loco-marker"' in svg
+
+
 def test_app_module_exposes_workflow_renderer():
     assert hasattr(app, "_render_workflow_demo")
+
+
+def test_app_module_exposes_hook_sidebar_and_distance_helpers():
+    assert hasattr(app, "_build_hook_sidebar_rows")
+    assert hasattr(app, "_build_distance_breakdown_rows")
+    assert hasattr(app, "_build_distance_catalog_rows")
 
 
 def test_select_demo_payload_supports_workflow_suite_payload():
@@ -331,7 +444,7 @@ def test_build_comparison_panel_uses_demo_view_model_summary():
         }
     ]
 
-    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
     panel = app._build_comparison_panel(view.comparison_summary)
 
     assert panel["metrics"] == [

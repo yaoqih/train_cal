@@ -3,4 +3,5 @@
 .pytest_cache
 取送车计划
 artifacts
-
+.superpowers
+.DS_Store

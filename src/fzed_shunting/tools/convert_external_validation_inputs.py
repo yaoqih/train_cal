@@ -14,12 +14,16 @@ from fzed_shunting.domain.master_data import MasterData, load_master_data
 app = typer.Typer(no_args_is_help=True)
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[3] / "data" / "master"
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "取送车计划"
+DEFAULT_DATA_SOURCE_ROOT = DEFAULT_SOURCE_ROOT / "Data"
 DEFAULT_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "段内车型换长.xlsx"
 DEFAULT_SUPPLEMENTAL_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "换长.xlsx"
 MONTHLY_PLAN_SUBDIRS = ("1月-取送车计划", "2月-取送车计划", "3月-取送车计划")
 MONTHLY_PLAN_TEMPLATE_MARKER = "模板"
 MONTHLY_PLAN_HEADER_ROW_INDEX = 2
 MONTHLY_PLAN_DATA_ROW_START_INDEX = 3
+DATA_REQUIRED_SHEETS = ("Start", "End")
+DATA_HEADER_SCAN_MAX_ROWS = 6
+DATA_IGNORED_WORKBOOK_NAMES = {"map.xlsx"}
 SUPPLEMENTAL_LENGTH_ALIASES = {
     "P64G": "P64GK",
     "NX70AK": "NX70AF",
@@ -75,20 +79,43 @@ TRACK_ALIAS_MAP = {
     "机走南": "机棚",
     "机走预修": "机棚",
     "老预修": "预修",
+    "调梁库": "调棚",
     "调梁库内": "调棚",
     "调梁库外": "调北",
     "调梁线北": "调北",
     "调梁线南": "调棚",
+    "喷漆库": "油",
+    "洗罐库内": "洗南",
+    "洗罐库外": "洗北",
+    "洗罐线": "洗南",
 }
 
 DEPOT_INNER_TRACKS = {"修1库内", "修2库内", "修3库内", "修4库内"}
 
 REPAIR_PROCESS_MAP = {
     "段": "段修",
+    "段修": "段修",
     "厂": "厂修",
+    "厂修": "厂修",
     "临": "临修",
+    "临修": "临修",
     "空": "临修",
     "重": "段修",
+    "预修": "段修",
+    "调梁": "段修",
+    "机走": "段修",
+    "卸轮": "段修",
+    "认证": "段修",
+    "鉴定": "段修",
+    "待废": "段修",
+    "代废": "段修",
+    "对规车": "段修",
+    "轮对": "段修",
+}
+
+VEHICLE_ATTRIBUTE_MAP = {
+    "重": "重车",
+    "称重": "称重",
 }
 
 
@@ -100,10 +127,9 @@ def map_excel_track_name(track_name: str) -> str:
 
 
 def build_vehicle_attributes(repair_value: str) -> tuple[str, str]:
+    repair_value = (repair_value or "").strip()
     normalized = REPAIR_PROCESS_MAP.get(repair_value, "段修")
-    if repair_value == "重":
-        return normalized, "重车"
-    return normalized, ""
+    return normalized, VEHICLE_ATTRIBUTE_MAP.get(repair_value, "")
 
 
 def load_length_m_by_model(path: Path) -> dict[str, float]:
@@ -165,6 +191,7 @@ def build_shared_vehicle_scenario(
     end_rows: list[ExcelVehicleRow],
     length_m_by_model: dict[str, float],
     master: MasterData,
+    merge_shared_fields_from_counterpart: bool = False,
 ) -> tuple[dict, dict]:
     start_duplicate_vehicle_nos = sorted(_duplicate_vehicle_nos(start_rows))
     end_duplicate_vehicle_nos = sorted(_duplicate_vehicle_nos(end_rows))
@@ -180,18 +207,34 @@ def build_shared_vehicle_scenario(
             if item.vehicle_model and item.vehicle_model not in length_m_by_model
         }
     )
+    start_sheet_backfilled_model_count = 0
+    end_sheet_backfilled_model_count = 0
+    start_sheet_backfilled_repair_count = 0
+    end_sheet_backfilled_repair_count = 0
+    skipped_vehicle_nos_missing_length: list[str] = []
+    unresolved_shared_repair_vehicle_nos: list[str] = []
 
     track_codes: set[str] = set(master.tracks)
     vehicle_info: list[dict] = []
     for vehicle_no in shared_vehicle_nos:
         start = start_by_no[vehicle_no]
         end = end_by_no[vehicle_no]
+        if merge_shared_fields_from_counterpart:
+            start, start_backfills = _merge_excel_vehicle_row(start, end)
+            end, end_backfills = _merge_excel_vehicle_row(end, start)
+            start_sheet_backfilled_model_count += start_backfills["model"]
+            start_sheet_backfilled_repair_count += start_backfills["repair"]
+            end_sheet_backfilled_model_count += end_backfills["model"]
+            end_sheet_backfilled_repair_count += end_backfills["repair"]
         current_track = map_excel_track_name(start.track_name)
         raw_target_track = map_excel_track_name(end.track_name)
         target_track = "大库" if raw_target_track in DEPOT_INNER_TRACKS else raw_target_track
         repair_process, vehicle_attributes = build_vehicle_attributes(start.repair)
         vehicle_length = length_m_by_model.get(start.vehicle_model)
+        if not start.repair:
+            unresolved_shared_repair_vehicle_nos.append(vehicle_no)
         if vehicle_length is None:
+            skipped_vehicle_nos_missing_length.append(vehicle_no)
             continue
         target_mode = "AREA" if raw_target_track in DEPOT_INNER_TRACKS else "TRACK"
         vehicle_payload = {
@@ -234,6 +277,12 @@ def build_shared_vehicle_scenario(
         "start_sheet_duplicate_vehicle_nos": start_duplicate_vehicle_nos,
         "end_sheet_duplicate_vehicle_nos": end_duplicate_vehicle_nos,
         "missing_models": missing_models,
+        "start_sheet_backfilled_model_count": start_sheet_backfilled_model_count,
+        "end_sheet_backfilled_model_count": end_sheet_backfilled_model_count,
+        "start_sheet_backfilled_repair_count": start_sheet_backfilled_repair_count,
+        "end_sheet_backfilled_repair_count": end_sheet_backfilled_repair_count,
+        "skipped_vehicle_nos_missing_length": skipped_vehicle_nos_missing_length,
+        "unresolved_shared_repair_vehicle_nos": unresolved_shared_repair_vehicle_nos,
     }
     return scenario, summary
 
@@ -263,6 +312,35 @@ def build_pair_spec_for_workbook(path: Path, *, sheet_names: tuple[str, ...] | N
         start_sheet=data_sheet_names[0],
         end_sheet=data_sheet_names[1],
         scenario_name=f"validation_{scenario_suffix}",
+    )
+
+
+def discover_data_plan_workbooks(source_root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in source_root.glob("*.xlsx")
+        if path.is_file() and path.name not in DATA_IGNORED_WORKBOOK_NAMES
+    )
+
+
+def build_data_pair_spec_for_workbook(
+    path: Path,
+    *,
+    sheet_names: tuple[str, ...] | None = None,
+) -> PairSpec:
+    if sheet_names is None:
+        sheet_names = tuple(read_worksheet_rows(path))
+    missing_sheet_names = [
+        sheet_name for sheet_name in DATA_REQUIRED_SHEETS if sheet_name not in set(sheet_names)
+    ]
+    if missing_sheet_names:
+        raise ValueError(
+            f"{path.name} is missing required sheets: {', '.join(missing_sheet_names)}"
+        )
+    return PairSpec(
+        start_sheet="Start",
+        end_sheet="End",
+        scenario_name=f"validation_{path.stem.replace('-', '_')}",
     )
 
 
@@ -321,6 +399,33 @@ def load_vehicle_rows_by_sheet(path: Path) -> dict[str, list[ExcelVehicleRow]]:
                 )
                 if vehicle is not None:
                     vehicles.append(vehicle)
+        vehicles_by_sheet[sheet_name] = vehicles
+    return vehicles_by_sheet
+
+
+def load_data_vehicle_rows_by_sheet(path: Path) -> dict[str, list[ExcelVehicleRow]]:
+    rows_by_sheet = read_worksheet_rows(path)
+    vehicles_by_sheet: dict[str, list[ExcelVehicleRow]] = {}
+    for sheet_name in DATA_REQUIRED_SHEETS:
+        rows = rows_by_sheet.get(sheet_name)
+        if rows is None:
+            raise ValueError(f"{path.name} is missing required sheet: {sheet_name}")
+        header_row_index, headers = _find_header_row(
+            path=path,
+            sheet_name=sheet_name,
+            rows=rows,
+        )
+        vehicles: list[ExcelVehicleRow] = []
+        for row in rows[header_row_index + 1:]:
+            cells = (row + [""] * len(headers))[:len(headers)]
+            vehicle = _build_vehicle_row_from_cells(
+                path=path,
+                sheet_name=sheet_name,
+                headers=headers,
+                cells=cells,
+            )
+            if vehicle is not None:
+                vehicles.append(vehicle)
         vehicles_by_sheet[sheet_name] = vehicles
     return vehicles_by_sheet
 
@@ -391,6 +496,80 @@ def convert_external_validation_inputs(
     return summary_payload
 
 
+def convert_data_external_validation_inputs(
+    *,
+    source_root: Path = DEFAULT_DATA_SOURCE_ROOT,
+    length_xlsx: Path = DEFAULT_LENGTH_XLSX,
+    supplemental_length_xlsx: Path = DEFAULT_SUPPLEMENTAL_LENGTH_XLSX,
+    output_dir: Path,
+    master_dir: Path = DEFAULT_MASTER_DIR,
+) -> dict:
+    master = load_master_data(master_dir)
+    length_m_by_model = load_length_m_by_model(length_xlsx)
+    if supplemental_length_xlsx.exists():
+        length_m_by_model.update(
+            load_supplemental_length_m_by_model(
+                supplemental_length_xlsx,
+                alias_overrides=SUPPLEMENTAL_LENGTH_ALIASES,
+                literal_overrides=SUPPLEMENTAL_LITERAL_LENGTHS,
+            )
+        )
+    workbooks = discover_data_plan_workbooks(source_root)
+    if not workbooks:
+        raise ValueError(f"No data workbooks found under {source_root}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_path in output_dir.glob("validation_*.json"):
+        stale_path.unlink()
+    for stale_path in (
+        output_dir / "conversion_summary.json",
+        output_dir / "conversion_assumptions.md",
+    ):
+        if stale_path.exists():
+            stale_path.unlink()
+
+    summaries: list[dict] = []
+    for workbook in workbooks:
+        rows_by_sheet = load_data_vehicle_rows_by_sheet(workbook)
+        pair_spec = build_data_pair_spec_for_workbook(workbook, sheet_names=tuple(rows_by_sheet))
+        scenario, summary = build_shared_vehicle_scenario(
+            pair_spec=pair_spec,
+            start_rows=rows_by_sheet[pair_spec.start_sheet],
+            end_rows=rows_by_sheet[pair_spec.end_sheet],
+            length_m_by_model=length_m_by_model,
+            master=master,
+            merge_shared_fields_from_counterpart=True,
+        )
+        scenario_path = output_dir / f"{pair_spec.scenario_name}.json"
+        scenario_path.write_text(
+            json.dumps(scenario["payload"], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summaries.append(
+            {
+                **summary,
+                "source_workbook": workbook.relative_to(source_root).as_posix(),
+                "scenario_file": scenario_path.name,
+            }
+        )
+
+    summary_payload = {
+        "source_root": source_root.name,
+        "length_xlsx": length_xlsx.name,
+        "supplemental_length_xlsx": supplemental_length_xlsx.name if supplemental_length_xlsx.exists() else None,
+        "scenario_count": len(summaries),
+        "scenarios": summaries,
+    }
+    (output_dir / "conversion_summary.json").write_text(
+        json.dumps(summary_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "conversion_assumptions.md").write_text(
+        _render_data_conversion_assumptions(summary_payload),
+        encoding="utf-8",
+    )
+    return summary_payload
+
+
 def _read_shared_strings(archive: zipfile.ZipFile, namespace: dict[str, str]) -> list[str]:
     if "xl/sharedStrings.xml" not in archive.namelist():
         return []
@@ -453,6 +632,74 @@ def _build_vehicle_row_from_cells(
     )
 
 
+def _find_header_row(
+    *,
+    path: Path,
+    sheet_name: str,
+    rows: list[list[str]],
+) -> tuple[int, list[str]]:
+    required_headers = {"股道", "序号", "车型", "车号", "修程", "备注"}
+    for row_index, row in enumerate(rows[:DATA_HEADER_SCAN_MAX_ROWS]):
+        normalized_row = [cell.strip() for cell in row]
+        if required_headers.issubset({cell for cell in normalized_row if cell}):
+            return row_index, normalized_row
+    raise ValueError(f"Unsupported data workbook header layout in {path.name}::{sheet_name}")
+
+
+def _merge_excel_vehicle_row(
+    primary: ExcelVehicleRow,
+    counterpart: ExcelVehicleRow,
+) -> tuple[ExcelVehicleRow, dict[str, int]]:
+    backfill_counts = {
+        "model": int(not primary.vehicle_model and bool(counterpart.vehicle_model)),
+        "repair": int(not primary.repair and bool(counterpart.repair)),
+    }
+    return (
+        ExcelVehicleRow(
+            track_name=primary.track_name,
+            order=primary.order,
+            vehicle_model=primary.vehicle_model or counterpart.vehicle_model,
+            vehicle_no=primary.vehicle_no,
+            repair=primary.repair or counterpart.repair,
+            note=primary.note or counterpart.note,
+        ),
+        backfill_counts,
+    )
+
+
+def _render_data_conversion_assumptions(summary_payload: dict) -> str:
+    total_start_model_backfills = sum(
+        item.get("start_sheet_backfilled_model_count", 0)
+        for item in summary_payload.get("scenarios", [])
+    )
+    total_end_model_backfills = sum(
+        item.get("end_sheet_backfilled_model_count", 0)
+        for item in summary_payload.get("scenarios", [])
+    )
+    total_start_repair_backfills = sum(
+        item.get("start_sheet_backfilled_repair_count", 0)
+        for item in summary_payload.get("scenarios", [])
+    )
+    total_end_repair_backfills = sum(
+        item.get("end_sheet_backfilled_repair_count", 0)
+        for item in summary_payload.get("scenarios", [])
+    )
+    return "\n".join(
+        [
+            "# Data Conversion Assumptions",
+            "",
+            "- Only `Start` and `End` sheets are treated as scenario sources; `map` and presentation sheets are ignored.",
+            "- The header row is detected by required columns `股道/序号/车型/车号/修程/备注` within the first six rows.",
+            "- Old aliases are normalized as follows: `调梁库 -> 调棚`, `喷漆库 -> 油`, `洗罐库内 -> 洗南`, `洗罐库外 -> 洗北`, `洗罐线 -> 洗南`.",
+            "- Raw repair values are normalized into the current contract with `称重 -> vehicleAttributes=称重`, `重 -> vehicleAttributes=重车`, direct `段修/厂修/临修` preserved, and other legacy labels folded into `段修`.",
+            f"- Start-sheet model backfills from End: {total_start_model_backfills}",
+            f"- End-sheet model backfills from Start: {total_end_model_backfills}",
+            f"- Start-sheet repair backfills from End: {total_start_repair_backfills}",
+            f"- End-sheet repair backfills from Start: {total_end_repair_backfills}",
+        ]
+    )
+
+
 def _duplicate_vehicle_nos(rows: list[ExcelVehicleRow]) -> set[str]:
     seen: set[str] = set()
     duplicates: set[str] = set()
@@ -472,6 +719,24 @@ def convert_cmd(
     master_dir: Path = typer.Option(DEFAULT_MASTER_DIR, exists=True, file_okay=False, dir_okay=True),
 ):
     summary = convert_external_validation_inputs(
+        source_root=source_root,
+        length_xlsx=length_xlsx,
+        supplemental_length_xlsx=supplemental_length_xlsx,
+        output_dir=output_dir,
+        master_dir=master_dir,
+    )
+    typer.echo(json.dumps(summary, ensure_ascii=False))
+
+
+@app.command("convert-data")
+def convert_data_cmd(
+    output_dir: Path = typer.Option(..., exists=False, file_okay=False, dir_okay=True),
+    source_root: Path = typer.Option(DEFAULT_DATA_SOURCE_ROOT, exists=True, file_okay=False, dir_okay=True),
+    length_xlsx: Path = typer.Option(DEFAULT_LENGTH_XLSX, exists=True, dir_okay=False),
+    supplemental_length_xlsx: Path = typer.Option(DEFAULT_SUPPLEMENTAL_LENGTH_XLSX, exists=False, dir_okay=False),
+    master_dir: Path = typer.Option(DEFAULT_MASTER_DIR, exists=True, file_okay=False, dir_okay=True),
+):
+    summary = convert_data_external_validation_inputs(
         source_root=source_root,
         length_xlsx=length_xlsx,
         supplemental_length_xlsx=supplemental_length_xlsx,

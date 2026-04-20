@@ -30,6 +30,7 @@ def solve_workflow(
     solver: str = "exact",
     heuristic_weight: float = 1.0,
     beam_width: int | None = None,
+    time_budget_ms: float | None = None,
 ) -> WorkflowResult:
     from fzed_shunting.demo.view_model import build_demo_view_model
 
@@ -86,6 +87,7 @@ def solve_workflow(
             solver=solver,
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
             initial_state_override=current_state,
         )
         stages.append(

@@ -125,6 +125,8 @@ def build_demo_view_model(
     solver: str = "exact",
     heuristic_weight: float = 1.0,
     beam_width: int | None = None,
+    time_budget_ms: float | None = None,
+    compare_external_plan: bool = False,
     initial_state_override: ReplayState | None = None,
 ) -> DemoViewModel:
     normalized = normalize_plan_input(
@@ -145,6 +147,7 @@ def build_demo_view_model(
         solver=solver,
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
+        time_budget_ms=time_budget_ms,
     )
     hook_plan = [DemoHook.model_validate(item) for item in raw_hook_plan]
     replay = replay_plan(
@@ -200,7 +203,7 @@ def build_demo_view_model(
         active_edge_keys=[],
     )
     comparison_summary = None
-    if plan_payload is not None:
+    if plan_payload is not None and compare_external_plan:
         solver_hook_count: int | None = None
         solver_error: str | None = None
         try:
@@ -211,6 +214,7 @@ def build_demo_view_model(
                 solver_mode=solver,
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
+                time_budget_ms=time_budget_ms,
             )
             if solver_plan:
                 solver_hook_count = len(solver_plan)
@@ -261,6 +265,7 @@ def build_demo_workflow_view_model(
     solver: str = "exact",
     heuristic_weight: float = 1.0,
     beam_width: int | None = None,
+    time_budget_ms: float | None = None,
 ) -> DemoWorkflowViewModel:
     from fzed_shunting.workflow.runner import solve_workflow
 
@@ -271,6 +276,7 @@ def build_demo_workflow_view_model(
             solver=solver,
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
         )
     )
 
@@ -286,6 +292,7 @@ def _resolve_hook_plan(
     solver: str,
     heuristic_weight: float,
     beam_width: int | None,
+    time_budget_ms: float | None = None,
 ) -> list[dict]:
     if plan_payload is None:
         plan = solve_with_simple_astar(
@@ -295,6 +302,7 @@ def _resolve_hook_plan(
             solver_mode=solver,
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
         )
         return [
             _build_demo_hook(

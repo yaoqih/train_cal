@@ -8,11 +8,15 @@ from fzed_shunting.tools.convert_external_validation_inputs import (
     PairSpec,
     ExcelVehicleRow,
     build_pair_spec_for_workbook,
+    build_data_pair_spec_for_workbook,
     build_shared_vehicle_scenario,
     build_vehicle_attributes,
     convert_external_validation_inputs,
+    convert_data_external_validation_inputs,
+    discover_data_plan_workbooks,
     discover_monthly_plan_workbooks,
     load_length_m_by_model,
+    load_data_vehicle_rows_by_sheet,
     load_supplemental_length_m_by_model,
     load_vehicle_rows_by_sheet,
     map_excel_track_name,
@@ -26,31 +30,51 @@ SAMPLE_WORKBOOK = MONTHLY_PLAN_ROOT / "1月-取送车计划" / "取送车计划_
 SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET = MONTHLY_PLAN_ROOT / "2月-取送车计划" / "取送车计划_20260206W.xlsx"
 MARCH_Z_WORKBOOK = MONTHLY_PLAN_ROOT / "3月-取送车计划" / "取送车计划_20260302Z.xlsx"
 MARCH_26_Z_WORKBOOK = MONTHLY_PLAN_ROOT / "3月-取送车计划" / "取送车计划_20260326Z.xlsx"
+DATA_PLAN_ROOT = MONTHLY_PLAN_ROOT / "Data"
+DATA_MAP_XLSX = DATA_PLAN_ROOT / "map.xlsx"
+DATA_WORKBOOK_WITH_LEADING_BLANK_ROW = DATA_PLAN_ROOT / "2025-11-06-noon.xlsx"
+DATA_WORKBOOK_WITH_EXTRA_REPAIR_COLUMN = DATA_PLAN_ROOT / "2025-11-11-noon.xlsx"
+DATA_WORKBOOK_WITH_EXTRA_SHEETS = DATA_PLAN_ROOT / "2025-09-04-noon.xlsx"
+DATA_WORKBOOK_WITH_BACKFILL = DATA_PLAN_ROOT / "2025-11-04-afternoon.xlsx"
 
 
 def test_map_excel_track_name_maps_known_aliases():
     assert map_excel_track_name("存5线北") == "存5北"
     assert map_excel_track_name("老预修") == "预修"
     assert map_excel_track_name("调梁库内") == "调棚"
+    assert map_excel_track_name("调梁库") == "调棚"
     assert map_excel_track_name("调梁线南") == "调棚"
     assert map_excel_track_name("调梁线北") == "调北"
     assert map_excel_track_name("喷漆库外") == "油"
+    assert map_excel_track_name("喷漆库") == "油"
     assert map_excel_track_name("喷漆线") == "油"
     assert map_excel_track_name("存4线") == "存4北"
     assert map_excel_track_name("机走北") == "机北"
     assert map_excel_track_name("机走南") == "机棚"
     assert map_excel_track_name("洗罐线北") == "洗北"
     assert map_excel_track_name("洗罐线南") == "洗南"
+    assert map_excel_track_name("洗罐库内") == "洗南"
+    assert map_excel_track_name("洗罐库外") == "洗北"
+    assert map_excel_track_name("洗罐线") == "洗南"
 
 
 def test_build_vehicle_attributes_extracts_heavy_and_maps_empty_to_linxiu():
     heavy_repair_process, heavy_vehicle_attributes = build_vehicle_attributes("重")
     empty_repair_process, empty_vehicle_attributes = build_vehicle_attributes("空")
+    weigh_repair_process, weigh_vehicle_attributes = build_vehicle_attributes("称重")
+    direct_factory_repair_process, direct_factory_vehicle_attributes = build_vehicle_attributes("厂修")
+    direct_stage_repair_process, direct_stage_vehicle_attributes = build_vehicle_attributes("段修")
 
     assert heavy_repair_process == "段修"
     assert heavy_vehicle_attributes == "重车"
     assert empty_repair_process == "临修"
     assert empty_vehicle_attributes == ""
+    assert weigh_repair_process == "段修"
+    assert weigh_vehicle_attributes == "称重"
+    assert direct_factory_repair_process == "厂修"
+    assert direct_factory_vehicle_attributes == ""
+    assert direct_stage_repair_process == "段修"
+    assert direct_stage_vehicle_attributes == ""
 
 
 def test_load_length_m_by_model_reads_enabled_models_from_length_sheet():
@@ -86,6 +110,15 @@ def test_discover_monthly_plan_workbooks_returns_all_monthly_xlsx():
     assert workbooks[-1].name == "取送车计划_20260331Z.xlsx"
 
 
+def test_discover_data_plan_workbooks_returns_all_data_xlsx_without_map():
+    workbooks = discover_data_plan_workbooks(DATA_PLAN_ROOT)
+
+    assert len(workbooks) == 18
+    assert workbooks[0].name == "2025-09-04-noon.xlsx"
+    assert workbooks[-1].name == "2025-12-09-noon.xlsx"
+    assert DATA_MAP_XLSX not in workbooks
+
+
 def test_build_pair_spec_for_workbook_ignores_template_sheet():
     pair_spec = build_pair_spec_for_workbook(SAMPLE_WORKBOOK_WITH_TEMPLATE_SHEET)
 
@@ -105,6 +138,29 @@ def test_load_vehicle_rows_by_sheet_accepts_monthly_plan_column_variants():
 
     assert january_first == ExcelVehicleRow("存5线北", 1, "NX17KF", "5267378", "段", "")
     assert february_first == ExcelVehicleRow("老预修", 1, "K13NK", "5508258", "", "")
+
+
+def test_load_data_vehicle_rows_by_sheet_detects_header_offset_and_extra_columns():
+    blank_row_rows = load_data_vehicle_rows_by_sheet(DATA_WORKBOOK_WITH_LEADING_BLANK_ROW)
+    extra_column_rows = load_data_vehicle_rows_by_sheet(DATA_WORKBOOK_WITH_EXTRA_REPAIR_COLUMN)
+
+    assert blank_row_rows["Start"][0] == ExcelVehicleRow("老预修", 2, "C70", "1662620", "预修", "")
+    assert extra_column_rows["End"][0] == ExcelVehicleRow("老预修", 2, "NX17KF", "5265641", "段", "")
+
+
+def test_load_data_vehicle_rows_by_sheet_ignores_map_and_presentation_sheets():
+    rows_by_sheet = load_data_vehicle_rows_by_sheet(DATA_WORKBOOK_WITH_EXTRA_SHEETS)
+
+    assert set(rows_by_sheet) == {"Start", "End"}
+    assert rows_by_sheet["Start"][0] == ExcelVehicleRow("老预修", 1, "C70E", "1851493", "段", "")
+
+
+def test_build_data_pair_spec_for_workbook_uses_stem_based_scenario_name():
+    pair_spec = build_data_pair_spec_for_workbook(DATA_WORKBOOK_WITH_BACKFILL)
+
+    assert pair_spec.start_sheet == "Start"
+    assert pair_spec.end_sheet == "End"
+    assert pair_spec.scenario_name == "validation_2025_11_04_afternoon"
 
 
 def test_normalize_plan_input_accepts_explicit_track_target_mode():
@@ -257,6 +313,40 @@ def test_convert_external_validation_inputs_converts_each_monthly_workbook_to_on
 
     assert payload["vehicleInfo"]
     assert track_names == set(master.tracks)
+
+
+def test_convert_data_external_validation_inputs_backfills_shared_fields_and_writes_separate_summary(
+    tmp_path: Path,
+):
+    source_root = tmp_path / "Data"
+    source_root.mkdir(parents=True)
+    copy2(DATA_WORKBOOK_WITH_BACKFILL, source_root / DATA_WORKBOOK_WITH_BACKFILL.name)
+    copy2(DATA_MAP_XLSX, source_root / DATA_MAP_XLSX.name)
+    output_dir = tmp_path / "external_validation_inputs" / "data"
+
+    summary = convert_data_external_validation_inputs(
+        output_dir=output_dir,
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
+        master_dir=DATA_DIR,
+    )
+
+    assert summary["source_root"] == "Data"
+    assert summary["scenario_count"] == 1
+    assert summary["scenarios"][0]["scenario_file"] == "validation_2025_11_04_afternoon.json"
+    assert summary["scenarios"][0]["source_workbook"] == "2025-11-04-afternoon.xlsx"
+    assert summary["scenarios"][0]["end_sheet_backfilled_model_count"] == 10
+    assert summary["scenarios"][0]["end_sheet_backfilled_repair_count"] == 10
+
+    payload = json.loads(
+        (output_dir / "validation_2025_11_04_afternoon.json").read_text(encoding="utf-8")
+    )
+    by_no = {item["vehicleNo"]: item for item in payload["vehicleInfo"]}
+
+    assert by_no["1528734"]["vehicleModel"] == "C70EH"
+    assert by_no["1528734"]["repairProcess"] == "段修"
+    assert by_no["1528734"]["targetTrack"] == "存4北"
+    assert (output_dir / "conversion_assumptions.md").exists()
 
 
 def test_convert_external_validation_inputs_removes_stale_validation_jsons(tmp_path: Path):
