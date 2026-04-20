@@ -296,6 +296,46 @@ class TestReorderDepotLate:
         # Earliness strictly improved (V1 moved from index 1 to index 2).
         assert depot_earliness(reordered) < depot_earliness(plan)
 
+    def test_reorder_topological_jumps_past_blocked_swap(self) -> None:
+        """Plan [A_depot, B_nondepot_dep_on_A, C_nondepot_independent].
+
+        Adjacent swap cannot reorder: A-B is dep-blocked, B-C is same-class (both non-depot),
+        so no swap fires. Topological sort: C is independent and ready first, B depends on A,
+        so order becomes [C, A, B]. Depot A ends up at position 2 instead of 1.
+        """
+        plan_input = _plan_input([
+            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存1", ["存4北"]),  # B moves V2 whose source is 存1 — depends on A removing V1 first
+            _vehicle("V3", "存2", ["调北"]),  # independent
+        ])
+        initial = _state({"存1": ["V1", "V2"], "存2": ["V3"]})
+        plan = [
+            _hook("存1", "修1库内", ["V1"]),         # A: depot, prereq for B
+            _hook("存1", "存4北", ["V2"]),           # B: non-depot, depends on A (source needs V1 gone)
+            _hook("存2", "调北", ["V3"]),            # C: non-depot, independent
+        ]
+        reordered = reorder_depot_late(plan, initial, plan_input)
+        # Expect [C, A, B]: C first (independent), then A (B's prereq), then B
+        assert reordered[0].vehicle_nos == ["V3"]
+        assert reordered[1].vehicle_nos == ["V1"]
+        assert reordered[2].vehicle_nos == ["V2"]
+        assert depot_earliness(reordered) < depot_earliness(plan)
+
+    def test_reorder_topological_handles_simple_swap(self) -> None:
+        """The existing simple-swap case should still produce the same result."""
+        plan_input = _plan_input([
+            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存2", ["存4北"]),
+        ])
+        initial = _state({"存1": ["V1"], "存2": ["V2"]})
+        plan = [
+            _hook("存1", "修1库内", ["V1"]),
+            _hook("存2", "存4北", ["V2"]),
+        ]
+        reordered = reorder_depot_late(plan, initial, plan_input)
+        assert reordered[0].vehicle_nos == ["V2"]
+        assert reordered[1].vehicle_nos == ["V1"]
+
 
 from fzed_shunting.solver.search import _priority
 
