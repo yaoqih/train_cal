@@ -322,8 +322,82 @@ def make_report(
         w(f"| max (ms) | {d_off_ms['max']:.0f} | {d_on_ms['max']:.0f} |")
     w("")
 
-    # === 7. 结论 ===
-    w("## 7. 结论")
+    # === 7. 大库钩位置分布 + 理论上限对比 ===
+    w("## 7. 大库钩平均位置分布（fraction = 平均索引 / N）")
+    w("")
+    w("对每个 solved 且有大库钩的场景计算：")
+    w("- `avg_frac = depot_index_sum / (K * N)` = 大库钩平均位置占 plan 长度的比例")
+    w("- `theoretical_max = (2N - K + 1) / (2N)` = 若把全部 K 个大库钩塞到 plan 最后 K 位时的平均比例")
+    w("  （该上限不考虑依赖约束，纯粹是 pigeonhole）")
+    w("")
+
+    def frac(r):
+        if not r.solved or not r.hook_count or r.depot_hook_count is None \
+                or r.depot_earliness is None or r.depot_hook_count == 0:
+            return None
+        K, N, E = r.depot_hook_count, r.hook_count, r.depot_earliness
+        return 1 - E / (K * N)
+
+    def theoretical_max(r):
+        if not r.solved or not r.hook_count or r.depot_hook_count is None \
+                or r.depot_hook_count == 0:
+            return None
+        K, N = r.depot_hook_count, r.hook_count
+        return (2 * N - K + 1) / (2 * N)
+
+    off_frac = [frac(r) for r in off]
+    on_frac = [frac(r) for r in on]
+    off_theomax = [theoretical_max(r) for r in off]
+    on_theomax = [theoretical_max(r) for r in on]
+
+    # Paired: match scenarios between OFF and ON, then bucketize current vs theoretical
+    buckets = ["< 0.50", "0.50-0.60", "0.60-0.70", "0.70-0.80", "0.80-0.90", "≥ 0.90"]
+
+    def bucket_of(v):
+        if v < 0.50: return "< 0.50"
+        if v < 0.60: return "0.50-0.60"
+        if v < 0.70: return "0.60-0.70"
+        if v < 0.80: return "0.70-0.80"
+        if v < 0.90: return "0.80-0.90"
+        return "≥ 0.90"
+
+    off_hist = Counter(bucket_of(f) for f in off_frac if f is not None)
+    on_hist = Counter(bucket_of(f) for f in on_frac if f is not None)
+    theo_hist = Counter(bucket_of(t) for t in off_theomax if t is not None)  # same for both sides
+
+    w("| Bucket (avg depot position fraction) | OFF | ON | 理论上限 |")
+    w("|---|---:|---:|---:|")
+    for b in buckets:
+        w(f"| {b} | {off_hist.get(b, 0)} | {on_hist.get(b, 0)} | {theo_hist.get(b, 0)} |")
+    w("")
+
+    off_valid = [f for f in off_frac if f is not None]
+    on_valid = [f for f in on_frac if f is not None]
+    theomax_valid = [t for t in off_theomax if t is not None]
+    if off_valid and on_valid and theomax_valid:
+        w(f"- OFF 均值：{statistics.mean(off_valid):.3f}，ON 均值：{statistics.mean(on_valid):.3f}，"
+          f"理论上限均值：{statistics.mean(theomax_valid):.3f}")
+        # Per-scenario "how close to theoretical max is ON"
+        closeness = []
+        for ro, rn in zip(off, on):
+            fo = frac(ro)
+            fn = frac(rn)
+            tmax = theoretical_max(ro)
+            if fo is None or fn is None or tmax is None:
+                continue
+            # gap_closed = (ON - OFF) / (theoretical_max - OFF)
+            if tmax - fo < 1e-9:
+                continue
+            closeness.append((fn - fo) / (tmax - fo))
+        if closeness:
+            w(f"- ON 相对 OFF 向理论上限的\u7a7a\u95f4收敛度：均值 "
+              f"{statistics.mean(closeness):.1%}（0% = 没挪，100% = 达到理论上限）")
+            w(f"  - p25/p50/p75: {percentile(closeness, 25):.1%} / "
+              f"{percentile(closeness, 50):.1%} / {percentile(closeness, 75):.1%}")
+    w("")
+
+    # === 8. 结论 ===
+    w("## 8. 结论")
     w("")
     if matched:
         total_off_hooks = sum(f.hook_count for f, _ in matched)
