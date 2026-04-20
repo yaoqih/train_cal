@@ -94,34 +94,37 @@ def reorder_depot_late(
     initial_state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> list[HookAction]:
-    """Semantic-dep topological reorder that pushes depot hooks toward the tail.
+    """Hybrid reorder: semantic-dep topological seed + adjacent-swap polish.
 
-    Builds a semantic dependency graph over the plan's hooks (O(N^2) pair
-    tests, each doing a full O(N) replay), then performs a greedy
-    topological sort preferring non-depot hooks. This is strictly stronger
-    than adjacent-swap bubble: any reorder reachable by a chain of
-    state-preserving adjacent swaps is also a valid topological order under
-    the semantic dep graph, and the topo approach can additionally jump a
-    hook past a dep-blocked intermediate pair that adjacent-swap can't
-    cross.
+    Empirically, semantic topological reorder alone under-performs adjacent
+    bubble because its pairwise dep graph is an over-approximation:
+    individually safe pairs don't compose into a globally-valid order, and
+    the algorithm falls back to the original plan when the composite order
+    fails the final replay check. Adjacent bubble, by contrast, validates
+    each incremental swap and therefore always produces some improvement
+    when any valid swap exists.
 
-    Algorithm:
-    1. Baseline simulate the original plan and canonicalize its terminal
-       state. If the input is itself invalid, bail out unchanged.
-    2. For each pair (i, j) with i < j, test whether hook j can be placed
-       at position i (shifting plan[i..j-1] one slot right) while the
-       modified plan still replays legally AND reaches the same terminal
-       state. If not, add edge i -> j (j must stay after i).
-    3. Greedy topological sort: at each step pick the ready hook with the
-       lowest (is_depot, original_index) key — non-depot first, tiebreak
-       by original position.
-    4. Validate the final order by replaying from the initial state; if
-       the terminal state diverges or replay fails, fall back to the
-       original plan.
+    The hybrid runs semantic topo first — it can jump a hook past multiple
+    dep-blocked intermediates that adjacent bubble cannot cross — then runs
+    adjacent bubble from whatever state topo produced (original or an
+    already-improved order). This strictly dominates adjacent-swap alone:
+    worst case (topo returns original), the hybrid degenerates to pure
+    adjacent bubble; best case (topo finds a jump), bubble further refines
+    from the improved baseline.
 
-    Complexity: O(N^3). On any failure anywhere in the pipeline the
-    function returns ``list(plan)`` unchanged.
+    Complexity remains O(N^3). Either phase fails safe — returning the
+    input plan unchanged on any replay/state mismatch.
     """
+    topo_result = _semantic_topo_reorder(plan, initial_state, plan_input)
+    return _adjacent_swap_polish(topo_result, initial_state, plan_input)
+
+
+def _semantic_topo_reorder(
+    plan: Sequence[HookAction],
+    initial_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> list[HookAction]:
+    """Greedy topological sort with per-pair semantic dep detection."""
     result = list(plan)
     if not result:
         return result
@@ -153,15 +156,12 @@ def reorder_depot_late(
     n = len(result)
 
     def can_move_j_before_i(i: int, j: int) -> bool:
-        """True iff hook at index j can be placed at position i while
-        preserving terminal state (track_sequences, weighed, spots)."""
         modified = list(result[:i]) + [result[j]] + list(result[i:j]) + list(result[j + 1:])
         final = simulate(modified)
         if final is None:
             return False
         return _canonicalize_state(final) == baseline_key
 
-    # Build semantic dep graph.
     indegree = [0] * n
     successors: list[list[int]] = [[] for _ in range(n)]
     for i in range(n):
@@ -170,7 +170,6 @@ def reorder_depot_late(
                 successors[i].append(j)
                 indegree[j] += 1
 
-    # Greedy topological sort with non-depot preference.
     ready = [i for i in range(n) if indegree[i] == 0]
     ordered: list[int] = []
     while ready:
@@ -183,16 +182,67 @@ def reorder_depot_late(
                 ready.append(j)
 
     if len(ordered) != n:
-        # Cycle — shouldn't happen with a valid DAG; fall back.
         return list(plan)
 
     candidate = [result[i] for i in ordered]
-
-    # Final safety check.
     final_state = simulate(candidate)
     if final_state is None or _canonicalize_state(final_state) != baseline_key:
         return list(plan)
     return candidate
+
+
+def _adjacent_swap_polish(
+    plan: Sequence[HookAction],
+    initial_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> list[HookAction]:
+    """Bubble-sort pass: swap each adjacent (depot, non-depot) pair iff the
+    swap replays legally AND reaches the same terminal state. Repeated until
+    no more accepted swaps."""
+    result = list(plan)
+    if not result:
+        return result
+
+    vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
+
+    def simulate(sequence: list[HookAction]) -> ReplayState | None:
+        state = initial_state
+        for move in sequence:
+            source_seq = state.track_sequences.get(move.source_track, [])
+            if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
+                return None
+            try:
+                state = _apply_move(
+                    state=state,
+                    move=move,
+                    plan_input=plan_input,
+                    vehicle_by_no=vehicle_by_no,
+                )
+            except (ValueError, KeyError):
+                return None
+        return state
+
+    baseline_state = simulate(result)
+    if baseline_state is None:
+        return list(plan)
+    baseline_key = _canonicalize_state(baseline_state)
+
+    improved = True
+    while improved:
+        improved = False
+        for i in range(len(result) - 1):
+            a, b = result[i], result[i + 1]
+            if is_depot_hook(a) and not is_depot_hook(b):
+                candidate = list(result)
+                candidate[i], candidate[i + 1] = b, a
+                new_state = simulate(candidate)
+                if new_state is None:
+                    continue
+                if _canonicalize_state(new_state) != baseline_key:
+                    continue
+                result = candidate
+                improved = True
+    return result
 
 
 def _canonicalize_state(state: ReplayState) -> tuple:
