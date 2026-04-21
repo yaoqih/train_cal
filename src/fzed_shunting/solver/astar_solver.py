@@ -269,52 +269,9 @@ def solve_with_simple_astar_result(
                 result = polished
             phase_timings["lns_ms"] += (perf_counter() - _ts) * 1000
 
-    # Goal-by-goal rescue: if the main solver left any vehicle off-target
-    # (typically a constructive_partial fallback), try a focused sub-A* per
-    # misplaced vehicle. This recovers plans the full multi-goal search
-    # couldn't complete within budget.
-    if result.plan:
-        # Build the terminal state by replaying the current plan from initial.
-        replay_state = initial_state
-        replay_ok = True
-        vehicle_by_no_rescue = {v.vehicle_no: v for v in plan_input.vehicles}
-        for move in result.plan:
-            try:
-                replay_state = _apply_move(
-                    state=replay_state,
-                    move=move,
-                    plan_input=plan_input,
-                    vehicle_by_no=vehicle_by_no_rescue,
-                )
-            except (ValueError, KeyError):
-                replay_ok = False
-                break
-
-        if replay_ok:
-            current_by_vehicle = _vehicle_track_lookup(replay_state)
-            any_misplaced = any(
-                current_by_vehicle.get(v.vehicle_no) not in v.goal.allowed_target_tracks
-                for v in plan_input.vehicles
-            )
-            if any_misplaced:
-                from fzed_shunting.solver.rescue import attempt_goal_rescue
-
-                rescued_plan, _, _ = attempt_goal_rescue(
-                    plan_input=plan_input,
-                    current_plan=result.plan,
-                    terminal_state=replay_state,
-                    initial_state=initial_state,
-                    master=master,
-                    per_vehicle_budget_ms=2000.0,
-                )
-                if len(rescued_plan) > len(result.plan):
-                    # Rescue found extra moves. Update result; mark fallback
-                    # stage so the diagnostic layer can see this happened.
-                    result = replace(
-                        result,
-                        plan=rescued_plan,
-                        fallback_stage=f"{result.fallback_stage}+rescue",
-                    )
+    # Goal-by-goal rescue was removed (W3-L): the root-cause fix in
+    # _score_move prevents partial plans upstream, making post-hoc rescue
+    # redundant.
 
     # Depot-late post-processing: only when the flag is on and we have a plan.
     # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
