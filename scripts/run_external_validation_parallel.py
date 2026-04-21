@@ -393,7 +393,13 @@ def main() -> None:
     if args.scenario is not None:
         scenario_paths = [args.scenario]
     else:
+        # Prefer validation_*.json (the original external_validation_inputs
+        # naming) for backwards compatibility; fall back to all *.json when
+        # none match (so data/validation_inputs/positive/case_*.json etc.
+        # also work without a rename).
         scenario_paths = sorted(args.input_dir.glob("validation_*.json"))
+        if not scenario_paths:
+            scenario_paths = sorted(args.input_dir.glob("*.json"))
     time_budget_ms = getattr(args, "solver_time_budget_ms", None)
     enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
     enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", False)
