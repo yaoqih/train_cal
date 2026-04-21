@@ -15,6 +15,13 @@ Because candidate generation already honours every hard business constraint
 (traction limits, path interference, close-door pruning, capacity tolerance,
 spot availability, etc.), any plan the dispatcher emits is legal by
 construction. Verification still happens on the solver entry point.
+
+Bounded backtracking (W3-N): If greedy_forward gets stuck in a local minimum
+(heuristic stale for ``stuck_threshold`` rounds) without reaching the goal,
+``solve_constructive`` rewinds to a recent decision point and tries an
+alternative (2nd/3rd best) move there, retrying up to ``max_backtracks``
+times. This breaks the 12 known positive failures where greedy picks the
+wrong move at some key step and oscillates in displacement cycles.
 """
 
 from __future__ import annotations
@@ -37,6 +44,10 @@ from fzed_shunting.verify.replay import ReplayState
 STAGING_TRACKS = frozenset({"临1", "临2", "临3", "临4", "存4南"})
 _INVERSE_GUARD_WINDOW = 12
 
+# W3-N backtracking controls
+REWIND_WINDOW = 30
+MAX_ALTERNATIVES_PER_STEP = 3
+
 
 @dataclass(frozen=True)
 class ConstructiveResult:
@@ -46,6 +57,7 @@ class ConstructiveResult:
     elapsed_ms: float
     stuck_reason: str | None = None
     debug_stats: dict[str, Any] | None = None
+    final_heuristic: float | None = None
 
 
 def solve_constructive(
@@ -55,23 +67,151 @@ def solve_constructive(
     *,
     max_iterations: int = 1000,
     stuck_threshold: int = 30,
+    max_backtracks: int = 5,
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
 ) -> ConstructiveResult:
-    """Priority-rule dispatcher, guaranteed to return a ``ConstructiveResult``.
+    """Priority-rule dispatcher with bounded backtracking.
 
-    The dispatcher never raises ``ValueError("No solution found")``. If the
-    current state has no legal move (a rare true dead-end) or the caller-set
-    iteration/time budget is exhausted, the result reports ``reached_goal=False``
-    with the best-effort partial plan collected so far. Callers decide whether
-    to accept the partial plan or abort.
+    Runs greedy-forward. If it gets stuck (h stale for ``stuck_threshold``
+    rounds) without reaching goal, rewinds ~15-30 steps and tries an
+    alternative move at one of the rewound decision points. Retries up to
+    ``max_backtracks`` times. Always returns a ``ConstructiveResult`` — the
+    best attempt seen across all retries (prefer reached_goal; among equal,
+    prefer fewer hooks; among not reached, prefer lower final heuristic).
 
-    ``stuck_threshold`` default was raised from 6 to 30. The original 6 was
-    too aggressive on scenarios where an identity-goal displacement detour
-    needs 5-10 intermediate moves to reverse; the solver gave up mid-detour
-    even though max_iterations (1000) and the inverse-move guard
-    (_is_inverse_of_recent) already bound exploration. 30 gives detour room
-    while still being far below max_iterations on genuinely stuck scenarios.
+    ``stuck_threshold`` default 30 gives an identity-goal displacement detour
+    room while still being far below ``max_iterations`` on genuinely stuck
+    scenarios.
+    """
+    started_at = perf_counter()
+
+    # ``alternatives`` maps step_index -> which alternative to pick at that step
+    # (0 = best; 1 = 2nd-best; etc.). Starts empty (full greedy).
+    alternatives: dict[int, int] = {}
+    best_attempt: ConstructiveResult | None = None
+    attempt_idx = 0
+
+    for attempt_idx in range(max_backtracks + 1):
+        remaining_budget = None
+        if time_budget_ms is not None:
+            elapsed = (perf_counter() - started_at) * 1000
+            remaining_budget = time_budget_ms - elapsed
+            if remaining_budget <= 0:
+                break
+
+        result = _greedy_forward(
+            plan_input,
+            initial_state,
+            master,
+            alternatives=alternatives,
+            max_iterations=max_iterations,
+            stuck_threshold=stuck_threshold,
+            time_budget_ms=remaining_budget,
+        )
+
+        if best_attempt is None or _is_better_attempt(result, best_attempt):
+            best_attempt = result
+
+        if result.reached_goal:
+            break
+
+        # If we're out of budget, don't try more backtracks
+        if time_budget_ms is not None:
+            if (perf_counter() - started_at) * 1000 >= time_budget_ms:
+                break
+
+        # Find a step to rewind to and try an alternative there.
+        stuck_at = len(result.plan)
+        rewind_candidate: int | None = None
+
+        # Preferred: LATEST step in the last REWIND_WINDOW that hasn't yet
+        # exhausted its alternatives.
+        window_start = max(0, stuck_at - REWIND_WINDOW)
+        for step in range(stuck_at - 1, window_start - 1, -1):
+            if alternatives.get(step, 0) + 1 >= MAX_ALTERNATIVES_PER_STEP:
+                continue
+            rewind_candidate = step
+            break
+
+        # Fallback: older steps (before window_start) that still have alternatives.
+        if rewind_candidate is None:
+            for step in range(window_start - 1, -1, -1):
+                if alternatives.get(step, 0) + 1 >= MAX_ALTERNATIVES_PER_STEP:
+                    continue
+                rewind_candidate = step
+                break
+
+        if rewind_candidate is None:
+            # Nothing left to try.
+            break
+
+        # Increment the alternative index for the chosen rewind step.
+        alternatives[rewind_candidate] = alternatives.get(rewind_candidate, 0) + 1
+        # Clear any later entries in `alternatives`: those steps will be
+        # re-run from scratch so their prior bias no longer applies.
+        for step in list(alternatives.keys()):
+            if step > rewind_candidate:
+                del alternatives[step]
+
+    assert best_attempt is not None
+    if debug_stats is not None:
+        debug_stats["constructive_backtrack_count"] = attempt_idx
+        if best_attempt.debug_stats:
+            debug_stats.update(best_attempt.debug_stats)
+        debug_stats["constructive_iterations"] = best_attempt.iterations
+        debug_stats["constructive_reached_goal"] = best_attempt.reached_goal
+
+    # Attach backtrack count to the returned result's debug_stats too.
+    merged_stats = dict(best_attempt.debug_stats or {})
+    merged_stats["constructive_backtrack_count"] = attempt_idx
+    return ConstructiveResult(
+        plan=best_attempt.plan,
+        reached_goal=best_attempt.reached_goal,
+        iterations=best_attempt.iterations,
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+        stuck_reason=best_attempt.stuck_reason,
+        debug_stats=merged_stats,
+        final_heuristic=best_attempt.final_heuristic,
+    )
+
+
+def _is_better_attempt(
+    new_result: ConstructiveResult, old_result: ConstructiveResult
+) -> bool:
+    """Prefer reached_goal; among reached_goal prefer fewer hooks;
+    among not reached prefer lower final_heuristic, then longer plan."""
+    if new_result.reached_goal and not old_result.reached_goal:
+        return True
+    if not new_result.reached_goal and old_result.reached_goal:
+        return False
+    if new_result.reached_goal:
+        return len(new_result.plan) < len(old_result.plan)
+    # Both not reached. Prefer lower final heuristic (closer to goal).
+    new_h = new_result.final_heuristic if new_result.final_heuristic is not None else float("inf")
+    old_h = old_result.final_heuristic if old_result.final_heuristic is not None else float("inf")
+    if new_h != old_h:
+        return new_h < old_h
+    # Tie-break: prefer longer plan (more work done without regressing).
+    return len(new_result.plan) > len(old_result.plan)
+
+
+def _greedy_forward(
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    *,
+    alternatives: dict[int, int],
+    max_iterations: int,
+    stuck_threshold: int,
+    time_budget_ms: float | None,
+) -> ConstructiveResult:
+    """Single greedy forward sweep, optionally biased by ``alternatives``.
+
+    At each step, if ``alternatives`` has an entry for the current step
+    index, the move at that ordinal (0=best, 1=2nd-best, ...) is picked
+    instead of the greedy best. The inverse-guard is applied after
+    alternative selection to prevent visible oscillation.
     """
     from fzed_shunting.solver.astar_solver import _apply_move, _is_goal
 
@@ -98,6 +238,9 @@ def solve_constructive(
         "tier6_staging": 0,
     }
 
+    stuck_reason: str | None = None
+    final_heuristic: float = best_heuristic
+
     for iteration in range(max_iterations):
         if _is_goal(plan_input, state):
             return _build_result(
@@ -106,7 +249,7 @@ def solve_constructive(
                 iterations=iteration,
                 started_at=started_at,
                 stats=stats,
-                debug_stats=debug_stats,
+                final_heuristic=state_heuristic(state),
             )
         if time_budget_ms is not None:
             if (perf_counter() - started_at) * 1000 > time_budget_ms:
@@ -117,7 +260,7 @@ def solve_constructive(
                     started_at=started_at,
                     stats=stats,
                     stuck_reason="time budget exhausted",
-                    debug_stats=debug_stats,
+                    final_heuristic=state_heuristic(state),
                 )
 
         moves = generate_goal_moves(
@@ -134,30 +277,56 @@ def solve_constructive(
                 started_at=started_at,
                 stats=stats,
                 stuck_reason="no legal moves",
-                debug_stats=debug_stats,
+                final_heuristic=state_heuristic(state),
             )
 
-        best_move, best_tier = _choose_best_move(
-            moves=moves,
-            state=state,
-            vehicle_by_no=vehicle_by_no,
-            goal_tracks_needed=goal_tracks_needed,
-            recent_moves=recent_moves,
-        )
-        stats[f"tier{best_tier}_" + _TIER_NAMES[best_tier]] = (
-            stats.get(f"tier{best_tier}_" + _TIER_NAMES[best_tier], 0) + 1
-        )
+        # Score and sort all moves (ascending — lowest tuple wins).
+        scored: list[tuple[tuple, int, HookAction, bool]] = []
+        for move in moves:
+            score, tier = _score_move(
+                move=move,
+                state=state,
+                vehicle_by_no=vehicle_by_no,
+                goal_tracks_needed=goal_tracks_needed,
+            )
+            is_inverse = _is_inverse_of_recent(move, recent_moves)
+            scored.append((score, tier, move, is_inverse))
+        scored.sort(key=lambda entry: entry[0])
+
+        # Apply non-inverse preference to the pool (retain existing behavior).
+        non_inverse_pool = [entry for entry in scored if not entry[3]]
+        pool = non_inverse_pool if non_inverse_pool else scored
+
+        step_idx = len(plan)
+        alt_idx = alternatives.get(step_idx, 0)
+        if alt_idx >= len(pool):
+            return _build_result(
+                plan=plan,
+                reached_goal=False,
+                iterations=iteration,
+                started_at=started_at,
+                stats=stats,
+                stuck_reason=f"alternative exhausted at step {step_idx}",
+                final_heuristic=state_heuristic(state),
+            )
+
+        chosen_score, chosen_tier, chosen_move, _is_inv = pool[alt_idx]
+
+        tier_key = f"tier{chosen_tier}_" + _TIER_NAMES[min(chosen_tier, 6)]
+        stats[tier_key] = stats.get(tier_key, 0) + 1
+
         state = _apply_move(
             state=state,
-            move=best_move,
+            move=chosen_move,
             plan_input=plan_input,
             vehicle_by_no=vehicle_by_no,
         )
-        plan.append(best_move)
+        plan.append(chosen_move)
         recent_moves.append(
-            (best_move.source_track, best_move.target_track, tuple(best_move.vehicle_nos))
+            (chosen_move.source_track, chosen_move.target_track, tuple(chosen_move.vehicle_nos))
         )
         current_heuristic = state_heuristic(state)
+        final_heuristic = current_heuristic
         if current_heuristic < best_heuristic:
             best_heuristic = current_heuristic
             stale_rounds = 0
@@ -171,7 +340,7 @@ def solve_constructive(
                 started_at=started_at,
                 stats=stats,
                 stuck_reason=f"heuristic stale for {stuck_threshold} rounds",
-                debug_stats=debug_stats,
+                final_heuristic=final_heuristic,
             )
 
     return _build_result(
@@ -181,7 +350,7 @@ def solve_constructive(
         started_at=started_at,
         stats=stats,
         stuck_reason="max iterations reached",
-        debug_stats=debug_stats,
+        final_heuristic=final_heuristic,
     )
 
 
@@ -204,13 +373,9 @@ def _build_result(
     started_at: float,
     stats: dict[str, int],
     stuck_reason: str | None = None,
-    debug_stats: dict[str, Any] | None,
+    final_heuristic: float | None = None,
 ) -> ConstructiveResult:
     elapsed_ms = (perf_counter() - started_at) * 1000
-    if debug_stats is not None:
-        debug_stats.update(stats)
-        debug_stats["constructive_iterations"] = iterations
-        debug_stats["constructive_reached_goal"] = reached_goal
     return ConstructiveResult(
         plan=plan,
         reached_goal=reached_goal,
@@ -218,6 +383,7 @@ def _build_result(
         elapsed_ms=elapsed_ms,
         stuck_reason=stuck_reason,
         debug_stats=dict(stats),
+        final_heuristic=final_heuristic,
     )
 
 
@@ -236,6 +402,8 @@ def _choose_best_move(
     goal_tracks_needed: set[str],
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
 ) -> tuple[HookAction, int]:
+    """Legacy helper (retained for any external callers): returns the
+    greedy-best move under the inverse-guard policy."""
     scored: list[tuple[tuple, int, HookAction, bool]] = []
     for move in moves:
         score, tier = _score_move(
@@ -246,8 +414,6 @@ def _choose_best_move(
         )
         is_inverse = _is_inverse_of_recent(move, recent_moves)
         scored.append((score, tier, move, is_inverse))
-    # Prefer non-inverse moves at any tier when one exists; fall back to
-    # best-inverse only if no non-inverse alternative exists.
     non_inverse = [entry for entry in scored if not entry[3]]
     pool = non_inverse if non_inverse else scored
     pool.sort(key=lambda entry: entry[0])

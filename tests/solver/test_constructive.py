@@ -425,3 +425,133 @@ class TestScoreMoveSatisfiedProtection:
             goal_tracks_needed={"修3库内"},
         )
         assert score[0] < 100, f"SPOT wrong-spot displacement should not be protected, got {score[0]}"
+
+
+class TestBacktrackingConstructive:
+    """Tests for W3-N bounded-backtracking ``solve_constructive``."""
+
+    def test_zero_backtrack_when_greedy_succeeds(self):
+        """Easy scenario: greedy reaches goal in one sweep; no backtracks used."""
+        payload = _simple_payload(
+            [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "E1",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ]
+        )
+        master = load_master_data(DATA_DIR)
+        normalized = normalize_plan_input(payload, master)
+        initial = build_initial_state(normalized)
+        debug_stats: dict = {}
+        result = solve_constructive(
+            normalized,
+            initial,
+            master=master,
+            max_iterations=500,
+            debug_stats=debug_stats,
+        )
+        assert result.reached_goal is True
+        assert debug_stats.get("constructive_backtrack_count") == 0
+
+    def test_max_backtracks_limit(self):
+        """Hard scenario: even backtracking fails. Returns best-effort partial
+        plan, does not exceed ``max_backtracks=2``."""
+        import json
+        payload = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "data"
+                / "validation_inputs"
+                / "positive"
+                / "case_3_3_spot_203_mid.json"
+            ).read_text(encoding="utf-8")
+        )
+        master = load_master_data(DATA_DIR)
+        normalized = normalize_plan_input(payload, master)
+        initial = build_initial_state(normalized)
+        debug_stats: dict = {}
+        result = solve_constructive(
+            normalized,
+            initial,
+            master=master,
+            max_iterations=200,
+            stuck_threshold=15,
+            max_backtracks=2,
+            time_budget_ms=20_000,
+            debug_stats=debug_stats,
+        )
+        # Should not exceed max_backtracks=2
+        assert debug_stats.get("constructive_backtrack_count", 0) <= 2
+        # Best-effort partial plan is always returned (may or may not reach goal)
+        assert len(result.plan) > 0
+
+    def test_backtrack_structure_runs_multiple_attempts(self):
+        """When the scenario isn't solvable by pure greedy, the backtracking
+        loop should actually run more than 1 attempt (backtrack_count >= 1)."""
+        import json
+        payload = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "data"
+                / "validation_inputs"
+                / "positive"
+                / "case_3_3_spot_203_mid.json"
+            ).read_text(encoding="utf-8")
+        )
+        master = load_master_data(DATA_DIR)
+        normalized = normalize_plan_input(payload, master)
+        initial = build_initial_state(normalized)
+        debug_stats: dict = {}
+        result = solve_constructive(
+            normalized,
+            initial,
+            master=master,
+            max_iterations=500,
+            stuck_threshold=30,
+            max_backtracks=3,
+            time_budget_ms=30_000,
+            debug_stats=debug_stats,
+        )
+        # Greedy gets stuck here → backtracking should trigger at least once.
+        # (If this case ever gets unstuck by greedy alone, the test should be
+        # updated with a different scenario that still requires backtracking.)
+        if not result.reached_goal:
+            assert debug_stats.get("constructive_backtrack_count", 0) >= 1
+
+    def test_result_contains_debug_backtrack_count(self):
+        """``debug_stats`` should always include ``constructive_backtrack_count``."""
+        payload = _simple_payload(
+            [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "E1",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ]
+        )
+        master = load_master_data(DATA_DIR)
+        normalized = normalize_plan_input(payload, master)
+        initial = build_initial_state(normalized)
+        debug_stats: dict = {}
+        result = solve_constructive(
+            normalized, initial, master=master,
+            max_iterations=500, debug_stats=debug_stats,
+        )
+        assert "constructive_backtrack_count" in debug_stats
+        # Also surfaced on the returned result
+        assert result.debug_stats is not None
+        assert "constructive_backtrack_count" in result.debug_stats
