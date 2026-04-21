@@ -94,43 +94,43 @@ def reorder_depot_late(
     initial_state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> list[HookAction]:
-    """Best-of-two reorder: pure adjacent bubble vs semantic-topo seed +
-    adjacent polish. Returns whichever produces smaller depot_earliness.
+    """Greedy adjacent-swap pass that pushes depot hooks toward the tail.
 
-    Rationale (empirically observed on data/validation_inputs/truth, 127
-    scenarios):
+    Tries each adjacent ``(depot, non-depot)`` pair for a swap. A swap is
+    accepted iff:
+    1. The swapped plan replays legally from ``initial_state`` via
+       ``_apply_move`` (each hook's source prefix condition holds at the
+       point it is applied).
+    2. The final state after replay matches the original plan's final
+       state via ``_canonicalize_state`` (``track_sequences``,
+       ``weighed_vehicle_nos``, ``spot_assignments``; ``loco_track_name``
+       is excluded since it trivially tracks the last hook's target).
 
-    - Pure adjacent bubble (v3) produced -5.9% earliness; it validates
-      every swap incrementally so it never produces a worse plan.
-    - Pure semantic topo (v4) produced -1.8%; pairwise dep graph is an
-      over-approximation, 7/10 of pure-adjacent's top wins got 0 from
-      topo because the composite order failed final replay and fell back.
-    - Topo-then-adjacent hybrid (v5) produced -3.9%; bubble-sort from
-      topo's output reached a worse local optimum than bubble from
-      original in many cases.
+    This is strictly earliness-improving: every accepted swap moves a
+    depot hook one position later without changing the hook set or the
+    primary objective (plan length). Worst-case O(N^3) — up to N passes
+    of N-1 adjacent checks, each check doing a full O(N) replay. In
+    practice N<=50 in this project and the pass terminates quickly.
 
-    Best-of-two guarantees ``result <= pure_adjacent_result`` in earliness,
-    and in the handful of scenarios where topo finds a jump adjacent
-    can't reach (e.g., a hook must leap past a dep-blocked intermediate
-    pair), the topo branch wins.
+    On any failure the swap is discarded; worst case this function
+    returns the input plan unchanged.
 
-    Complexity: 2 × O(N^3), same asymptotic bound as v3. Either branch
-    fails safe.
+    Design note: several variants were benchmarked on
+    data/validation_inputs/truth (127 scenarios, 120s/scenario):
+    - Pure adjacent bubble (this function): -5.9% total earliness
+    - Pure semantic-topological reorder: -1.8% (pairwise dep was too
+      permissive → composite order often invalid → frequent fallback)
+    - Topo-then-adjacent hybrid: -3.9% (bubble from topo's output reached
+      worse local optima than bubble from original)
+    - Best-of-two (adjacent OR topo+polish): -3.0% (bench-to-bench
+      variance masked the theoretical >= guarantee)
+
+    Pure adjacent was the empirical winner and the simplest to reason
+    about; it is the shipped algorithm. Further strengthening requires
+    changing the hook set (virtual staging or two-phase solve), which
+    trades primary objective for secondary.
     """
-    adj_result = _adjacent_swap_polish(plan, initial_state, plan_input)
-    topo_result = _semantic_topo_reorder(plan, initial_state, plan_input)
-    if topo_result != list(plan):
-        # Polish topo output with adjacent bubble — it's always safe and
-        # only improves.
-        topo_polished = _adjacent_swap_polish(topo_result, initial_state, plan_input)
-    else:
-        topo_polished = adj_result
-
-    # Return whichever has smallest earliness. Ties → prefer pure adjacent
-    # (stable, more predictable for bench-to-bench reproducibility).
-    if depot_earliness(topo_polished) < depot_earliness(adj_result):
-        return topo_polished
-    return adj_result
+    return _adjacent_swap_polish(plan, initial_state, plan_input)
 
 
 def _semantic_topo_reorder(

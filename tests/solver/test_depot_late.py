@@ -299,11 +299,12 @@ class TestReorderDepotLate:
     def test_reorder_semantic_topo_jumps_past_blocked_swap(self) -> None:
         """Plan [A_depot, B_nondepot_dep_on_A, C_nondepot_independent].
 
-        Adjacent swap cannot reach [C, A, B] because A-B is dep-blocked and
-        B-C is same-class skip. Semantic topological reorder: C has no
-        semantic dep on A (moving C to front preserves terminal state), so
-        it can jump ahead. Then A stays before B (B genuinely needs A's
-        effect on 存1).
+        Adjacent swap cannot reach [C, A, B] because A-B is dep-blocked
+        (state divergence) and B-C is same-class (both non-depot, skipped).
+        A semantic-dep topological sort could reach [C, A, B] by jumping C
+        past B. That variant was benchmarked (see reorder_depot_late
+        docstring) but empirically under-performed adjacent bubble and was
+        dropped. This test documents the known limitation.
         """
         plan_input = _plan_input([
             _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
@@ -317,11 +318,8 @@ class TestReorderDepotLate:
             _hook("存2", "调北", ["V3"]),            # C: non-depot, independent
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
-        # Semantic topo: C can jump ahead (independent), then A, then B.
-        assert reordered[0].vehicle_nos == ["V3"]
-        assert reordered[1].vehicle_nos == ["V1"]
-        assert reordered[2].vehicle_nos == ["V2"]
-        assert depot_earliness(reordered) < depot_earliness(plan)
+        # Adjacent-swap can't move C past B. Plan stays as-is.
+        assert reordered == plan
 
     def test_reorder_topological_handles_simple_swap(self) -> None:
         """The existing simple-swap case should still produce the same result."""
