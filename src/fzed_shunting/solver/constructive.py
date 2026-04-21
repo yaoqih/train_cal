@@ -344,6 +344,20 @@ def _score_move(
     else:
         tier = 7  # delta < 0 with no buried seeker, actively regressing
 
+    # Protect fully-satisfied vehicles from displacement. If a move takes
+    # a vehicle away from its allowed target tracks (AND the vehicle was
+    # fully satisfied at the source — meaning spot/area/weigh conditions
+    # are also met), this is a pure loss: we pay one hook now and will
+    # have to pay another later to put it back. Elevate tier so the
+    # solver only picks such moves when literally nothing else works.
+    displaces_satisfied = _move_displaces_satisfied_vehicle(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+    )
+    if displaces_satisfied:
+        tier += 100
+
     block_size = len(move.vehicle_nos)
     path_length = len(move.path_tracks)
     # SPOT/AREA finalizations are "pinpoint" goals: the vehicle only reaches
@@ -430,4 +444,63 @@ def _move_exposes_buried_goal_seeker(
             return True
         if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
             return True
+    return False
+
+
+def _move_displaces_satisfied_vehicle(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    """True iff any vehicle in this move is currently fully satisfied AND
+    the move takes it OUT of its allowed target tracks.
+
+    "Fully satisfied" means: the vehicle's current track (=move.source_track,
+    since this is the move that will take it out) is in allowed_target_tracks
+    AND any mode-specific extras are met:
+      - SPOT mode: spot_assignments[vno] == target_spot_code
+      - 大库:RANDOM: spot_assignments[vno] is not None
+      - WORK_AREA (调棚/洗南/油/抛/调棚预修): spot_assignments[vno] is not None
+      - need_weigh: vno in weighed_vehicle_nos (only matters if vehicle is actually weighing-dependent)
+      - close-door at 存4北: final seq index >= 3
+
+    The check is per-vehicle on the block; if ANY vehicle in the block is
+    fully satisfied and would be displaced, the whole move is flagged.
+    """
+    source_track = move.source_track
+    target_track = move.target_track
+
+    for vno in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vno)
+        if vehicle is None:
+            continue
+
+        # Is the vehicle at goal right now?
+        if source_track not in vehicle.goal.allowed_target_tracks:
+            continue  # Not at goal, can't be "displaced" — skip
+
+        # Mode-specific satisfaction checks (mirror _is_goal logic in state.py)
+        if vehicle.goal.target_mode == "SPOT":
+            if state.spot_assignments.get(vno) != vehicle.goal.target_spot_code:
+                continue  # At correct track but wrong spot → not satisfied
+        if vehicle.goal.target_area_code == "大库:RANDOM":
+            if state.spot_assignments.get(vno) is None:
+                continue
+        if vehicle.goal.target_area_code in {
+            "调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK",
+        }:
+            if state.spot_assignments.get(vno) is None:
+                continue
+        if vehicle.need_weigh and vno not in state.weighed_vehicle_nos:
+            continue  # Weighing pending → not yet fully satisfied even if at target track
+        if vehicle.is_close_door and source_track == "存4北":
+            final_seq = state.track_sequences.get("存4北", [])
+            if vno in final_seq and final_seq.index(vno) < 3:
+                continue  # Close-door not yet at required position
+
+        # Vehicle IS fully satisfied at source. Is the move taking it away?
+        if target_track not in vehicle.goal.allowed_target_tracks:
+            return True  # Displacement!
+
     return False

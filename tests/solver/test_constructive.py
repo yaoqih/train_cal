@@ -267,3 +267,161 @@ def test_constructive_reports_elapsed_and_iterations():
     assert result.iterations >= 0
     assert result.elapsed_ms >= 0
     assert result.debug_stats is not None
+
+
+class TestScoreMoveSatisfiedProtection:
+    """Tests for the identity-goal displacement protection in _score_move."""
+
+    def test_score_move_penalizes_identity_goal_displacement(self):
+        """A move that takes a satisfied vehicle OUT of its allowed target gets
+        tier+100 so it's effectively last-resort."""
+        from fzed_shunting.solver.constructive import _score_move
+        from fzed_shunting.solver.types import HookAction
+        from fzed_shunting.io.normalize_input import (
+            GoalSpec, NormalizedVehicle,
+        )
+        from fzed_shunting.verify.replay import ReplayState
+
+        v1 = NormalizedVehicle(
+            current_track="存1", order=1, vehicle_model="敞车", vehicle_no="V1",
+            repair_process="段修", vehicle_length=12.0,
+            goal=GoalSpec(target_mode="TRACK", target_track="存1",
+                          allowed_target_tracks=["存1"]),
+        )
+        state = ReplayState(
+            track_sequences={"存1": ["V1"]},
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+        )
+        move = HookAction(
+            source_track="存1", target_track="临2",
+            vehicle_nos=["V1"], path_tracks=["存1", "临2"], action_type="PUT",
+        )
+        score, tier = _score_move(
+            move=move, state=state, vehicle_by_no={"V1": v1},
+            goal_tracks_needed={"存1"},
+        )
+        assert score[0] >= 100, f"Identity-goal displacement should have tier >= 100, got {score[0]}"
+
+    def test_score_move_does_not_penalize_non_displacement(self):
+        """A normal move not touching satisfied vehicles has tier < 100."""
+        from fzed_shunting.solver.constructive import _score_move
+        from fzed_shunting.solver.types import HookAction
+        from fzed_shunting.io.normalize_input import GoalSpec, NormalizedVehicle
+        from fzed_shunting.verify.replay import ReplayState
+
+        v1 = NormalizedVehicle(
+            current_track="存5北", order=1, vehicle_model="敞车", vehicle_no="V1",
+            repair_process="段修", vehicle_length=12.0,
+            goal=GoalSpec(target_mode="TRACK", target_track="存4北",
+                          allowed_target_tracks=["存4北"]),
+        )
+        state = ReplayState(
+            track_sequences={"存5北": ["V1"]},
+            loco_track_name="机库", weighed_vehicle_nos=set(), spot_assignments={},
+        )
+        move = HookAction(
+            source_track="存5北", target_track="存4北",
+            vehicle_nos=["V1"], path_tracks=["存5北", "存4北"], action_type="PUT",
+        )
+        score, tier = _score_move(
+            move=move, state=state, vehicle_by_no={"V1": v1},
+            goal_tracks_needed={"存4北"},
+        )
+        assert score[0] < 100, f"Non-displacement should have tier < 100, got {score[0]}"
+
+    def test_score_move_does_not_penalize_unsatisfied_source(self):
+        """A move from a non-target track (vehicle not satisfied at source) is
+        NOT a 'displacement'. Should not get +100."""
+        from fzed_shunting.solver.constructive import _score_move
+        from fzed_shunting.solver.types import HookAction
+        from fzed_shunting.io.normalize_input import GoalSpec, NormalizedVehicle
+        from fzed_shunting.verify.replay import ReplayState
+
+        v1 = NormalizedVehicle(
+            current_track="临1", order=1, vehicle_model="敞车", vehicle_no="V1",
+            repair_process="段修", vehicle_length=12.0,
+            goal=GoalSpec(target_mode="TRACK", target_track="存1",
+                          allowed_target_tracks=["存1"]),
+        )
+        state = ReplayState(
+            track_sequences={"临1": ["V1"]},
+            loco_track_name="机库", weighed_vehicle_nos=set(), spot_assignments={},
+        )
+        move = HookAction(
+            source_track="临1", target_track="临2",
+            vehicle_nos=["V1"], path_tracks=["临1", "临2"], action_type="PUT",
+        )
+        score, tier = _score_move(
+            move=move, state=state, vehicle_by_no={"V1": v1},
+            goal_tracks_needed={"存1"},
+        )
+        assert score[0] < 100, f"Transit from non-target should not trigger protection, got {score[0]}"
+
+    def test_score_move_penalizes_spot_matched_displacement(self):
+        """A SPOT vehicle at its target with correct spot should be protected."""
+        from fzed_shunting.solver.constructive import _score_move
+        from fzed_shunting.solver.types import HookAction
+        from fzed_shunting.io.normalize_input import GoalSpec, NormalizedVehicle
+        from fzed_shunting.verify.replay import ReplayState
+
+        v1 = NormalizedVehicle(
+            current_track="修3库内", order=1, vehicle_model="敞车", vehicle_no="S003",
+            repair_process="段修", vehicle_length=17.0,
+            goal=GoalSpec(
+                target_mode="SPOT",
+                target_track="修3库内",
+                allowed_target_tracks=["修3库内"],
+                target_spot_code="305",
+            ),
+        )
+        state = ReplayState(
+            track_sequences={"修3库内": ["S003"]},
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={"S003": "305"},
+        )
+        move = HookAction(
+            source_track="修3库内", target_track="临4",
+            vehicle_nos=["S003"], path_tracks=["修3库内", "临4"], action_type="PUT",
+        )
+        score, tier = _score_move(
+            move=move, state=state, vehicle_by_no={"S003": v1},
+            goal_tracks_needed={"修3库内"},
+        )
+        assert score[0] >= 100, f"SPOT-matched displacement should have tier >= 100, got {score[0]}"
+
+    def test_score_move_allows_spot_wrong_displacement(self):
+        """A SPOT vehicle at target track but WRONG spot is NOT fully satisfied
+        — moving it out is legitimate (e.g., to free the spot), no penalty."""
+        from fzed_shunting.solver.constructive import _score_move
+        from fzed_shunting.solver.types import HookAction
+        from fzed_shunting.io.normalize_input import GoalSpec, NormalizedVehicle
+        from fzed_shunting.verify.replay import ReplayState
+
+        v1 = NormalizedVehicle(
+            current_track="修3库内", order=1, vehicle_model="敞车", vehicle_no="S003",
+            repair_process="段修", vehicle_length=17.0,
+            goal=GoalSpec(
+                target_mode="SPOT",
+                target_track="修3库内",
+                allowed_target_tracks=["修3库内"],
+                target_spot_code="305",
+            ),
+        )
+        state = ReplayState(
+            track_sequences={"修3库内": ["S003"]},
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={"S003": "301"},  # wrong spot
+        )
+        move = HookAction(
+            source_track="修3库内", target_track="临4",
+            vehicle_nos=["S003"], path_tracks=["修3库内", "临4"], action_type="PUT",
+        )
+        score, tier = _score_move(
+            move=move, state=state, vehicle_by_no={"S003": v1},
+            goal_tracks_needed={"修3库内"},
+        )
+        assert score[0] < 100, f"SPOT wrong-spot displacement should not be protected, got {score[0]}"
