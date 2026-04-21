@@ -492,7 +492,11 @@ def _attach_verification(
         for index, move in enumerate(result.plan, start=1)
     ]
     report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
-    best_effort = result.fallback_stage == "constructive_partial"
+    # Treat any plan derived from the constructive fallback (including
+    # "+rescue"-annotated stages) as best-effort: it's already the last
+    # resort and partial completeness is informative, not fatal.
+    stage = result.fallback_stage or ""
+    best_effort = stage.startswith("constructive_partial")
     if not report.is_valid and not best_effort:
         raise PlanVerificationError(report)
     return replace(result, verification_report=report)
