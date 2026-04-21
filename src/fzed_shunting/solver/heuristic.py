@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -15,11 +16,15 @@ class HeuristicBreakdown:
     h_blocking: int
     h_weigh: int
     h_spot_evict: int
+    h_tight_capacity: int = 0
 
     @property
     def value(self) -> int:
+        # h_tight_capacity is admissible ONLY when added to h_distinct_transfer_pairs
+        # (evictions are a disjoint set of hooks from base transfers). The other
+        # heuristics remain stand-alone candidates in the max() pool.
         return max(
-            self.h_distinct_transfer_pairs,
+            self.h_distinct_transfer_pairs + self.h_tight_capacity,
             self.h_blocking,
             self.h_weigh,
             self.h_spot_evict,
@@ -39,6 +44,17 @@ def compute_heuristic_breakdown(
 ) -> HeuristicBreakdown:
     current_track_by_vehicle = _vehicle_track_lookup(state)
     vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
+    length_by_vno = {v.vehicle_no: v.vehicle_length for v in plan_input.vehicles}
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for v in plan_input.vehicles:
+        initial_occupation_by_track[v.current_track] = (
+            initial_occupation_by_track.get(v.current_track, 0.0) + v.vehicle_length
+        )
+    effective_cap_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
 
     return HeuristicBreakdown(
         h_misplaced=_h_misplaced_vehicles(
@@ -61,6 +77,14 @@ def compute_heuristic_breakdown(
             state=state,
             vehicle_by_no=vehicle_by_no,
         ),
+        h_tight_capacity=_h_tight_capacity_eviction(
+            plan_input=plan_input,
+            state=state,
+            length_by_vno=length_by_vno,
+            current_track_by_vehicle=current_track_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            effective_cap_by_track=effective_cap_by_track,
+        ),
     )
 
 
@@ -69,12 +93,24 @@ def make_state_heuristic(
 ) -> Callable[[ReplayState], int]:
     vehicles = tuple(plan_input.vehicles)
     vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+    length_by_vno = {v.vehicle_no: v.vehicle_length for v in vehicles}
     weigh_vehicle_nos = frozenset(v.vehicle_no for v in vehicles if v.need_weigh)
     close_4north_vehicle_nos = frozenset(
         v.vehicle_no
         for v in vehicles
         if v.is_close_door and "存4北" in v.goal.allowed_target_tracks
     )
+
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for v in vehicles:
+        initial_occupation_by_track[v.current_track] = (
+            initial_occupation_by_track.get(v.current_track, 0.0) + v.vehicle_length
+        )
+    effective_cap_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
 
     def _heuristic(state: ReplayState) -> int:
         current_track_by_vehicle = _vehicle_track_lookup(state)
@@ -97,8 +133,16 @@ def make_state_heuristic(
             state=state,
             vehicle_by_no=vehicle_by_no,
         )
+        h_tight = _h_tight_capacity_eviction(
+            plan_input=plan_input,
+            state=state,
+            length_by_vno=length_by_vno,
+            current_track_by_vehicle=current_track_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            effective_cap_by_track=effective_cap_by_track,
+        )
         _ = close_4north_vehicle_nos
-        return max(h_pairs, h_block, h_weigh, h_spot)
+        return max(h_pairs + h_tight, h_block, h_weigh, h_spot)
 
     return _heuristic
 
@@ -266,3 +310,110 @@ def _h_spot_evict(
 
 def _reverse_spot_assignments(spot_assignments: dict[str, str]) -> dict[str, str]:
     return {spot_code: vehicle_no for vehicle_no, spot_code in spot_assignments.items()}
+
+
+def _h_tight_capacity_eviction(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    length_by_vno: dict[str, float],
+    current_track_by_vehicle: dict[str, str],
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    effective_cap_by_track: dict[str, float],
+) -> int:
+    """Admissible lower bound on extra hooks forced by tight-capacity tracks.
+
+    When pending arrivals at a track T exceed the available slack, one or more
+    identity-goal vehicles (cars already at T AND whose allowed_target_tracks
+    strictly equals {T}) must be temporarily evicted and later returned. Each
+    evict-and-return costs 2 hooks.
+
+    This term is admissible when ADDED to h_distinct_transfer_pairs: base
+    transfer hooks bring pending vehicles in; eviction roundtrips are a
+    DISJOINT set of hooks neither counted there nor in h_blocking, since they
+    do not reach any goal target in the forced-pair sense (the evicted car
+    eventually returns to the same track it started on).
+
+    Strict equality on allowed_target_tracks avoids double-counting vehicles
+    whose goal is multi-track (RANDOM depot, AREA, etc.) — they can't be
+    "identity-goal" for a single track since they could dwell elsewhere.
+    """
+    # Group vehicles that are single-track targeted at exactly {T}
+    target_demand_by_track: dict[str, float] = {}
+    identity_goal_lens_by_track: dict[str, list[float]] = {}
+    current_identity_goal_mass_by_track: dict[str, float] = {}
+
+    for vehicle in plan_input.vehicles:
+        allowed = tuple(vehicle.goal.allowed_target_tracks)
+        if len(allowed) != 1:
+            continue
+        target = allowed[0]
+        length = length_by_vno.get(vehicle.vehicle_no, vehicle.vehicle_length)
+        target_demand_by_track[target] = target_demand_by_track.get(target, 0.0) + length
+        current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
+        if current_track == target:
+            current_identity_goal_mass_by_track[target] = (
+                current_identity_goal_mass_by_track.get(target, 0.0) + length
+            )
+            identity_goal_lens_by_track.setdefault(target, []).append(length)
+
+    # Current mass at each track from ReplayState, split into identity-goal
+    # and non-identity-goal contributions. Non-identity-goal cars at T will
+    # leave T at some point (their hook is already counted in
+    # h_distinct_transfer_pairs or comes from multi-target routing). Their
+    # departure creates slack for pending arrivals WITHOUT adding to the
+    # eviction count. Identity-goal cars, by contrast, must end up back at T,
+    # so if they must leave to make room, that's a +2-hook roundtrip we can
+    # safely claim here.
+    current_mass_by_track: dict[str, float] = {}
+    current_nonidentity_mass_by_track: dict[str, float] = {}
+    for track_name, seq in state.track_sequences.items():
+        mass = 0.0
+        nonid_mass = 0.0
+        for vno in seq:
+            v = vehicle_by_no.get(vno)
+            if v is None:
+                continue
+            length = length_by_vno.get(vno, v.vehicle_length)
+            mass += length
+            allowed = tuple(v.goal.allowed_target_tracks)
+            is_identity_at_this_track = len(allowed) == 1 and allowed[0] == track_name
+            if not is_identity_at_this_track:
+                nonid_mass += length
+        current_mass_by_track[track_name] = mass
+        current_nonidentity_mass_by_track[track_name] = nonid_mass
+
+    total_eviction_hooks = 0
+    eps = 1e-9
+    for track, demand in target_demand_by_track.items():
+        effective_cap = effective_cap_by_track.get(track)
+        if effective_cap is None:
+            # Unknown capacity (e.g. RANDOM depot track not in track_info) — skip.
+            continue
+        current_identity_mass = current_identity_goal_mass_by_track.get(track, 0.0)
+        pending_arrivals_mass = demand - current_identity_mass
+        if pending_arrivals_mass <= eps:
+            continue
+        current_mass = current_mass_by_track.get(track, 0.0)
+        available_slack = effective_cap - current_mass
+        # Non-identity cars at T will leave permanently, so their mass adds
+        # to the slack budget without costing eviction hooks.
+        free_slack = available_slack + current_nonidentity_mass_by_track.get(track, 0.0)
+        overflow = pending_arrivals_mass - free_slack
+        if overflow <= eps:
+            continue
+        ident_lens = identity_goal_lens_by_track.get(track, [])
+        if not ident_lens:
+            # Nothing available to evict — heuristic cannot claim a cost here
+            # (the problem may be infeasible, but admissibility demands we
+            # return 0 rather than an un-achievable lower bound).
+            continue
+        max_ident_len = max(ident_lens)
+        if max_ident_len <= eps:
+            continue
+        # Ceil without float drift
+        evictions = max(1, math.ceil((overflow - eps) / max_ident_len))
+        # Can't evict more identity-goal cars than exist at this track
+        evictions = min(evictions, len(ident_lens))
+        total_eviction_hooks += evictions * 2
+    return total_eviction_hooks
