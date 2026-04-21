@@ -54,7 +54,7 @@ def solve_constructive(
     master: MasterData | None = None,
     *,
     max_iterations: int = 1000,
-    stuck_threshold: int = 6,
+    stuck_threshold: int = 30,
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
 ) -> ConstructiveResult:
@@ -65,6 +65,13 @@ def solve_constructive(
     iteration/time budget is exhausted, the result reports ``reached_goal=False``
     with the best-effort partial plan collected so far. Callers decide whether
     to accept the partial plan or abort.
+
+    ``stuck_threshold`` default was raised from 6 to 30. The original 6 was
+    too aggressive on scenarios where an identity-goal displacement detour
+    needs 5-10 intermediate moves to reverse; the solver gave up mid-detour
+    even though max_iterations (1000) and the inverse-move guard
+    (_is_inverse_of_recent) already bound exploration. 30 gives detour room
+    while still being far below max_iterations on genuinely stuck scenarios.
     """
     from fzed_shunting.solver.astar_solver import _apply_move, _is_goal
 
