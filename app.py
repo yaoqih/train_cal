@@ -526,10 +526,10 @@ def _render_step(view, step_index: int):
                 key=f"transition-frame-{step.step_index}",
             )
             transition_frame = step.transition_frames[frame_index]
-        _render_topology_graph(step.topology_graph, step.track_map, hook=step.hook, transition_frame=transition_frame)
+        _render_topology_graph(step.topology_graph, step.track_map, hook=step.hook, transition_frame=transition_frame, spot_assignments=step.spot_assignments, vehicle_target_tracks=view.vehicle_target_tracks)
     with sidebar_col:
         st.markdown("**当前钩摘要**")
-        _render_hook_sidebar(step)
+        _render_hook_sidebar(step, vehicle_target_tracks=view.vehicle_target_tracks)
 
     detail_tabs = st.tabs(["股道变化", "车辆明细", "校验结果", "本钩路径距离"])
     with detail_tabs[0]:
@@ -550,13 +550,15 @@ def _render_step(view, step_index: int):
             st.caption("初始状态无路径距离构成。")
 
 
-def _render_topology_graph(topology_graph, track_map, hook=None, transition_frame=None):
+def _render_topology_graph(topology_graph, track_map, hook=None, transition_frame=None, spot_assignments=None, vehicle_target_tracks=None):
     st.markdown(
         _build_topology_svg(
             topology_graph,
             track_map,
             hook=hook,
             transition_frame=transition_frame,
+            spot_assignments=spot_assignments,
+            vehicle_target_tracks=vehicle_target_tracks,
         ),
         unsafe_allow_html=True,
     )
@@ -620,6 +622,8 @@ def _build_topology_svg(
     transition_frame=None,
     animate: bool = False,
     show_all_labels: bool = False,
+    spot_assignments: dict | None = None,
+    vehicle_target_tracks: dict | None = None,
 ) -> str:
     layout = _get_schematic_layout()
     track_nodes = track_map.track_nodes if track_map is not None else {}
@@ -659,6 +663,10 @@ def _build_topology_svg(
         ".schematic-track-label-key{font-family:PingFang SC,sans-serif;font-size:16px;font-weight:600;fill:#6b5f4b;text-anchor:middle;}",
         ".schematic-badge{fill:#fffaf0;stroke:#d9cdb5;stroke-width:1.5;}",
         ".schematic-badge-text{font-family:PingFang SC,sans-serif;font-size:12px;font-weight:700;fill:#6a5d45;text-anchor:middle;dominant-baseline:middle;}",
+        ".sb-parked{fill:#0f766e;stroke:#ffffff;stroke-width:1.5;}",
+        ".sb-parked-txt{font-family:PingFang SC,sans-serif;font-size:11px;font-weight:700;fill:#ffffff;text-anchor:middle;dominant-baseline:middle;}",
+        ".sb-transit{fill:#d97706;stroke:#ffffff;stroke-width:1.5;}",
+        ".sb-transit-txt{font-family:PingFang SC,sans-serif;font-size:11px;font-weight:700;fill:#ffffff;text-anchor:middle;dominant-baseline:middle;}",
         ".schematic-endpoint{fill:#fdf7ed;stroke:#0f766e;stroke-width:3;}",
         ".schematic-endpoint-target{fill:#fff2e0;stroke:#d97706;stroke-width:3;}",
         ".schematic-endpoint-text{font-family:PingFang SC,sans-serif;font-size:12px;font-weight:700;text-anchor:middle;dominant-baseline:middle;}",
@@ -680,14 +688,16 @@ def _build_topology_svg(
         )
 
     for geometry in layout.track_geometries.values():
-        base_class = "schematic-track"
-        if geometry.is_mainline:
-            base_class += " schematic-track-mainline"
-        parts.append(f'<path class="{base_class}" d="{_track_polyline_to_svg(geometry.points)}" />')
+        if geometry.track_code in active_tracks:
+            parts.append(f'<path class="schematic-track-active" d="{_track_polyline_to_svg(geometry.points)}" />')
+        else:
+            base_class = "schematic-track"
+            if geometry.is_mainline:
+                base_class += " schematic-track-mainline"
+            parts.append(f'<path class="{base_class}" d="{_track_polyline_to_svg(geometry.points)}" />')
 
     if motion_path:
         parts.append(f'<path id="route-motion-path" class="route-motion-path" d="{motion_path}" />')
-        parts.append(f'<path class="schematic-track-active" d="{motion_path}" />')
 
     for track_code in sorted(changed_tracks - set(hook.path_tracks if hook is not None else [])):
         geometry = layout.track_geometries.get(track_code)
@@ -717,17 +727,27 @@ def _build_topology_svg(
             f'<text class="{label_class}" x="{geometry.label_anchor.x:.1f}" y="{geometry.label_anchor.y:.1f}">{escape(track_code)}</text>'
         )
 
-    for track_code in sorted(occupied_tracks - active_tracks):
+    vtt = vehicle_target_tracks or {}
+    for track_code in sorted(occupied_tracks):
         geometry = layout.track_geometries.get(track_code)
         node = track_nodes.get(track_code)
         if geometry is None or node is None or not node.vehicle_nos:
             continue
-        badge_x = geometry.label_anchor.x + 34.0
-        badge_y = geometry.label_anchor.y - 12.0
-        parts.append(f'<circle class="schematic-badge" cx="{badge_x:.1f}" cy="{badge_y:.1f}" r="12" />')
-        parts.append(
-            f'<text class="schematic-badge-text" x="{badge_x:.1f}" y="{badge_y + 1:.1f}">{len(node.vehicle_nos)}</text>'
-        )
+        in_place = sum(1 for v in node.vehicle_nos if track_code in vtt.get(v, []))
+        not_in_place = len(node.vehicle_nos) - in_place
+        bx = geometry.label_anchor.x + 34.0
+        by = geometry.label_anchor.y - 12.0
+        if in_place > 0 and not_in_place > 0:
+            parts.append(f'<circle class="sb-parked" cx="{bx - 11:.1f}" cy="{by:.1f}" r="10" />')
+            parts.append(f'<text class="sb-parked-txt" x="{bx - 11:.1f}" y="{by + 1:.1f}">{in_place}</text>')
+            parts.append(f'<circle class="sb-transit" cx="{bx + 11:.1f}" cy="{by:.1f}" r="10" />')
+            parts.append(f'<text class="sb-transit-txt" x="{bx + 11:.1f}" y="{by + 1:.1f}">{not_in_place}</text>')
+        elif in_place > 0:
+            parts.append(f'<circle class="sb-parked" cx="{bx:.1f}" cy="{by:.1f}" r="12" />')
+            parts.append(f'<text class="sb-parked-txt" x="{bx:.1f}" y="{by + 1:.1f}">{in_place}</text>')
+        else:
+            parts.append(f'<circle class="sb-transit" cx="{bx:.1f}" cy="{by:.1f}" r="12" />')
+            parts.append(f'<text class="sb-transit-txt" x="{bx:.1f}" y="{by + 1:.1f}">{not_in_place}</text>')
 
     if source_track is not None:
         parts.append(_schematic_endpoint_svg(layout, source_track, label="起", css_class="schematic-endpoint"))
@@ -941,8 +961,10 @@ def _build_distance_catalog_rows() -> list[dict[str, object]]:
     return rows
 
 
-def _render_hook_sidebar(step) -> None:
+def _render_hook_sidebar(step, vehicle_target_tracks: dict | None = None) -> None:
     route_tracks = step.hook.path_tracks if step.hook is not None else []
+    track_nodes = step.track_map.track_nodes if step.track_map else {}
+    vtt = vehicle_target_tracks or {}
     cards = []
     for row in _build_hook_sidebar_rows(step):
         cards.append(
@@ -954,10 +976,26 @@ def _render_hook_sidebar(step) -> None:
             """
         )
 
-    chips = "".join(
-        f"<span class='route-chip'>{escape(track_code)}</span>"
-        for track_code in route_tracks
-    ) or "<span class='route-chip route-chip-muted'>初始状态</span>"
+    chip_parts = []
+    for track_code in route_tracks:
+        node = track_nodes.get(track_code)
+        vehicles = node.vehicle_nos if node and node.vehicle_nos else []
+        in_place = sum(1 for v in vehicles if track_code in vtt.get(v, []))
+        not_in_place = len(vehicles) - in_place
+        if vehicles:
+            count_html = ""
+            if in_place > 0:
+                count_html += f"<span class='rc-parked'>{in_place}</span>"
+            if not_in_place > 0:
+                count_html += f"<span class='rc-transit'>{not_in_place}</span>"
+            chip_parts.append(
+                f"<span class='route-chip route-chip-occupied'>"
+                f"{escape(track_code)}{count_html}"
+                f"</span>"
+            )
+        else:
+            chip_parts.append(f"<span class='route-chip'>{escape(track_code)}</span>")
+    chips = "".join(chip_parts) or "<span class='route-chip route-chip-muted'>初始状态</span>"
 
     st.markdown(
         """
@@ -997,6 +1035,38 @@ def _render_hook_sidebar(step) -> None:
           color: #0f4f4a;
           font-size: 13px;
           font-weight: 600;
+        }
+        .route-chip-occupied {
+          background: #fff0d6;
+          color: #7c3f00;
+          border: 1px solid #e8a82a;
+        }
+        .route-chip-count {
+          display: inline-block;
+          background: #d97706;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 5px;
+        }
+        .rc-parked {
+          display: inline-block;
+          background: #0f766e;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 5px;
+        }
+        .rc-transit {
+          display: inline-block;
+          background: #d97706;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 3px;
         }
         .route-chip-muted {
           background: #f1ede5;

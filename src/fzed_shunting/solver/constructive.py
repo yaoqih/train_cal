@@ -48,6 +48,12 @@ _INVERSE_GUARD_WINDOW = 12
 REWIND_WINDOW = 30
 MAX_ALTERNATIVES_PER_STEP = 3
 
+# Stale-detection thresholds.
+# Purposeful moves (tier < 5: goal-progress, blocker-clear, dig-out) may keep
+# h flat for longer stretches during clearing chains without being "stuck".
+# Regressive/lateral moves (tier >= 5) are held to the tighter threshold.
+_PURPOSEFUL_STUCK_THRESHOLD = 60
+
 
 @dataclass(frozen=True)
 class ConstructiveResult:
@@ -227,6 +233,7 @@ def _greedy_forward(
     plan: list[HookAction] = []
     best_heuristic = state_heuristic(state)
     stale_rounds = 0
+    purposeful_stale = 0
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] = deque(maxlen=_INVERSE_GUARD_WINDOW)
     stats: dict[str, int] = {
         "tier0_close_door_final": 0,
@@ -330,6 +337,13 @@ def _greedy_forward(
         if current_heuristic < best_heuristic:
             best_heuristic = current_heuristic
             stale_rounds = 0
+            purposeful_stale = 0
+        elif chosen_tier < 5:
+            # Purposeful move (goal-progress / blocker-clear / dig-out) but h
+            # did not improve.  These are expected during clearing chains where
+            # value only materialises after several consecutive steps.  Use the
+            # higher purposeful threshold instead of the tight regressive one.
+            purposeful_stale += 1
         else:
             stale_rounds += 1
         if stale_rounds >= stuck_threshold:
@@ -339,7 +353,17 @@ def _greedy_forward(
                 iterations=iteration + 1,
                 started_at=started_at,
                 stats=stats,
-                stuck_reason=f"heuristic stale for {stuck_threshold} rounds",
+                stuck_reason=f"heuristic stale for {stuck_threshold} regressive rounds",
+                final_heuristic=final_heuristic,
+            )
+        if purposeful_stale >= _PURPOSEFUL_STUCK_THRESHOLD:
+            return _build_result(
+                plan=plan,
+                reached_goal=False,
+                iterations=iteration + 1,
+                started_at=started_at,
+                stats=stats,
+                stuck_reason=f"heuristic stale for {_PURPOSEFUL_STUCK_THRESHOLD} purposeful rounds",
                 final_heuristic=final_heuristic,
             )
 

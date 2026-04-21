@@ -232,6 +232,17 @@ def _h_blocking(
     vehicle_by_no: dict[str, NormalizedVehicle],
     current_track_by_vehicle: dict[str, str],
 ) -> int:
+    """Admissible lower bound on hooks needed to clear blocked target tracks.
+
+    Base term: 1 per target track whose near-end contains vehicles that must
+    leave before the track can receive its intended vehicles.
+
+    Cycle penalty: each strongly-connected component of size ≥ 2 in the
+    blocker-destination graph requires exactly 1 extra temporary-parking hook
+    (one vehicle must be staged elsewhere to break the mutual dependency).
+    Adding one per SCC is admissible because no single hook can simultaneously
+    resolve two independent cycles.
+    """
     goal_tracks_needed: set[str] = set()
     for vehicle in plan_input.vehicles:
         current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
@@ -241,11 +252,14 @@ def _h_blocking(
             goal_tracks_needed.add(candidate)
 
     blocker_count = 0
+    # blocker_dests[T] = goal tracks that near-end blockers at T want to reach
+    blocker_dests: dict[str, set[str]] = {}
     for target_track in goal_tracks_needed:
         seq = state.track_sequences.get(target_track, [])
         if not seq:
             continue
         cluster_blockers = 0
+        dests: set[str] = set()
         for vehicle_no in seq:
             blocker = vehicle_by_no.get(vehicle_no)
             if blocker is None:
@@ -253,9 +267,67 @@ def _h_blocking(
             if target_track in blocker.goal.allowed_target_tracks:
                 break
             cluster_blockers += 1
+            dests.update(blocker.goal.allowed_target_tracks)
         if cluster_blockers > 0:
             blocker_count += 1
+            blocker_dests[target_track] = dests
+
+    # Cycle penalty via SCC detection on the blocker-destination graph.
+    # Edge T1→T2: T1 is blocked AND its blockers want to go to T2 (also blocked).
+    blocked = set(blocker_dests.keys())
+    if len(blocked) >= 2:
+        graph: dict[str, set[str]] = {
+            t: (blocker_dests[t] & blocked) - {t}
+            for t in blocked
+        }
+        graph = {t: nbs for t, nbs in graph.items() if nbs}
+        blocker_count += _count_nontrivial_sccs(graph)
+
     return blocker_count
+
+
+def _count_nontrivial_sccs(graph: dict[str, set[str]]) -> int:
+    """Count SCCs with ≥ 2 nodes using Tarjan's algorithm.
+
+    Each such SCC is a set of mutually-blocking tracks that requires exactly
+    one extra staging hook to resolve, regardless of cycle length.
+    """
+    nodes = list(graph.keys() | {v for vs in graph.values() for v in vs})
+    if not nodes:
+        return 0
+    index_of: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: dict[str, bool] = {}
+    stack: list[str] = []
+    counter = [0]
+    result = [0]
+
+    def strongconnect(v: str) -> None:
+        index_of[v] = lowlink[v] = counter[0]
+        counter[0] += 1
+        stack.append(v)
+        on_stack[v] = True
+        for w in graph.get(v, set()):
+            if w not in index_of:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif on_stack.get(w, False):
+                lowlink[v] = min(lowlink[v], index_of[w])
+        if lowlink[v] == index_of[v]:
+            component: list[str] = []
+            while True:
+                w = stack.pop()
+                on_stack[w] = False
+                component.append(w)
+                if w == v:
+                    break
+            if len(component) >= 2:
+                result[0] += 1
+
+    for v in nodes:
+        if v not in index_of:
+            strongconnect(v)
+    return result[0]
 
 
 def _h_weigh_remaining(

@@ -91,6 +91,7 @@ class DemoViewModel(BaseModel):
     track_map: DemoTrackMap = Field(default_factory=DemoTrackMap)
     topology_graph: DemoTopologyGraph = Field(default_factory=DemoTopologyGraph)
     comparison_summary: dict[str, object] | None = None
+    vehicle_target_tracks: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class DemoWorkflowViewModel(BaseModel):
@@ -248,6 +249,11 @@ def build_demo_view_model(
         ),
         final_spot_assignments=dict(sorted(final_state.spot_assignments.items())),
         failed_hook_nos=sorted(hook_error_by_no),
+        vehicle_target_tracks={
+            vehicle.vehicle_no: list(vehicle.goal.allowed_target_tracks)
+            for vehicle in normalized.vehicles
+            if vehicle.goal.allowed_target_tracks
+        },
         track_map=_build_track_map(
             snapshot=replay.snapshots[0],
             hook=None,

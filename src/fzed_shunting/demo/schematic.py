@@ -133,6 +133,10 @@ def _orient_track_points(
     previous_shared = _shared_endpoint(previous_geometry, points) if previous_geometry is not None else None
     next_shared = _shared_endpoint(next_geometry, points) if next_geometry is not None else None
 
+    # Both neighbors connect at the same endpoint: avoid traversing the full track and back.
+    if previous_shared is not None and next_shared is not None and _same_point(previous_shared, next_shared):
+        return [previous_shared]
+
     if previous_shared is not None:
         if _same_point(points[0], previous_shared):
             return points
