@@ -94,29 +94,43 @@ def reorder_depot_late(
     initial_state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> list[HookAction]:
-    """Hybrid reorder: semantic-dep topological seed + adjacent-swap polish.
+    """Best-of-two reorder: pure adjacent bubble vs semantic-topo seed +
+    adjacent polish. Returns whichever produces smaller depot_earliness.
 
-    Empirically, semantic topological reorder alone under-performs adjacent
-    bubble because its pairwise dep graph is an over-approximation:
-    individually safe pairs don't compose into a globally-valid order, and
-    the algorithm falls back to the original plan when the composite order
-    fails the final replay check. Adjacent bubble, by contrast, validates
-    each incremental swap and therefore always produces some improvement
-    when any valid swap exists.
+    Rationale (empirically observed on data/validation_inputs/truth, 127
+    scenarios):
 
-    The hybrid runs semantic topo first — it can jump a hook past multiple
-    dep-blocked intermediates that adjacent bubble cannot cross — then runs
-    adjacent bubble from whatever state topo produced (original or an
-    already-improved order). This strictly dominates adjacent-swap alone:
-    worst case (topo returns original), the hybrid degenerates to pure
-    adjacent bubble; best case (topo finds a jump), bubble further refines
-    from the improved baseline.
+    - Pure adjacent bubble (v3) produced -5.9% earliness; it validates
+      every swap incrementally so it never produces a worse plan.
+    - Pure semantic topo (v4) produced -1.8%; pairwise dep graph is an
+      over-approximation, 7/10 of pure-adjacent's top wins got 0 from
+      topo because the composite order failed final replay and fell back.
+    - Topo-then-adjacent hybrid (v5) produced -3.9%; bubble-sort from
+      topo's output reached a worse local optimum than bubble from
+      original in many cases.
 
-    Complexity remains O(N^3). Either phase fails safe — returning the
-    input plan unchanged on any replay/state mismatch.
+    Best-of-two guarantees ``result <= pure_adjacent_result`` in earliness,
+    and in the handful of scenarios where topo finds a jump adjacent
+    can't reach (e.g., a hook must leap past a dep-blocked intermediate
+    pair), the topo branch wins.
+
+    Complexity: 2 × O(N^3), same asymptotic bound as v3. Either branch
+    fails safe.
     """
+    adj_result = _adjacent_swap_polish(plan, initial_state, plan_input)
     topo_result = _semantic_topo_reorder(plan, initial_state, plan_input)
-    return _adjacent_swap_polish(topo_result, initial_state, plan_input)
+    if topo_result != list(plan):
+        # Polish topo output with adjacent bubble — it's always safe and
+        # only improves.
+        topo_polished = _adjacent_swap_polish(topo_result, initial_state, plan_input)
+    else:
+        topo_polished = adj_result
+
+    # Return whichever has smallest earliness. Ties → prefer pure adjacent
+    # (stable, more predictable for bench-to-bench reproducibility).
+    if depot_earliness(topo_polished) < depot_earliness(adj_result):
+        return topo_polished
+    return adj_result
 
 
 def _semantic_topo_reorder(
