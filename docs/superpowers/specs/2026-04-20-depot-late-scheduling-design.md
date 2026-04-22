@@ -9,7 +9,7 @@
 - **方向**：进大库 + 出大库双向都要延后。
 - **层面**：只调整**输出钩计划顺序**；不修改业务流程分段、不强行两阶段求解。
 - **度量**：**平均较后**即可，不要求严格中点分界或先后完全分阶段。
-- **强度**：先按硬约束思路实现（搜索强制优先延后大库钩），对外仍通过开关 `enable_depot_late_scheduling` 默认关闭；基准跑完验证影响后再决定是否翻转默认。
+- **强度**：作为**必需行为**落地。开关 `enable_depot_late_scheduling` 默认 `True`，提供给 bench 做对照的 `False` 通路仍保留，不作为日常开关。里程碑 3 的基线数据揭示出搜索次级键对 weighted/beam 模式的干扰（详见 §7），已按 §4.2 的 mitigation 只在 `solver_mode == "exact"` 模式下启用搜索次级键。
 
 ## 2. 术语与口径
 
@@ -29,12 +29,12 @@ depot_earliness = Σ (N - i)   for each depot-touching hook at 1-indexed positio
 
 ## 3. 设计哲学
 
-保留现有两层架构（构造保底 + anytime 搜索）与核心不变式：
+保留现有两层架构（构造保底 + anytime 搜索）与核心不变式。大库延后现为必需行为（默认开启），但以下不变式仍然硬约束：
 
 1. **主目标不动**：`总勾数最少` 仍是第一目标；大库延后是**严格次级**（词典序）目标，不得以增加 1 勾为代价换取更晚的大库钩。
 2. **启发式不动**：`heuristic.py` 里的可采纳下界不变，不影响 exact 模式的最优性证明。
-3. **关闭时零影响**：`enable_depot_late_scheduling=False`（默认）时，产出钩计划与当前基线**逐位相同**；新增字段只有 `SolverResult.depot_earliness`（观察用）。
-4. **开启时最小侵入**：只在 cost 元组的次级键和终态后处理里引入大库延后考量；LNS 修补按 `(hook_count, depot_earliness, branch_count, length)` 词典序比较。
+3. **关闭时零影响**（保留为 bench 对照通路）：`enable_depot_late_scheduling=False` 时，产出钩计划与基线**逐位相同**；`SolverResult.depot_earliness` 字段仍然填充（观察用）。
+4. **默认开启，最小侵入**：搜索次级键仅在 `solver_mode == "exact"` 模式生效（§4.2 里程碑 4 mitigation）；LNS 修补按 `(hook_count, depot_earliness, branch_count, length)` 词典序比较；构造层同 tier 内有大库惩罚；终态过 `reorder_depot_late` 并在交换候选上再跑一遍完整验证器，不合法则回退原 plan。
 
 ## 4. 实现方案
 
@@ -82,6 +82,7 @@ def _priority(*, cost, heuristic, blocker_bonus=0, solver_mode, heuristic_weight
 ```
 
 - 次级键放在 `cost` 之后、启发式之前：保证词典序"先按 f 比较，f 相等再按大库延后度比较"。
+- **里程碑 4 mitigation（已应用）**：在 `_solve_search_result` 里只有当 `enable_depot_late_scheduling and solver_mode == "exact"` 时才把真实的 `-depot_index_sum(next_plan)` 写入次级键；weighted/beam/greedy 模式恒传 `0`。理由：exact 模式有可采纳启发式保证 f-tie 时的词典序不会破坏主目标；而 weighted/beam/greedy 模式下 f 值几乎不会 tied，次级键会在非 tie 的情况下直接影响扩展/剪枝决策，实测在 `validation_20260112W.json`、`validation_20260116W.json` 上造成 hook 数反向上升（17→18、18→20）。这些模式下的大库延后靠 LNS 比较层与终态 `reorder_depot_late` 承担。
 - `enable_depot_late_scheduling=False` 时所有调用点传 `neg_depot_index_sum=0`，退化为旧行为。
 - `QueueItem.priority` 的类型签名跟着拓宽为 `tuple[float, int, int, ...]`；无破坏性变更（仅增维度）。
 
@@ -235,21 +236,18 @@ class SolverResult:
 
 ## 6. 里程碑与开关策略
 
-1. **里程碑 1**：`depot_late.py` + 单测 PR，不接通主链路。
-2. **里程碑 2**：搜索/LNS/astar_solver 接通，默认 `enable_depot_late_scheduling=False`，所有集成测试关闭开关下绿。
-3. **里程碑 3**：开启开关跑 `typical_suite` + `typical_workflow_suite` + 109 bench，对比 earliness 与 valid 率。
-4. **里程碑 4**：基于里程碑 3 的数据，决定是否默认开启：
-   - 若 valid 率不降、勾数不增：翻转默认为 True。
-   - 若有可控劣化：保留默认 False，在调用方显式开启。
-   - 若劣化严重：回到设计讨论。
+1. **里程碑 1（已完成）**：`depot_late.py` + 单测 PR，不接通主链路。
+2. **里程碑 2（已完成）**：搜索/LNS/astar_solver 接通，默认 `enable_depot_late_scheduling=False`，所有集成测试关闭开关下绿。
+3. **里程碑 3（已完成）**：开启开关跑 `typical_suite` + `typical_workflow_suite` + 109 bench，对比 earliness 与 valid 率。关键发现：在启发式模式（weighted/weighted_greedy）下，次级键把搜索带向 hook 数更差的子空间——`validation_20260112W.json` 17→18、`validation_20260116W.json` 18→20。LNS 的 `_plan_quality` 只在候选 plan 已完成时比较，不会让 plan 变长；构造层的 `depot_late_penalty` 只在同 tier 内生效；终态 `reorder_depot_late` 是纯相邻交换。这三层安全，真正的问题在搜索层的扩展/剪枝 tiebreak。
+4. **里程碑 4（已完成）**：默认 `enable_depot_late_scheduling=True`；按 §7 风险栏 mitigation 把搜索次级键收窄到仅 `solver_mode == "exact"` 模式生效，heuristic 模式靠 LNS 与终态 reorder 承担延后诉求。保留 `False` 入参用于 bench 对照。回归覆盖扩展至包括 `validation_20260112W.json`、`validation_20260116W.json`，在 mitigation 后 hook count 回到基线。
 
 ## 7. 风险与回退
 
 | 风险 | 触发 | 处理 |
 |---|---|---|
-| 次级键干扰 beam/weighted 剪枝，产生更差主目标 | 开启后 `external_validation_inputs` 勾数上升 | 把次级键范围压缩为"仅在 f、cost 都相等时生效"（更严格词典序），或退回纯后处理版 |
-| `reorder_depot_late` 漏算一种依赖，导致 replay 失败 | 验证器报 invalid | 单测补、后处理捕获异常丢弃该次交换，最差等于不重排 |
-| LNS 把词典序误当主目标追求，破坏 repair 进度 | LNS 阶段命中率下降 | `_plan_quality` 里次级权重只在 flag=True 时启用，默认保持旧元组 |
+| 次级键干扰 beam/weighted 剪枝，产生更差主目标 | 开启后 `external_validation_inputs` 勾数上升 | **已应用（里程碑 4）**：搜索层次级键只在 `solver_mode == "exact"` 激活；其他模式恒传 `0`，完全依靠 LNS 比较和终态 `reorder_depot_late`。若未来仍出现 hook 数反涨，进一步候选是把次级键压缩为"仅在 f、cost 都相等时生效"的更严格词典序，或退回纯后处理版 |
+| `reorder_depot_late` 漏算一种依赖，导致 replay 失败 | 验证器报 invalid | 单测补、后处理捕获异常丢弃该次交换，最差等于不重排；`astar_solver` 中候选 plan 会在应用前跑一次完整 `verify_plan`，失败则回退原 plan（防止 `_apply_move` 未检测到的路径冲突） |
+| LNS 把词典序误当主目标追求，破坏 repair 进度 | LNS 阶段命中率下降 | `_plan_quality` 里次级权重只在 flag=True 时启用；候选比较只发生在完整 plan 之间，不会让 plan 变长 |
 | 与已回滚的 preallocation 混淆 | 历史代码污染 | 新模块名 `depot_late`，与旧 `preallocation` 命名无交集；文件独立 |
 
 ## 8. 不做的事（YAGNI）

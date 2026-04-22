@@ -220,3 +220,373 @@ def test_make_state_heuristic_matches_compute_admissible_heuristic():
     initial = build_initial_state(normalized)
     stateful = make_state_heuristic(normalized)
     assert stateful(initial) == compute_admissible_heuristic(normalized, initial)
+
+
+def _tight_capacity_payload(vehicles: list[dict], track_distances: dict[str, float]) -> dict:
+    """Payload with custom track_distances (so we can force a tight declared cap)."""
+    defaults = {
+        "存5北": 367.0,
+        "存5南": 156.0,
+        "存4北": 317.8,
+        "机库": 71.6,
+        "存1": 113.0,
+    }
+    defaults.update(track_distances)
+    return {
+        "trackInfo": [
+            {"trackName": name, "trackDistance": dist} for name, dist in defaults.items()
+        ],
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+
+def test_h_tight_capacity_eviction_zero_when_slack_available():
+    """Track has plenty of capacity for all incoming — no eviction needed."""
+    master = load_master_data(DATA_DIR)
+    payload = _tight_capacity_payload(
+        [
+            # Two 15m cars targeting 存4北 (cap 317.8m). Plenty of slack.
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_tight_capacity == 0
+
+
+def test_h_tight_capacity_eviction_counts_forced_evictions():
+    """Track is over-cap initially; pending arrivals force evictions."""
+    master = load_master_data(DATA_DIR)
+    # 存5南 declared cap 156m. Put two 15m identity-goal cars there (30m),
+    # plus a third 15m identity-goal car at 存5北 that needs to come in.
+    # Also load 存5南 with non-identity cars to push initial mass ABOVE cap.
+    # Initial mass at 存5南: 156 + 30 = 186m (over declared 156).
+    # effective_cap = max(156, 186) = 186.
+    # current_mass = 186. identity_goal_mass_at_T = 30.
+    # demand (identity targets=存5南) = 30 (existing) + 15 (incoming) = 45.
+    # pending_arrivals_mass = 45 - 30 = 15.
+    # non-identity-mass = 186 - 30 = 156.
+    # available_slack = 186 - 186 = 0.
+    # free_slack = 0 + 156 = 156. 15 <= 156 → no eviction claimed.
+    #
+    # Instead: make the non-identity cars ALSO impossible to absorb the
+    # overflow. We do this by adjusting so that existing non-identity cars
+    # are smaller than pending arrivals AND effective_cap caps growth.
+    #
+    # Simpler construction:
+    # 存5南: only identity-goal cars. Cap = 30m (override track_distance).
+    # Initial: 2 identity-goal cars × 15m = 30m. effective_cap = max(30, 30) = 30.
+    # Pending identity-goal arrival: 1 × 15m at 存5北.
+    # demand = 30 + 15 = 45. current_identity_mass = 30. pending = 15.
+    # current_mass = 30. non-identity = 0. available_slack = 0. free_slack = 0.
+    # overflow = 15. max_ident_len = 15. evictions = 1. hooks = 2.
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={"存5南": 30.0},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_tight_capacity == 2
+    # And the combined lower bound picks up the eviction contribution.
+    assert breakdown.value >= breakdown.h_distinct_transfer_pairs + 2
+
+
+def test_h_tight_capacity_eviction_multiple_overflow_ceils():
+    """Overflow larger than one identity-goal car → ceil evictions."""
+    master = load_master_data(DATA_DIR)
+    # 存5南 cap 30m, 2 identity-goal cars (15m each) initially (30m).
+    # Two pending identity-goal cars (15m each) elsewhere.
+    # demand=60, current_ident=30, pending=30. non-id=0. slack=0.
+    # overflow=30. max_ident_len=15. ceil(30/15)=2 → 4 hooks.
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={"存5南": 30.0},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_tight_capacity == 4
+
+
+def test_h_tight_capacity_eviction_nonidentity_slack_absorbs_overflow():
+    """Non-identity cars at T will leave, covering overflow — no eviction."""
+    master = load_master_data(DATA_DIR)
+    # 存5南 cap 45m. At 存5南: 1 identity-goal car (15m) + 1 non-identity car
+    # (15m) targeting 存4北 → total 30m. effective_cap = max(45, 30) = 45.
+    # Pending: 1 identity-goal car (15m) at 存5北.
+    # demand=30, current_ident=15, pending=15.
+    # current_mass=30, slack=15, non-id-mass=15, free_slack=30.
+    # overflow = 15 - 30 = -15 → no eviction.
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "N1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={"存5南": 45.0},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_tight_capacity == 0
+
+
+def test_h_tight_capacity_eviction_ignores_multi_target_vehicles():
+    """Multi-target (AREA/RANDOM) vehicles don't trigger single-track eviction."""
+    master = load_master_data(DATA_DIR)
+    # 大库 RANDOM target → allowed_target_tracks has 4 elements. Even if a
+    # depot track is full, the RANDOM car doesn't count against any specific
+    # identity-goal demand.
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "R1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_tight_capacity == 0
+
+
+def test_h_tight_capacity_eviction_value_combines_with_transfer_pairs():
+    """value property uses h_distinct_transfer_pairs + h_tight_capacity."""
+    master = load_master_data(DATA_DIR)
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={"存5南": 30.0},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    # h_distinct_transfer_pairs = 1 (one forced pair: 存5北 → 存5南 for P1).
+    # h_tight_capacity = 2 (one evict-return roundtrip).
+    # value should be at least 3.
+    assert breakdown.h_distinct_transfer_pairs == 1
+    assert breakdown.h_tight_capacity == 2
+    assert breakdown.value >= 3
+
+
+def test_h_tight_capacity_eviction_state_heuristic_matches_breakdown():
+    """make_state_heuristic should include the tight-capacity contribution."""
+    master = load_master_data(DATA_DIR)
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "I2",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 15.0,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={"存5南": 30.0},
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    stateful = make_state_heuristic(normalized)
+    assert stateful(initial) == compute_admissible_heuristic(normalized, initial)

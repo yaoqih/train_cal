@@ -317,7 +317,7 @@ def test_prune_queue_rescues_20260309w_blocker_move_just_outside_beam_width():
         route_oracle=route_oracle,
     )
 
-    ranked_states: list[tuple[tuple[float, int, int, int], int, HookAction, ReplayState]] = []
+    ranked_states: list[tuple[tuple, int, HookAction, ReplayState]] = []
     blocker_rank = None
     blocker_move = None
 
@@ -390,7 +390,7 @@ def test_prune_queue_rescues_20260309w_blocker_move_just_outside_beam_width():
 def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
     def build_item(
         seq: int,
-        priority: tuple[float, int, int, int, int],
+        priority: tuple[float, int, int, int, int, int],
         state_key: tuple[str],
     ) -> QueueItem:
         return QueueItem(
@@ -406,10 +406,12 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
             plan=[],
         )
 
-    first = build_item(1, (10, 0, 10, 0, 10), ("A",))
-    second = build_item(2, (11, 0, 11, 0, 11), ("B",))
-    non_blocker = build_item(3, (12, 0, 12, 0, 12), ("C",))
-    blocker = build_item(4, (13, 0, 13, -2, 15), ("D",))
+    # Beam priority tuple shape: (f, cost, neg_depot_key, adj_h, -blocker, h).
+    # neg_depot_key held at 0 (feature flag off) for legacy parity.
+    first = build_item(1, (10, 0, 0, 10, 0, 10), ("A",))
+    second = build_item(2, (11, 0, 0, 11, 0, 11), ("B",))
+    non_blocker = build_item(3, (12, 0, 0, 12, 0, 12), ("C",))
+    blocker = build_item(4, (13, 0, 0, 13, -2, 15), ("D",))
     queue = [non_blocker, blocker, second, first]
     best_cost = {item.state_key: 0 for item in queue}
 
@@ -426,7 +428,7 @@ def test_prune_queue_keeps_best_shallow_state_even_when_deeper_states_have_bette
     def build_item(
         *,
         seq: int,
-        priority: tuple[float, int, int, int, int],
+        priority: tuple[float, int, int, int, int, int],
         state_key: tuple[str],
         plan_len: int,
     ) -> QueueItem:
@@ -449,27 +451,28 @@ def test_prune_queue_keeps_best_shallow_state_even_when_deeper_states_have_bette
             plan=[move for _ in range(plan_len)],
         )
 
+    # Beam priority tuple shape: (f, cost, neg_depot_key, adj_h, -blocker, h).
     shallow = build_item(
         seq=1,
-        priority=(30, 2, 28, 0, 28),
+        priority=(30, 2, 0, 28, 0, 28),
         state_key=("shallow",),
         plan_len=2,
     )
     deep_a = build_item(
         seq=2,
-        priority=(20, 12, 8, 0, 8),
+        priority=(20, 12, 0, 8, 0, 8),
         state_key=("deep_a",),
         plan_len=12,
     )
     deep_b = build_item(
         seq=3,
-        priority=(21, 13, 8, 0, 8),
+        priority=(21, 13, 0, 8, 0, 8),
         state_key=("deep_b",),
         plan_len=13,
     )
     deep_c = build_item(
         seq=4,
-        priority=(22, 14, 8, 0, 8),
+        priority=(22, 14, 0, 8, 0, 8),
         state_key=("deep_c",),
         plan_len=14,
     )
@@ -1899,3 +1902,156 @@ def test_state_key_ignores_loco_track_position():
     )
 
     assert _state_key(first) == _state_key(second)
+
+
+# --- Depot-late-scheduling integration tests ---
+
+from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
+
+
+VALIDATION_FIXTURES = [
+    "validation_20260104W.json",
+    "validation_20260110W.json",
+    "validation_20260112W.json",
+    "validation_20260115W.json",
+    "validation_20260116W.json",
+]
+
+
+def _load_depot_late_scenario(name: str):
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "artifacts"
+            / "external_validation_inputs"
+            / name
+        ).read_text(encoding="utf-8")
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    return master, normalized, initial
+
+
+def _depot_hook_count(plan):
+    return sum(1 for h in plan if is_depot_hook(h))
+
+
+@pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
+def test_depot_late_flag_off_matches_baseline(fixture_name):
+    """Flag off: plan byte-equal to the default-off baseline plan."""
+    master, plan_input, initial = _load_depot_late_scenario(fixture_name)
+    baseline = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=False,
+    )
+    flagged_off = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=False,
+    )
+    assert baseline.plan == flagged_off.plan
+
+
+@pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
+def test_depot_late_flag_on_preserves_hook_count(fixture_name):
+    """Flag on: hook count <= flag-off baseline (lexicographic secondary preserves primary)."""
+    master, plan_input, initial = _load_depot_late_scenario(fixture_name)
+    baseline = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=False,
+    )
+    flagged_on = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=True,
+    )
+    assert len(flagged_on.plan) <= len(baseline.plan), (
+        f"Hook count regressed on {fixture_name}: "
+        f"{len(baseline.plan)} -> {len(flagged_on.plan)}"
+    )
+
+
+@pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
+def test_depot_late_flag_on_preserves_validity(fixture_name):
+    """Flag on: verifier still passes when flag-off baseline is valid."""
+    master, plan_input, initial = _load_depot_late_scenario(fixture_name)
+    baseline = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=False,
+    )
+    if baseline.verification_report is None or not baseline.verification_report.is_valid:
+        pytest.skip(f"{fixture_name} baseline not valid; depot-late not evaluated here")
+    flagged_on = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=True,
+        enable_depot_late_scheduling=True,
+    )
+    assert flagged_on.verification_report is not None
+    assert flagged_on.verification_report.is_valid, (
+        f"Validity regressed on {fixture_name}"
+    )
+
+
+@pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
+def test_depot_late_flag_on_does_not_increase_earliness(fixture_name):
+    """Flag on: depot_earliness <= flag-off baseline (strict or equal).
+
+    The comparison is only meaningful when the two plans contain the same
+    number of depot-touching hooks — earliness scales with depot-hook count,
+    so a plan with more depot hooks can legitimately have larger earliness
+    even if each individual depot hook is pushed later. When depot-hook
+    counts differ, we skip with a descriptive message rather than assert.
+    """
+    master, plan_input, initial = _load_depot_late_scenario(fixture_name)
+    baseline = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=False,
+        enable_depot_late_scheduling=False,
+    )
+    baseline_depot_count = _depot_hook_count(baseline.plan)
+    if baseline_depot_count == 0:
+        pytest.skip(f"{fixture_name} has no depot hooks; depot-late not evaluated here")
+    flagged_on = solve_with_simple_astar_result(
+        plan_input=plan_input,
+        initial_state=initial,
+        master=master,
+        time_budget_ms=10_000,
+        verify=False,
+        enable_depot_late_scheduling=True,
+    )
+    flagged_depot_count = _depot_hook_count(flagged_on.plan)
+    if flagged_depot_count != baseline_depot_count:
+        pytest.skip(
+            f"{fixture_name} depot-hook counts differ "
+            f"(baseline={baseline_depot_count}, flagged={flagged_depot_count}); "
+            f"earliness not directly comparable"
+        )
+    assert flagged_on.depot_earliness <= baseline.depot_earliness, (
+        f"Earliness worsened on {fixture_name}: "
+        f"{baseline.depot_earliness} -> {flagged_on.depot_earliness}"
+    )

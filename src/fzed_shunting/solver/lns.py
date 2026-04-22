@@ -39,6 +39,7 @@ def _solve_with_lns_result(
     repair_passes: int,
     debug_stats: dict[str, Any] | None,
     solve_search_result,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
     started_at = perf_counter()
     seed_solver_mode = "beam" if beam_width is not None else "weighted"
@@ -51,6 +52,7 @@ def _solve_with_lns_result(
         heuristic_weight=max(heuristic_weight, 1.5),
         beam_width=beam_width,
         debug_stats=seed_debug_stats,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     )
     improved = _improve_incumbent_result(
         plan_input=plan_input,
@@ -62,6 +64,7 @@ def _solve_with_lns_result(
         repair_passes=repair_passes,
         max_rounds=None,
         solve_search_result=solve_search_result,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     )
     return SolverResult(
         plan=improved.plan,
@@ -85,6 +88,7 @@ def _improve_incumbent_result(
     max_rounds: int | None,
     solve_search_result,
     time_budget_ms: float | None = None,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
     if repair_passes <= 0 or not incumbent.plan:
         return incumbent
@@ -138,6 +142,7 @@ def _improve_incumbent_result(
                     beam_width=beam_width,
                     debug_stats=None,
                     budget=SearchBudget(time_budget_ms=per_call_budget),
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
                 )
             except ValueError:
                 continue
@@ -154,7 +159,12 @@ def _improve_incumbent_result(
             total_generated += repaired.generated_nodes
             total_closed += repaired.closed_nodes
             candidate_plan = prefix + repaired.plan
-            if _is_better_plan(candidate_plan, incumbent_plan, route_oracle):
+            if _is_better_plan(
+                candidate_plan,
+                incumbent_plan,
+                route_oracle,
+                depot_late=enable_depot_late_scheduling,
+            ):
                 incumbent_plan = candidate_plan
                 improved = True
                 break
@@ -281,16 +291,20 @@ def _is_better_plan(
     candidate_plan: list[HookAction],
     incumbent_plan: list[HookAction],
     route_oracle: RouteOracle | None,
+    *,
+    depot_late: bool = False,
 ) -> bool:
-    candidate_metrics = _plan_quality(candidate_plan, route_oracle)
-    incumbent_metrics = _plan_quality(incumbent_plan, route_oracle)
+    candidate_metrics = _plan_quality(candidate_plan, route_oracle, depot_late=depot_late)
+    incumbent_metrics = _plan_quality(incumbent_plan, route_oracle, depot_late=depot_late)
     return candidate_metrics < incumbent_metrics
 
 
 def _plan_quality(
     plan: list[HookAction],
     route_oracle: RouteOracle | None,
-) -> tuple[int, int, float]:
+    *,
+    depot_late: bool = False,
+) -> tuple:
     total_length_m = 0.0
     total_branch_count = 0
     if route_oracle is None:
@@ -305,6 +319,9 @@ def _plan_quality(
             else:
                 total_branch_count += max(len(move.path_tracks) - 1, 0)
                 total_length_m += float(len(move.path_tracks))
+    if depot_late:
+        from fzed_shunting.solver.depot_late import depot_earliness
+        return (len(plan), depot_earliness(plan), total_branch_count, total_length_m)
     return (len(plan), total_branch_count, total_length_m)
 
 

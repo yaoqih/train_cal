@@ -61,6 +61,7 @@ def solve_with_simple_astar(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
+    enable_depot_late_scheduling: bool = True,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -75,6 +76,7 @@ def solve_with_simple_astar(
         verify=verify,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_constructive_seed=enable_constructive_seed,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     ).plan
 
 
@@ -91,6 +93,7 @@ def solve_with_simple_astar_result(
     verify: bool = True,
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
+    enable_depot_late_scheduling: bool = True,
 ) -> SolverResult:
     _validate_solver_options(
         solver_mode=solver_mode,
@@ -122,8 +125,36 @@ def solve_with_simple_astar_result(
             initial_state=initial_state,
             master=master,
             time_budget_ms=time_budget_ms,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         phase_timings["constructive_ms"] = (perf_counter() - _ts) * 1000
+
+    # Stage 0.5: warm-start A* — if constructive stopped exactly 1 move from
+    # goal (h=1), replay its plan and let a brief focused A* close the gap.
+    # Limited to h=1 only: h≥2 states with evictions require expensive search
+    # that wastes budget better spent in the anytime chain.
+    if (
+        enable_constructive_seed
+        and constructive_seed is not None
+        and constructive_seed.fallback_stage == "constructive_partial"
+        and constructive_seed.plan
+        and time_budget_ms is not None
+    ):
+        _ts = perf_counter()
+        elapsed_so_far_ms = (perf_counter() - started_at) * 1000
+        warm_budget = min(500.0, max(50.0, (time_budget_ms - elapsed_so_far_ms) * 0.05))
+        warm_result = _try_warm_start_completion(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            constructive_plan=constructive_seed.plan,
+            master=master,
+            time_budget_ms=warm_budget,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            max_h=1,
+        )
+        if warm_result is not None:
+            constructive_seed = warm_result
+        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     result: SolverResult
     if solver_mode == "lns":
@@ -137,6 +168,7 @@ def solve_with_simple_astar_result(
             debug_stats=debug_stats,
             repair_passes=4,
             solve_search_result=_solve_search_result,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
     else:
@@ -146,7 +178,7 @@ def solve_with_simple_astar_result(
             and enable_anytime_fallback
             and time_budget_ms is not None
         ):
-            exact_time_budget_ms = max(1.0, time_budget_ms * 0.4)
+            exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
         _ts = perf_counter()
         try:
             result = _solve_search_result(
@@ -158,6 +190,7 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
         except ValueError:
             if constructive_seed is None:
@@ -189,6 +222,7 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 solve_search_result=_solve_search_result,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
             phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "beam" and beam_width is not None:
@@ -205,6 +239,7 @@ def solve_with_simple_astar_result(
                     repair_passes=BEAM_POST_REPAIR_PASSES,
                     max_rounds=1,
                     solve_search_result=_solve_search_result,
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
                 )
                 if len(candidate.plan) >= len(improved.plan):
                     break
@@ -255,10 +290,68 @@ def solve_with_simple_astar_result(
                 max_rounds=3,
                 solve_search_result=_solve_search_result,
                 time_budget_ms=polish_budget_ms,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
             if len(polished.plan) < len(result.plan):
                 result = polished
             phase_timings["lns_ms"] += (perf_counter() - _ts) * 1000
+
+    # Goal-by-goal rescue was removed (W3-L): the root-cause fix in
+    # _score_move prevents partial plans upstream, making post-hoc rescue
+    # redundant.
+
+    # Depot-late post-processing: only when the flag is on and we have a plan.
+    # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
+    # toward the tail, preserving replay-equivalent final state. On failure
+    # (either an internal simulate rejection or a full-verifier rejection of
+    # the reordered plan — e.g. intermediate route interference that
+    # _apply_move doesn't detect) the plan is left unchanged.
+    if enable_depot_late_scheduling and result.plan:
+        from fzed_shunting.solver.depot_late import reorder_depot_late
+
+        reordered_plan = reorder_depot_late(result.plan, initial_state, plan_input)
+        if reordered_plan != result.plan:
+            # Route-level verification guard: reorder_depot_late's internal
+            # simulate only replays via _apply_move and compares terminal
+            # state; it does not detect intermediate route interference that
+            # the full plan_verifier catches. Run the verifier on the
+            # candidate and fall back to the original plan on failure.
+            candidate_is_safe = True
+            if master is not None:
+                from fzed_shunting.verify.plan_verifier import verify_plan
+
+                hook_plan = [
+                    {
+                        "hookNo": index,
+                        "actionType": move.action_type,
+                        "sourceTrack": move.source_track,
+                        "targetTrack": move.target_track,
+                        "vehicleNos": list(move.vehicle_nos),
+                        "pathTracks": list(move.path_tracks),
+                    }
+                    for index, move in enumerate(reordered_plan, start=1)
+                ]
+                try:
+                    candidate_report = verify_plan(
+                        master,
+                        plan_input,
+                        hook_plan,
+                        initial_state_override=initial_state,
+                    )
+                    candidate_is_safe = bool(candidate_report.is_valid)
+                except Exception:  # noqa: BLE001
+                    candidate_is_safe = False
+            if candidate_is_safe:
+                result = replace(result, plan=reordered_plan)
+
+    # Populate depot observability fields on every return path (flag on or off).
+    from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
+
+    result = replace(
+        result,
+        depot_earliness=depot_earliness(result.plan),
+        depot_hook_count=sum(1 for h in result.plan if is_depot_hook(h)),
+    )
 
     if verify:
         _ts = perf_counter()
@@ -326,13 +419,14 @@ def _run_constructive_stage(
     initial_state: ReplayState,
     master: MasterData | None,
     time_budget_ms: float | None,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult | None:
     """Run the priority-rule dispatcher and wrap the result as a SolverResult."""
     from fzed_shunting.solver.constructive import solve_constructive
 
     constructive_budget = None
     if time_budget_ms is not None:
-        constructive_budget = min(5_000.0, max(200.0, time_budget_ms * 0.05))
+        constructive_budget = min(8_000.0, max(500.0, time_budget_ms * 0.15))
     try:
         ctr = solve_constructive(
             plan_input,
@@ -382,7 +476,11 @@ def _attach_verification(
         for index, move in enumerate(result.plan, start=1)
     ]
     report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
-    best_effort = result.fallback_stage == "constructive_partial"
+    # Treat any plan derived from the constructive fallback (including
+    # "+rescue"-annotated stages) as best-effort: it's already the last
+    # resort and partial completeness is informative, not fatal.
+    stage = result.fallback_stage or ""
+    best_effort = stage.startswith("constructive_partial")
     if not report.is_valid and not best_effort:
         raise PlanVerificationError(report)
     return replace(result, verification_report=report)
@@ -391,6 +489,60 @@ def _heuristic(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
     from fzed_shunting.solver.heuristic import compute_admissible_heuristic
 
     return compute_admissible_heuristic(plan_input, state)
+
+
+def _try_warm_start_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    constructive_plan: list[HookAction],
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+    max_h: int = 4,
+) -> SolverResult | None:
+    """Replay constructive plan to get near-goal state, then run focused A* to finish."""
+    from fzed_shunting.solver.heuristic import compute_admissible_heuristic
+    from fzed_shunting.io.normalize_input import NormalizedVehicle
+
+    vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
+    state = initial_state
+    try:
+        for move in constructive_plan:
+            state = _apply_move(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+    except Exception:  # noqa: BLE001
+        return None
+
+    h = compute_admissible_heuristic(plan_input, state)
+    if h == 0 or h > max_h:
+        return None
+
+    try:
+        completion = _solve_search_result(
+            plan_input=plan_input,
+            initial_state=state,
+            master=master,
+            solver_mode="exact",
+            heuristic_weight=1.0,
+            beam_width=None,
+            budget=SearchBudget(time_budget_ms=time_budget_ms),
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+    except ValueError:
+        return None
+    if not completion.plan:
+        return None
+
+    return SolverResult(
+        plan=list(constructive_plan) + list(completion.plan),
+        expanded_nodes=completion.expanded_nodes,
+        generated_nodes=completion.generated_nodes,
+        closed_nodes=completion.closed_nodes,
+        elapsed_ms=completion.elapsed_ms,
+        is_proven_optimal=False,
+        fallback_stage="constructive_warm_start",
+        debug_stats=completion.debug_stats,
+    )
 
 def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> None:
     capacity_by_track = {

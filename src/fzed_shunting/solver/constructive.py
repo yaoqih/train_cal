@@ -15,6 +15,13 @@ Because candidate generation already honours every hard business constraint
 (traction limits, path interference, close-door pruning, capacity tolerance,
 spot availability, etc.), any plan the dispatcher emits is legal by
 construction. Verification still happens on the solver entry point.
+
+Bounded backtracking (W3-N): If greedy_forward gets stuck in a local minimum
+(heuristic stale for ``stuck_threshold`` rounds) without reaching the goal,
+``solve_constructive`` rewinds to a recent decision point and tries an
+alternative (2nd/3rd best) move there, retrying up to ``max_backtracks``
+times. This breaks the 12 known positive failures where greedy picks the
+wrong move at some key step and oscillates in displacement cycles.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from typing import Any
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.depot_late import DEPOT_INNER_TRACKS
 from fzed_shunting.solver.heuristic import make_state_heuristic
 from fzed_shunting.solver.move_generator import generate_goal_moves
 from fzed_shunting.solver.types import HookAction
@@ -34,8 +42,17 @@ from fzed_shunting.verify.replay import ReplayState
 
 
 STAGING_TRACKS = frozenset({"临1", "临2", "临3", "临4", "存4南"})
-DEPOT_INNER_TRACKS = frozenset({"修1库内", "修2库内", "修3库内", "修4库内"})
 _INVERSE_GUARD_WINDOW = 12
+
+# W3-N backtracking controls
+REWIND_WINDOW = 30
+MAX_ALTERNATIVES_PER_STEP = 3
+
+# Stale-detection thresholds.
+# Purposeful moves (tier < 5: goal-progress, blocker-clear, dig-out) may keep
+# h flat for longer stretches during clearing chains without being "stuck".
+# Regressive/lateral moves (tier >= 5) are held to the tighter threshold.
+_PURPOSEFUL_STUCK_THRESHOLD = 60
 
 
 @dataclass(frozen=True)
@@ -46,6 +63,7 @@ class ConstructiveResult:
     elapsed_ms: float
     stuck_reason: str | None = None
     debug_stats: dict[str, Any] | None = None
+    final_heuristic: float | None = None
 
 
 def solve_constructive(
@@ -54,17 +72,152 @@ def solve_constructive(
     master: MasterData | None = None,
     *,
     max_iterations: int = 1000,
-    stuck_threshold: int = 6,
+    stuck_threshold: int = 30,
+    max_backtracks: int = 5,
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
 ) -> ConstructiveResult:
-    """Priority-rule dispatcher, guaranteed to return a ``ConstructiveResult``.
+    """Priority-rule dispatcher with bounded backtracking.
 
-    The dispatcher never raises ``ValueError("No solution found")``. If the
-    current state has no legal move (a rare true dead-end) or the caller-set
-    iteration/time budget is exhausted, the result reports ``reached_goal=False``
-    with the best-effort partial plan collected so far. Callers decide whether
-    to accept the partial plan or abort.
+    Runs greedy-forward. If it gets stuck (h stale for ``stuck_threshold``
+    rounds) without reaching goal, rewinds ~15-30 steps and tries an
+    alternative move at one of the rewound decision points. Retries up to
+    ``max_backtracks`` times. Always returns a ``ConstructiveResult`` — the
+    best attempt seen across all retries (prefer reached_goal; among equal,
+    prefer fewer hooks; among not reached, prefer lower final heuristic).
+
+    ``stuck_threshold`` default 30 gives an identity-goal displacement detour
+    room while still being far below ``max_iterations`` on genuinely stuck
+    scenarios.
+    """
+    started_at = perf_counter()
+
+    # ``alternatives`` maps step_index -> which alternative to pick at that step
+    # (0 = best; 1 = 2nd-best; etc.). Starts empty (full greedy).
+    alternatives: dict[int, int] = {}
+    best_attempt: ConstructiveResult | None = None
+    attempt_idx = 0
+
+    for attempt_idx in range(max_backtracks + 1):
+        remaining_budget = None
+        if time_budget_ms is not None:
+            elapsed = (perf_counter() - started_at) * 1000
+            remaining_budget = time_budget_ms - elapsed
+            if remaining_budget <= 0:
+                break
+
+        result = _greedy_forward(
+            plan_input,
+            initial_state,
+            master,
+            alternatives=alternatives,
+            max_iterations=max_iterations,
+            stuck_threshold=stuck_threshold,
+            time_budget_ms=remaining_budget,
+        )
+
+        if best_attempt is None or _is_better_attempt(result, best_attempt):
+            best_attempt = result
+
+        if result.reached_goal:
+            break
+
+        # If we're out of budget, don't try more backtracks
+        if time_budget_ms is not None:
+            if (perf_counter() - started_at) * 1000 >= time_budget_ms:
+                break
+
+        # Find a step to rewind to and try an alternative there.
+        stuck_at = len(result.plan)
+        rewind_candidate: int | None = None
+
+        # Preferred: LATEST step in the last REWIND_WINDOW that hasn't yet
+        # exhausted its alternatives.
+        window_start = max(0, stuck_at - REWIND_WINDOW)
+        for step in range(stuck_at - 1, window_start - 1, -1):
+            if alternatives.get(step, 0) + 1 >= MAX_ALTERNATIVES_PER_STEP:
+                continue
+            rewind_candidate = step
+            break
+
+        # Fallback: older steps (before window_start) that still have alternatives.
+        if rewind_candidate is None:
+            for step in range(window_start - 1, -1, -1):
+                if alternatives.get(step, 0) + 1 >= MAX_ALTERNATIVES_PER_STEP:
+                    continue
+                rewind_candidate = step
+                break
+
+        if rewind_candidate is None:
+            # Nothing left to try.
+            break
+
+        # Increment the alternative index for the chosen rewind step.
+        alternatives[rewind_candidate] = alternatives.get(rewind_candidate, 0) + 1
+        # Clear any later entries in `alternatives`: those steps will be
+        # re-run from scratch so their prior bias no longer applies.
+        for step in list(alternatives.keys()):
+            if step > rewind_candidate:
+                del alternatives[step]
+
+    assert best_attempt is not None
+    if debug_stats is not None:
+        debug_stats["constructive_backtrack_count"] = attempt_idx
+        if best_attempt.debug_stats:
+            debug_stats.update(best_attempt.debug_stats)
+        debug_stats["constructive_iterations"] = best_attempt.iterations
+        debug_stats["constructive_reached_goal"] = best_attempt.reached_goal
+
+    # Attach backtrack count to the returned result's debug_stats too.
+    merged_stats = dict(best_attempt.debug_stats or {})
+    merged_stats["constructive_backtrack_count"] = attempt_idx
+    return ConstructiveResult(
+        plan=best_attempt.plan,
+        reached_goal=best_attempt.reached_goal,
+        iterations=best_attempt.iterations,
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+        stuck_reason=best_attempt.stuck_reason,
+        debug_stats=merged_stats,
+        final_heuristic=best_attempt.final_heuristic,
+    )
+
+
+def _is_better_attempt(
+    new_result: ConstructiveResult, old_result: ConstructiveResult
+) -> bool:
+    """Prefer reached_goal; among reached_goal prefer fewer hooks;
+    among not reached prefer lower final_heuristic, then longer plan."""
+    if new_result.reached_goal and not old_result.reached_goal:
+        return True
+    if not new_result.reached_goal and old_result.reached_goal:
+        return False
+    if new_result.reached_goal:
+        return len(new_result.plan) < len(old_result.plan)
+    # Both not reached. Prefer lower final heuristic (closer to goal).
+    new_h = new_result.final_heuristic if new_result.final_heuristic is not None else float("inf")
+    old_h = old_result.final_heuristic if old_result.final_heuristic is not None else float("inf")
+    if new_h != old_h:
+        return new_h < old_h
+    # Tie-break: prefer longer plan (more work done without regressing).
+    return len(new_result.plan) > len(old_result.plan)
+
+
+def _greedy_forward(
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    *,
+    alternatives: dict[int, int],
+    max_iterations: int,
+    stuck_threshold: int,
+    time_budget_ms: float | None,
+) -> ConstructiveResult:
+    """Single greedy forward sweep, optionally biased by ``alternatives``.
+
+    At each step, if ``alternatives`` has an entry for the current step
+    index, the move at that ordinal (0=best, 1=2nd-best, ...) is picked
+    instead of the greedy best. The inverse-guard is applied after
+    alternative selection to prevent visible oscillation.
     """
     from fzed_shunting.solver.astar_solver import _apply_move, _is_goal
 
@@ -80,6 +233,7 @@ def solve_constructive(
     plan: list[HookAction] = []
     best_heuristic = state_heuristic(state)
     stale_rounds = 0
+    purposeful_stale = 0
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] = deque(maxlen=_INVERSE_GUARD_WINDOW)
     stats: dict[str, int] = {
         "tier0_close_door_final": 0,
@@ -91,6 +245,9 @@ def solve_constructive(
         "tier6_staging": 0,
     }
 
+    stuck_reason: str | None = None
+    final_heuristic: float = best_heuristic
+
     for iteration in range(max_iterations):
         if _is_goal(plan_input, state):
             return _build_result(
@@ -99,7 +256,7 @@ def solve_constructive(
                 iterations=iteration,
                 started_at=started_at,
                 stats=stats,
-                debug_stats=debug_stats,
+                final_heuristic=state_heuristic(state),
             )
         if time_budget_ms is not None:
             if (perf_counter() - started_at) * 1000 > time_budget_ms:
@@ -110,7 +267,7 @@ def solve_constructive(
                     started_at=started_at,
                     stats=stats,
                     stuck_reason="time budget exhausted",
-                    debug_stats=debug_stats,
+                    final_heuristic=state_heuristic(state),
                 )
 
         moves = generate_goal_moves(
@@ -127,33 +284,78 @@ def solve_constructive(
                 started_at=started_at,
                 stats=stats,
                 stuck_reason="no legal moves",
-                debug_stats=debug_stats,
+                final_heuristic=state_heuristic(state),
             )
 
-        best_move, best_tier = _choose_best_move(
-            moves=moves,
-            state=state,
-            vehicle_by_no=vehicle_by_no,
-            goal_tracks_needed=goal_tracks_needed,
-            recent_moves=recent_moves,
-        )
-        stats[f"tier{best_tier}_" + _TIER_NAMES[best_tier]] = (
-            stats.get(f"tier{best_tier}_" + _TIER_NAMES[best_tier], 0) + 1
-        )
+        # Score and sort all moves (ascending — lowest tuple wins).
+        # Precompute satisfied-vehicle counts per track (used as burial tiebreaker)
+        # once per step rather than re-deriving inside _score_move per move.
+        satisfied_by_track: dict[str, int] = {
+            track: sum(
+                1 for vn in seq
+                if vn in vehicle_by_no
+                and track in vehicle_by_no[vn].goal.allowed_target_tracks
+            )
+            for track, seq in state.track_sequences.items()
+            if seq
+        }
+        scored: list[tuple[tuple, int, HookAction, bool]] = []
+        for move in moves:
+            score, tier = _score_move(
+                move=move,
+                state=state,
+                vehicle_by_no=vehicle_by_no,
+                goal_tracks_needed=goal_tracks_needed,
+                satisfied_by_track=satisfied_by_track,
+            )
+            is_inverse = _is_inverse_of_recent(move, recent_moves)
+            scored.append((score, tier, move, is_inverse))
+        scored.sort(key=lambda entry: entry[0])
+
+        # Apply non-inverse preference to the pool (retain existing behavior).
+        non_inverse_pool = [entry for entry in scored if not entry[3]]
+        pool = non_inverse_pool if non_inverse_pool else scored
+
+        step_idx = len(plan)
+        alt_idx = alternatives.get(step_idx, 0)
+        if alt_idx >= len(pool):
+            return _build_result(
+                plan=plan,
+                reached_goal=False,
+                iterations=iteration,
+                started_at=started_at,
+                stats=stats,
+                stuck_reason=f"alternative exhausted at step {step_idx}",
+                final_heuristic=state_heuristic(state),
+            )
+
+        chosen_score, chosen_tier, chosen_move, _is_inv = pool[alt_idx]
+
+        tier_key = f"tier{chosen_tier}_" + _TIER_NAMES[min(chosen_tier, 6)]
+        stats[tier_key] = stats.get(tier_key, 0) + 1
+
         state = _apply_move(
             state=state,
-            move=best_move,
+            move=chosen_move,
             plan_input=plan_input,
             vehicle_by_no=vehicle_by_no,
         )
-        plan.append(best_move)
+        plan.append(chosen_move)
         recent_moves.append(
-            (best_move.source_track, best_move.target_track, tuple(best_move.vehicle_nos))
+            (chosen_move.source_track, chosen_move.target_track, tuple(chosen_move.vehicle_nos))
         )
         current_heuristic = state_heuristic(state)
+        final_heuristic = current_heuristic
         if current_heuristic < best_heuristic:
             best_heuristic = current_heuristic
             stale_rounds = 0
+            purposeful_stale = 0
+        elif chosen_tier < 5:
+            # Purposeful move (goal-progress / blocker-clear / dig-out) but h
+            # did not improve.  These are expected during clearing chains where
+            # value only materialises after several consecutive steps.  Use the
+            # higher purposeful threshold instead of the tight regressive one.
+            purposeful_stale += 1
         else:
             stale_rounds += 1
         if stale_rounds >= stuck_threshold:
@@ -163,8 +365,18 @@ def solve_constructive(
                 iterations=iteration + 1,
                 started_at=started_at,
                 stats=stats,
-                stuck_reason=f"heuristic stale for {stuck_threshold} rounds",
-                debug_stats=debug_stats,
+                stuck_reason=f"heuristic stale for {stuck_threshold} regressive rounds",
+                final_heuristic=final_heuristic,
+            )
+        if purposeful_stale >= _PURPOSEFUL_STUCK_THRESHOLD:
+            return _build_result(
+                plan=plan,
+                reached_goal=False,
+                iterations=iteration + 1,
+                started_at=started_at,
+                stats=stats,
+                stuck_reason=f"heuristic stale for {_PURPOSEFUL_STUCK_THRESHOLD} purposeful rounds",
+                final_heuristic=final_heuristic,
             )
 
     return _build_result(
@@ -174,7 +386,7 @@ def solve_constructive(
         started_at=started_at,
         stats=stats,
         stuck_reason="max iterations reached",
-        debug_stats=debug_stats,
+        final_heuristic=final_heuristic,
     )
 
 
@@ -197,13 +409,9 @@ def _build_result(
     started_at: float,
     stats: dict[str, int],
     stuck_reason: str | None = None,
-    debug_stats: dict[str, Any] | None,
+    final_heuristic: float | None = None,
 ) -> ConstructiveResult:
     elapsed_ms = (perf_counter() - started_at) * 1000
-    if debug_stats is not None:
-        debug_stats.update(stats)
-        debug_stats["constructive_iterations"] = iterations
-        debug_stats["constructive_reached_goal"] = reached_goal
     return ConstructiveResult(
         plan=plan,
         reached_goal=reached_goal,
@@ -211,6 +419,7 @@ def _build_result(
         elapsed_ms=elapsed_ms,
         stuck_reason=stuck_reason,
         debug_stats=dict(stats),
+        final_heuristic=final_heuristic,
     )
 
 
@@ -229,6 +438,8 @@ def _choose_best_move(
     goal_tracks_needed: set[str],
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
 ) -> tuple[HookAction, int]:
+    """Legacy helper (retained for any external callers): returns the
+    greedy-best move under the inverse-guard policy."""
     scored: list[tuple[tuple, int, HookAction, bool]] = []
     for move in moves:
         score, tier = _score_move(
@@ -239,8 +450,6 @@ def _choose_best_move(
         )
         is_inverse = _is_inverse_of_recent(move, recent_moves)
         scored.append((score, tier, move, is_inverse))
-    # Prefer non-inverse moves at any tier when one exists; fall back to
-    # best-inverse only if no non-inverse alternative exists.
     non_inverse = [entry for entry in scored if not entry[3]]
     pool = non_inverse if non_inverse else scored
     pool.sort(key=lambda entry: entry[0])
@@ -280,6 +489,7 @@ def _score_move(
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
+    satisfied_by_track: dict[str, int] | None = None,
 ) -> tuple[tuple, int]:
     block_vehicles = [vehicle_by_no[vn] for vn in move.vehicle_nos]
     source_track = move.source_track
@@ -344,6 +554,31 @@ def _score_move(
     else:
         tier = 7  # delta < 0 with no buried seeker, actively regressing
 
+    # Protect fully-satisfied vehicles from displacement. If a move takes
+    # a vehicle away from its allowed target tracks (AND the vehicle was
+    # fully satisfied at the source — meaning spot/area/weigh conditions
+    # are also met), this is a pure loss: we pay one hook now and will
+    # have to pay another later to put it back. Elevate tier so the
+    # solver only picks such moves when literally nothing else works.
+    displaces_satisfied = _move_displaces_satisfied_vehicle(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+    )
+    if displaces_satisfied:
+        tier += 100
+
+    # Burial cost: prefer placing non-goal vehicles on tracks with fewer
+    # satisfied vehicles (deeper burials are harder to undo). Used as a
+    # within-tier tiebreaker rather than a hard penalty so the constructive
+    # never gets stuck when storage-track burial is the only available move.
+    burial_depth = _move_burial_depth(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        satisfied_by_track=satisfied_by_track,
+    )
+
     block_size = len(move.vehicle_nos)
     path_length = len(move.path_tracks)
     # SPOT/AREA finalizations are "pinpoint" goals: the vehicle only reaches
@@ -355,16 +590,57 @@ def _score_move(
         and (v.goal.target_mode == "SPOT" or v.goal.target_area_code is not None)
         for v in block_vehicles
     )
+
     score = (
         tier,
         0 if is_spot_or_area_finalization else 1,
         -delta,
+        burial_depth,
         -block_size,
         path_length,
         source_track,
         target_track,
     )
     return score, min(tier, 5)
+
+
+def _move_burial_depth(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    satisfied_by_track: dict[str, int] | None = None,
+) -> int:
+    """Number of satisfied-goal vehicles that would block the moved block on target_track.
+
+    Returns 0 if all moved vehicles are going to their goal at target_track
+    (no burial concern).  Otherwise returns the count of vehicles already on
+    target_track whose goal IS that track — each one represents a future
+    displacement needed to unbury the newly placed block.
+
+    Used as a within-tier tiebreaker (prefer destinations with fewer blockers)
+    without hard-penalising moves where burial is the only option.
+    Pass ``satisfied_by_track`` (precomputed per step) to avoid O(n) work per move.
+    """
+    target_track = move.target_track
+
+    # If all moved vehicles are going to their goal here, no burial concern.
+    if all(
+        target_track in vehicle_by_no[vn].goal.allowed_target_tracks
+        for vn in move.vehicle_nos
+        if vn in vehicle_by_no
+    ):
+        return 0
+
+    if satisfied_by_track is not None:
+        return satisfied_by_track.get(target_track, 0)
+
+    target_seq = state.track_sequences.get(target_track, [])
+    return sum(
+        1
+        for vn in target_seq
+        if vn in vehicle_by_no and target_track in vehicle_by_no[vn].goal.allowed_target_tracks
+    )
 
 
 def _move_clears_goal_blocker(
@@ -429,4 +705,63 @@ def _move_exposes_buried_goal_seeker(
             return True
         if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
             return True
+    return False
+
+
+def _move_displaces_satisfied_vehicle(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    """True iff any vehicle in this move is currently fully satisfied AND
+    the move takes it OUT of its allowed target tracks.
+
+    "Fully satisfied" means: the vehicle's current track (=move.source_track,
+    since this is the move that will take it out) is in allowed_target_tracks
+    AND any mode-specific extras are met:
+      - SPOT mode: spot_assignments[vno] == target_spot_code
+      - 大库:RANDOM: spot_assignments[vno] is not None
+      - WORK_AREA (调棚/洗南/油/抛/调棚预修): spot_assignments[vno] is not None
+      - need_weigh: vno in weighed_vehicle_nos (only matters if vehicle is actually weighing-dependent)
+      - close-door at 存4北: final seq index >= 3
+
+    The check is per-vehicle on the block; if ANY vehicle in the block is
+    fully satisfied and would be displaced, the whole move is flagged.
+    """
+    source_track = move.source_track
+    target_track = move.target_track
+
+    for vno in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vno)
+        if vehicle is None:
+            continue
+
+        # Is the vehicle at goal right now?
+        if source_track not in vehicle.goal.allowed_target_tracks:
+            continue  # Not at goal, can't be "displaced" — skip
+
+        # Mode-specific satisfaction checks (mirror _is_goal logic in state.py)
+        if vehicle.goal.target_mode == "SPOT":
+            if state.spot_assignments.get(vno) != vehicle.goal.target_spot_code:
+                continue  # At correct track but wrong spot → not satisfied
+        if vehicle.goal.target_area_code == "大库:RANDOM":
+            if state.spot_assignments.get(vno) is None:
+                continue
+        if vehicle.goal.target_area_code in {
+            "调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK",
+        }:
+            if state.spot_assignments.get(vno) is None:
+                continue
+        if vehicle.need_weigh and vno not in state.weighed_vehicle_nos:
+            continue  # Weighing pending → not yet fully satisfied even if at target track
+        if vehicle.is_close_door and source_track == "存4北":
+            final_seq = state.track_sequences.get("存4北", [])
+            if vno in final_seq and final_seq.index(vno) < 3:
+                continue  # Close-door not yet at required position
+
+        # Vehicle IS fully satisfied at source. Is the move taking it away?
+        if target_track not in vehicle.goal.allowed_target_tracks:
+            return True  # Displacement!
+
     return False

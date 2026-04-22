@@ -64,6 +64,7 @@ class SolverResult:
         verification_report: populated after _attach_verification.
         debug_stats: optional telemetry bag.
         telemetry: structured per-phase metrics for production observability.
+        depot_earliness / depot_hook_count: populated for observability when enable_depot_late_scheduling is available; may be None.
     """
 
     plan: list[HookAction]
@@ -76,6 +77,8 @@ class SolverResult:
     verification_report: Any | None = None
     debug_stats: dict[str, Any] | None = None
     telemetry: SolverTelemetry | None = None
+    depot_earliness: int | None = None
+    depot_hook_count: int | None = None
 
 
 class PlanVerificationError(Exception):

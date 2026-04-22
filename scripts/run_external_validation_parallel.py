@@ -46,6 +46,13 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="disable exact->weighted->beam fallback chain",
     )
+    parser.add_argument(
+        "--enable-depot-late-scheduling",
+        dest="enable_depot_late_scheduling",
+        action="store_true",
+        default=False,
+        help="Opt in to depot-late scheduling (secondary lexicographic objective).",
+    )
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
     parser.add_argument("--worker", action="store_true")
@@ -61,6 +68,7 @@ def solve_one(
     heuristic_weight: float,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -78,6 +86,7 @@ def solve_one(
             debug_stats=debug_stats,
             time_budget_ms=time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         if not result.plan:
             return {
@@ -116,6 +125,8 @@ def solve_one(
             "generated_nodes": result.generated_nodes,
             "closed_nodes": result.closed_nodes,
             "elapsed_ms": result.elapsed_ms,
+            "depot_earliness": result.depot_earliness,
+            "depot_hook_count": result.depot_hook_count,
             "debug_stats": debug_stats,
         }
     except Exception as exc:  # noqa: BLE001
@@ -136,6 +147,7 @@ def _build_worker_command(
     heuristic_weight: float,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -156,6 +168,8 @@ def _build_worker_command(
         cmd.extend(["--solver-time-budget-ms", str(time_budget_ms)])
     if not enable_anytime_fallback:
         cmd.append("--no-anytime-fallback")
+    if enable_depot_late_scheduling:
+        cmd.append("--enable-depot-late-scheduling")
     return cmd
 
 
@@ -169,6 +183,7 @@ def _run_scenario_subprocess(
     timeout_seconds: int,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> dict[str, Any]:
     cmd = _build_worker_command(
         master_dir=master_dir,
@@ -178,6 +193,7 @@ def _run_scenario_subprocess(
         heuristic_weight=heuristic_weight,
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     )
     process = subprocess.Popen(
         cmd,
@@ -227,6 +243,7 @@ def run_parallel_scenarios(
     max_workers: int,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -241,6 +258,7 @@ def run_parallel_scenarios(
                 timeout_seconds=timeout_seconds,
                 time_budget_ms=time_budget_ms,
                 enable_anytime_fallback=enable_anytime_fallback,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
             )
             for scenario_path in scenario_paths
         ]
@@ -263,6 +281,7 @@ def recover_no_solution_results(
     initial_results: list[dict[str, Any]],
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
+    enable_depot_late_scheduling: bool = False,
 ) -> list[dict[str, Any]]:
     effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
         beam_width=beam_width,
@@ -306,6 +325,7 @@ def recover_no_solution_results(
             max_workers=max_workers,
             time_budget_ms=time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         for retry_result in retry_results:
             if not retry_result.get("solved"):
@@ -358,6 +378,7 @@ def _run_worker(args: argparse.Namespace) -> None:
         heuristic_weight=args.heuristic_weight,
         time_budget_ms=getattr(args, "solver_time_budget_ms", None),
         enable_anytime_fallback=getattr(args, "enable_anytime_fallback", True),
+        enable_depot_late_scheduling=getattr(args, "enable_depot_late_scheduling", False),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -372,9 +393,16 @@ def main() -> None:
     if args.scenario is not None:
         scenario_paths = [args.scenario]
     else:
+        # Prefer validation_*.json (the original external_validation_inputs
+        # naming) for backwards compatibility; fall back to all *.json when
+        # none match (so data/validation_inputs/positive/case_*.json etc.
+        # also work without a rename).
         scenario_paths = sorted(args.input_dir.glob("validation_*.json"))
+        if not scenario_paths:
+            scenario_paths = sorted(args.input_dir.glob("*.json"))
     time_budget_ms = getattr(args, "solver_time_budget_ms", None)
     enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
+    enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", False)
     if time_budget_ms is None:
         time_budget_ms = max(1000.0, args.timeout_seconds * 1000 - 5000)
     results = run_parallel_scenarios(
@@ -387,6 +415,7 @@ def main() -> None:
         max_workers=args.max_workers,
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     )
     results = recover_no_solution_results(
         master_dir=args.master_dir,
@@ -400,6 +429,7 @@ def main() -> None:
         initial_results=results,
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
     )
     summary = {
         "solver": args.solver,
@@ -408,6 +438,7 @@ def main() -> None:
         "timeout_seconds": args.timeout_seconds,
         "solver_time_budget_ms": time_budget_ms,
         "enable_anytime_fallback": enable_anytime_fallback,
+        "enable_depot_late_scheduling": enable_depot_late_scheduling,
         "scenario_count": len(results),
         "results": results,
     }

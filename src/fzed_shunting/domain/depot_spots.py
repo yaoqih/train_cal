@@ -161,12 +161,25 @@ def _random_depot_spot_candidates(
 
 
 def _requires_spot_assignment(vehicle: NormalizedVehicle, target_track: str) -> bool:
+    """Whether a move of ``vehicle`` onto ``target_track`` should consume a spot.
+
+    Spot assignment is a FINAL-placement concept: a vehicle claims its spot
+    only when it actually arrives at the track that has spots (e.g., 调棚,
+    修N库内, 洗南, 油, 抛). Transit through staging tracks (临1~临4, 存4南,
+    etc.) must NOT trigger spot allocation, otherwise the solver cannot
+    route SPOT-mode / 大库:RANDOM vehicles through the yard at all (they
+    get rejected by ``allocate_spots_for_block`` at every transit step).
+    """
     if vehicle.need_weigh and target_track == "机库":
         return True
     if vehicle.goal.target_mode == "SPOT":
-        return True
+        # Only require spot at the declared target track. In transit through
+        # staging/other tracks, the vehicle carries no spot.
+        return vehicle.goal.target_track == target_track
     if vehicle.goal.target_area_code == "大库:RANDOM":
-        return True
+        # Random-depot vehicles only consume a slot once they actually enter
+        # a 修N库内 track. Transit through anything else is spot-free.
+        return is_depot_inner_track(target_track)
     if vehicle.goal.target_area_code in WORK_AREA_SPOTS and vehicle.goal.target_track == target_track:
         return True
     return False

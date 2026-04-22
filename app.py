@@ -192,6 +192,7 @@ def main():
         )
         if scenario_meta and scenario_meta.get("description"):
             st.caption(str(scenario_meta["description"]))
+    vehicle_display_metadata = _build_vehicle_display_metadata(payload)
     plan_payload = None
     if plan_path:
         candidate = Path(plan_path)
@@ -300,11 +301,11 @@ def main():
         if autoplay:
             for auto_index in range(len(view.steps)):
                 with step_container:
-                    _render_step(view, auto_index)
+                    _render_step(view, auto_index, vehicle_display_metadata=vehicle_display_metadata)
                 time.sleep(autoplay_interval_ms / 1000)
         else:
             with step_container:
-                _render_step(view, step_index)
+                _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
 
     with vehicles_tab:
         st.caption("初始车辆分布与各自目的地，用来核对求解器的输入。")
@@ -454,6 +455,7 @@ def _render_workflow_demo(
     if view is None:
         st.error("阶段无结果")
         return
+    vehicle_display_metadata = _build_vehicle_display_metadata(stage.input_payload)
 
     summary_cols = st.columns(6)
     summary_cols[0].metric("阶段车辆数", view.summary.vehicle_count)
@@ -494,20 +496,24 @@ def _render_workflow_demo(
         value=0,
         key=f"workflow-step-{stage_index}",
     )
-    _render_step(view, step_index)
+    _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
 
 
 def _is_workflow_payload(payload: dict) -> bool:
     return isinstance(payload.get("workflowStages"), list)
 
 
-def _render_step(view, step_index: int):
+def _render_step(view, step_index: int, *, vehicle_display_metadata: dict[str, dict[str, str]] | None = None):
     step = view.steps[step_index]
+    vehicle_meta = vehicle_display_metadata or {}
     if step.hook is None:
         st.info("Step 0 为初始状态。")
     else:
         st.write(f"第 {step.hook.hook_no} 钩: {step.hook.source_track} -> {step.hook.target_track}")
-        st.caption(f"车辆: {' '.join(step.hook.vehicle_nos)} | 路径: {' -> '.join(step.hook.path_tracks)}")
+        st.caption(
+            f"车辆: {_format_hook_vehicle_text(step.hook.vehicle_nos, vehicle_meta)} | "
+            f"路径: {' -> '.join(step.hook.path_tracks)}"
+        )
         if step.hook.remark:
             st.caption(step.hook.remark)
         if step.verifier_errors:
@@ -526,20 +532,20 @@ def _render_step(view, step_index: int):
                 key=f"transition-frame-{step.step_index}",
             )
             transition_frame = step.transition_frames[frame_index]
-        _render_topology_graph(step.topology_graph, step.track_map, hook=step.hook, transition_frame=transition_frame)
+        _render_topology_graph(step.topology_graph, step.track_map, hook=step.hook, transition_frame=transition_frame, spot_assignments=step.spot_assignments, vehicle_target_tracks=view.vehicle_target_tracks)
     with sidebar_col:
         st.markdown("**当前钩摘要**")
-        _render_hook_sidebar(step)
+        _render_hook_sidebar(step, vehicle_target_tracks=view.vehicle_target_tracks)
 
     detail_tabs = st.tabs(["股道变化", "车辆明细", "校验结果", "本钩路径距离"])
     with detail_tabs[0]:
-        rows = _build_step_state_rows(step.track_map)
+        rows = _build_step_state_rows(step.track_map, vehicle_meta)
         if rows:
             st.dataframe(rows, use_container_width=True, hide_index=True)
         else:
             st.caption("当前无需要关注的股道状态。")
     with detail_tabs[1]:
-        _render_vehicle_detail_panel(step, view)
+        _render_vehicle_detail_panel(step, view, vehicle_meta)
     with detail_tabs[2]:
         _render_verifier_panel(step, view)
     with detail_tabs[3]:
@@ -550,13 +556,15 @@ def _render_step(view, step_index: int):
             st.caption("初始状态无路径距离构成。")
 
 
-def _render_topology_graph(topology_graph, track_map, hook=None, transition_frame=None):
+def _render_topology_graph(topology_graph, track_map, hook=None, transition_frame=None, spot_assignments=None, vehicle_target_tracks=None):
     st.markdown(
         _build_topology_svg(
             topology_graph,
             track_map,
             hook=hook,
             transition_frame=transition_frame,
+            spot_assignments=spot_assignments,
+            vehicle_target_tracks=vehicle_target_tracks,
         ),
         unsafe_allow_html=True,
     )
@@ -620,6 +628,8 @@ def _build_topology_svg(
     transition_frame=None,
     animate: bool = False,
     show_all_labels: bool = False,
+    spot_assignments: dict | None = None,
+    vehicle_target_tracks: dict | None = None,
 ) -> str:
     layout = _get_schematic_layout()
     track_nodes = track_map.track_nodes if track_map is not None else {}
@@ -659,6 +669,10 @@ def _build_topology_svg(
         ".schematic-track-label-key{font-family:PingFang SC,sans-serif;font-size:16px;font-weight:600;fill:#6b5f4b;text-anchor:middle;}",
         ".schematic-badge{fill:#fffaf0;stroke:#d9cdb5;stroke-width:1.5;}",
         ".schematic-badge-text{font-family:PingFang SC,sans-serif;font-size:12px;font-weight:700;fill:#6a5d45;text-anchor:middle;dominant-baseline:middle;}",
+        ".sb-parked{fill:#0f766e;stroke:#ffffff;stroke-width:1.5;}",
+        ".sb-parked-txt{font-family:PingFang SC,sans-serif;font-size:11px;font-weight:700;fill:#ffffff;text-anchor:middle;dominant-baseline:middle;}",
+        ".sb-transit{fill:#d97706;stroke:#ffffff;stroke-width:1.5;}",
+        ".sb-transit-txt{font-family:PingFang SC,sans-serif;font-size:11px;font-weight:700;fill:#ffffff;text-anchor:middle;dominant-baseline:middle;}",
         ".schematic-endpoint{fill:#fdf7ed;stroke:#0f766e;stroke-width:3;}",
         ".schematic-endpoint-target{fill:#fff2e0;stroke:#d97706;stroke-width:3;}",
         ".schematic-endpoint-text{font-family:PingFang SC,sans-serif;font-size:12px;font-weight:700;text-anchor:middle;dominant-baseline:middle;}",
@@ -680,14 +694,16 @@ def _build_topology_svg(
         )
 
     for geometry in layout.track_geometries.values():
-        base_class = "schematic-track"
-        if geometry.is_mainline:
-            base_class += " schematic-track-mainline"
-        parts.append(f'<path class="{base_class}" d="{_track_polyline_to_svg(geometry.points)}" />')
+        if geometry.track_code in active_tracks:
+            parts.append(f'<path class="schematic-track-active" d="{_track_polyline_to_svg(geometry.points)}" />')
+        else:
+            base_class = "schematic-track"
+            if geometry.is_mainline:
+                base_class += " schematic-track-mainline"
+            parts.append(f'<path class="{base_class}" d="{_track_polyline_to_svg(geometry.points)}" />')
 
     if motion_path:
         parts.append(f'<path id="route-motion-path" class="route-motion-path" d="{motion_path}" />')
-        parts.append(f'<path class="schematic-track-active" d="{motion_path}" />')
 
     for track_code in sorted(changed_tracks - set(hook.path_tracks if hook is not None else [])):
         geometry = layout.track_geometries.get(track_code)
@@ -717,17 +733,27 @@ def _build_topology_svg(
             f'<text class="{label_class}" x="{geometry.label_anchor.x:.1f}" y="{geometry.label_anchor.y:.1f}">{escape(track_code)}</text>'
         )
 
-    for track_code in sorted(occupied_tracks - active_tracks):
+    vtt = vehicle_target_tracks or {}
+    for track_code in sorted(occupied_tracks):
         geometry = layout.track_geometries.get(track_code)
         node = track_nodes.get(track_code)
         if geometry is None or node is None or not node.vehicle_nos:
             continue
-        badge_x = geometry.label_anchor.x + 34.0
-        badge_y = geometry.label_anchor.y - 12.0
-        parts.append(f'<circle class="schematic-badge" cx="{badge_x:.1f}" cy="{badge_y:.1f}" r="12" />')
-        parts.append(
-            f'<text class="schematic-badge-text" x="{badge_x:.1f}" y="{badge_y + 1:.1f}">{len(node.vehicle_nos)}</text>'
-        )
+        in_place = sum(1 for v in node.vehicle_nos if track_code in vtt.get(v, []))
+        not_in_place = len(node.vehicle_nos) - in_place
+        bx = geometry.label_anchor.x + 34.0
+        by = geometry.label_anchor.y - 12.0
+        if in_place > 0 and not_in_place > 0:
+            parts.append(f'<circle class="sb-parked" cx="{bx - 11:.1f}" cy="{by:.1f}" r="10" />')
+            parts.append(f'<text class="sb-parked-txt" x="{bx - 11:.1f}" y="{by + 1:.1f}">{in_place}</text>')
+            parts.append(f'<circle class="sb-transit" cx="{bx + 11:.1f}" cy="{by:.1f}" r="10" />')
+            parts.append(f'<text class="sb-transit-txt" x="{bx + 11:.1f}" y="{by + 1:.1f}">{not_in_place}</text>')
+        elif in_place > 0:
+            parts.append(f'<circle class="sb-parked" cx="{bx:.1f}" cy="{by:.1f}" r="12" />')
+            parts.append(f'<text class="sb-parked-txt" x="{bx:.1f}" y="{by + 1:.1f}">{in_place}</text>')
+        else:
+            parts.append(f'<circle class="sb-transit" cx="{bx:.1f}" cy="{by:.1f}" r="12" />')
+            parts.append(f'<text class="sb-transit-txt" x="{bx:.1f}" y="{by + 1:.1f}">{not_in_place}</text>')
 
     if source_track is not None:
         parts.append(_schematic_endpoint_svg(layout, source_track, label="起", css_class="schematic-endpoint"))
@@ -877,7 +903,11 @@ def _build_hook_sidebar_rows(step) -> list[dict[str, str]]:
     ]
 
 
-def _build_step_state_rows(track_map) -> list[dict[str, str]]:
+def _build_step_state_rows(
+    track_map,
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    vehicle_meta = vehicle_display_metadata or {}
     rows: list[dict[str, str]] = []
     for track_code, node in track_map.track_nodes.items():
         if not (node.is_in_active_path or node.is_changed or node.is_occupied or node.has_loco):
@@ -894,7 +924,11 @@ def _build_step_state_rows(track_map) -> list[dict[str, str]]:
             {
                 "trackCode": track_code,
                 "state": " / ".join(state_parts),
-                "vehicles": " ".join(node.vehicle_nos) if node.vehicle_nos else "无车辆",
+                "vehicles": (
+                    _format_hook_vehicle_text(node.vehicle_nos, vehicle_meta)
+                    if node.vehicle_nos
+                    else "无车辆"
+                ),
             }
         )
     rows.sort(key=lambda item: item["trackCode"])
@@ -941,8 +975,10 @@ def _build_distance_catalog_rows() -> list[dict[str, object]]:
     return rows
 
 
-def _render_hook_sidebar(step) -> None:
+def _render_hook_sidebar(step, vehicle_target_tracks: dict | None = None) -> None:
     route_tracks = step.hook.path_tracks if step.hook is not None else []
+    track_nodes = step.track_map.track_nodes if step.track_map else {}
+    vtt = vehicle_target_tracks or {}
     cards = []
     for row in _build_hook_sidebar_rows(step):
         cards.append(
@@ -954,10 +990,26 @@ def _render_hook_sidebar(step) -> None:
             """
         )
 
-    chips = "".join(
-        f"<span class='route-chip'>{escape(track_code)}</span>"
-        for track_code in route_tracks
-    ) or "<span class='route-chip route-chip-muted'>初始状态</span>"
+    chip_parts = []
+    for track_code in route_tracks:
+        node = track_nodes.get(track_code)
+        vehicles = node.vehicle_nos if node and node.vehicle_nos else []
+        in_place = sum(1 for v in vehicles if track_code in vtt.get(v, []))
+        not_in_place = len(vehicles) - in_place
+        if vehicles:
+            count_html = ""
+            if in_place > 0:
+                count_html += f"<span class='rc-parked'>{in_place}</span>"
+            if not_in_place > 0:
+                count_html += f"<span class='rc-transit'>{not_in_place}</span>"
+            chip_parts.append(
+                f"<span class='route-chip route-chip-occupied'>"
+                f"{escape(track_code)}{count_html}"
+                f"</span>"
+            )
+        else:
+            chip_parts.append(f"<span class='route-chip'>{escape(track_code)}</span>")
+    chips = "".join(chip_parts) or "<span class='route-chip route-chip-muted'>初始状态</span>"
 
     st.markdown(
         """
@@ -997,6 +1049,38 @@ def _render_hook_sidebar(step) -> None:
           color: #0f4f4a;
           font-size: 13px;
           font-weight: 600;
+        }
+        .route-chip-occupied {
+          background: #fff0d6;
+          color: #7c3f00;
+          border: 1px solid #e8a82a;
+        }
+        .route-chip-count {
+          display: inline-block;
+          background: #d97706;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 5px;
+        }
+        .rc-parked {
+          display: inline-block;
+          background: #0f766e;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 5px;
+        }
+        .rc-transit {
+          display: inline-block;
+          background: #d97706;
+          color: #ffffff;
+          border-radius: 999px;
+          font-size: 11px;
+          padding: 1px 6px;
+          margin-left: 3px;
         }
         .route-chip-muted {
           background: #f1ede5;
@@ -1045,12 +1129,82 @@ def _build_vehicle_roster_rows(payload: dict) -> list[dict[str, object]]:
     return rows
 
 
-def _render_vehicle_detail_panel(step, view) -> None:
+def _build_vehicle_display_metadata(payload: dict) -> dict[str, dict[str, str]]:
+    metadata: dict[str, dict[str, str]] = {}
+    sources = []
+    initial_vehicle_info = payload.get("initialVehicleInfo")
+    if isinstance(initial_vehicle_info, list):
+        sources.append(initial_vehicle_info)
+    vehicle_info = payload.get("vehicleInfo")
+    if isinstance(vehicle_info, list):
+        sources.append(vehicle_info)
+    for source in sources:
+        for item in source:
+            vehicle_no = str(item.get("vehicleNo", "")).strip()
+            if not vehicle_no:
+                continue
+            attributes_value = str(item.get("vehicleAttributes", "") or "").strip()
+            metadata[vehicle_no] = {
+                "requirement": _format_vehicle_requirement_text(item),
+                "attributes": attributes_value or "无",
+                "length": _format_vehicle_length_text(item.get("vehicleLength")),
+            }
+    return metadata
+
+
+def _format_vehicle_requirement_text(vehicle_info: dict) -> str:
+    target_track = str(vehicle_info.get("targetTrack", "") or "").strip()
+    spotting_value = str(vehicle_info.get("isSpotting", "") or "").strip()
+    target_spot_code = str(vehicle_info.get("targetSpotCode", "") or "").strip()
+    if target_spot_code:
+        return target_spot_code
+    if spotting_value.isdigit() or spotting_value == "迎检":
+        return spotting_value
+    if spotting_value == "是":
+        return f"{target_track}作业区" if target_track else "需要对位"
+    if target_track:
+        return target_track
+    return "无"
+
+
+def _format_vehicle_length_text(length_value) -> str:
+    try:
+        return f"{float(length_value):.1f}m"
+    except (TypeError, ValueError):
+        return "未知"
+
+
+def _format_vehicle_display_text(
+    vehicle_no: str,
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> str:
+    vehicle_meta = (vehicle_display_metadata or {}).get(vehicle_no)
+    if not vehicle_meta:
+        return vehicle_no
+    return (
+        f"{vehicle_no}(对位={vehicle_meta['requirement']}，"
+        f"属性={vehicle_meta['attributes']}，"
+        f"长度={vehicle_meta['length']})"
+    )
+
+
+def _format_hook_vehicle_text(
+    vehicle_nos: list[str],
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> str:
+    return " ".join(
+        _format_vehicle_display_text(vehicle_no, vehicle_display_metadata)
+        for vehicle_no in vehicle_nos
+    )
+
+
+def _render_vehicle_detail_panel(step, view, vehicle_display_metadata: dict[str, dict[str, str]] | None = None) -> None:
+    vehicle_meta = vehicle_display_metadata or {}
     if step.hook is not None and step.hook.vehicle_nos:
         st.dataframe(
             [
                 {
-                    "vehicleNo": vehicle_no,
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
                     "sourceTrack": step.hook.source_track,
                     "targetTrack": step.hook.target_track,
                 }
@@ -1062,12 +1216,15 @@ def _render_vehicle_detail_panel(step, view) -> None:
     else:
         st.caption("当前步骤无车辆移动。")
     if step.weighed_vehicle_nos:
-        st.caption(f"本步已称重车辆: {' '.join(step.weighed_vehicle_nos)}")
+        st.caption(f"本步已称重车辆: {_format_hook_vehicle_text(step.weighed_vehicle_nos, vehicle_meta)}")
     if step.spot_assignments:
         st.markdown("**当前台位分配**")
         st.dataframe(
             [
-                {"vehicleNo": vehicle_no, "spotCode": spot_code}
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "spotCode": spot_code,
+                }
                 for vehicle_no, spot_code in step.spot_assignments.items()
             ],
             use_container_width=True,
@@ -1077,7 +1234,10 @@ def _render_vehicle_detail_panel(step, view) -> None:
         st.markdown("**最终台位分配**")
         st.dataframe(
             [
-                {"vehicleNo": vehicle_no, "spotCode": spot_code}
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "spotCode": spot_code,
+                }
                 for vehicle_no, spot_code in view.final_spot_assignments.items()
             ],
             use_container_width=True,

@@ -242,6 +242,105 @@ def test_app_module_exposes_hook_sidebar_and_distance_helpers():
     assert hasattr(app, "_build_distance_catalog_rows")
 
 
+def test_format_hook_vehicle_text_appends_spotting_attributes_and_length():
+    payload = {
+        "vehicleInfo": [
+            {
+                "vehicleNo": "SHOW1",
+                "vehicleLength": 14.3,
+                "isSpotting": "",
+                "targetTrack": "预修",
+                "vehicleAttributes": "",
+            },
+            {
+                "vehicleNo": "SHOW2",
+                "vehicleLength": 16.9,
+                "isSpotting": "101",
+                "targetTrack": "大库",
+                "vehicleAttributes": "称重",
+            },
+            {
+                "vehicleNo": "SHOW3",
+                "vehicleLength": 15.6,
+                "isSpotting": "否",
+                "targetTrack": "存4北",
+                "vehicleAttributes": "重车",
+            },
+        ]
+    }
+
+    vehicle_display_metadata = app._build_vehicle_display_metadata(payload)
+    vehicle_text = app._format_hook_vehicle_text(
+        ["SHOW1", "SHOW2", "SHOW3"],
+        vehicle_display_metadata,
+    )
+
+    assert vehicle_text == (
+        "SHOW1(对位=预修，属性=无，长度=14.3m) "
+        "SHOW2(对位=101，属性=称重，长度=16.9m) "
+        "SHOW3(对位=存4北，属性=重车，长度=15.6m)"
+    )
+
+
+def test_build_step_state_rows_uses_formatted_vehicle_text():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "STEPFMT1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "101",
+                "vehicleAttributes": "称重",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+
+    view = build_demo_view_model(master, payload)
+    vehicle_display_metadata = app._build_vehicle_display_metadata(payload)
+    rows = app._build_step_state_rows(view.steps[0].track_map, vehicle_display_metadata)
+
+    assert rows[0]["vehicles"] == "STEPFMT1(对位=101，属性=称重，长度=14.3m)"
+
+
+def test_build_vehicle_display_metadata_prefers_vehicle_info_over_initial_vehicle_info():
+    payload = {
+        "initialVehicleInfo": [
+            {
+                "vehicleNo": "META1",
+                "vehicleLength": 12.0,
+                "vehicleAttributes": "",
+            }
+        ],
+        "vehicleInfo": [
+            {
+                "vehicleNo": "META1",
+                "vehicleLength": 14.3,
+                "targetTrack": "预修",
+                "vehicleAttributes": "称重",
+                "isSpotting": "",
+            }
+        ],
+    }
+
+    vehicle_display_metadata = app._build_vehicle_display_metadata(payload)
+
+    assert vehicle_display_metadata["META1"] == {
+        "requirement": "预修",
+        "attributes": "称重",
+        "length": "14.3m",
+    }
+
+
 def test_select_demo_payload_supports_workflow_suite_payload():
     master = load_master_data(DATA_DIR)
     suite = generate_typical_workflow_suite(master)
