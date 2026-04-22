@@ -218,6 +218,181 @@ def generate_goal_moves(
     return _dedup_moves(moves)
 
 
+def generate_real_hook_moves(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData | None = None,
+    route_oracle: RouteOracle | None = None,
+) -> list[HookAction]:
+    """Generate ATTACH and DETACH moves for the real-hook cost model.
+
+    Phase-separated: when loco_carry is empty, generate ATTACH moves (pick up
+    vehicles from source tracks). When loco_carry is non-empty, generate DETACH
+    moves (drop vehicles to goal/staging tracks) and allow additional ATTACHes
+    only for vehicles going to the same set of destinations as the current carry
+    (multi-pickup optimisation).
+
+    Each action costs 1 hook.
+    """
+    goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0) + vehicle.vehicle_length
+        )
+    effective_capacity_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
+    if route_oracle is None and master is not None:
+        route_oracle = RouteOracle(master)
+
+    # Compute the set of goal tracks for currently-carried vehicles.
+    # When loco_carry is non-empty, only additional ATTACHes that share
+    # this destination set are generated (to limit branching).
+    carry_goal_tracks: set[str] = set()
+    for vno in state.loco_carry:
+        v = vehicle_by_no.get(vno)
+        if v is None:
+            continue
+        carry_goal_tracks.update(v.goal.allowed_target_tracks)
+
+    moves: list[HookAction] = []
+
+    # --- ATTACH moves ---
+    # When loco_carry is non-empty, only allow picks whose goal overlaps with
+    # carry_goal_tracks (multi-pickup for same destination).  This prunes the
+    # branching factor from ~71 to a small set without losing optimal solutions
+    # for the common "collect-and-deliver" pattern.
+    for source_track, seq in state.track_sequences.items():
+        if not seq:
+            continue
+        for prefix_size in range(len(seq), 0, -1):
+            block = seq[:prefix_size]
+            block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
+            if validate_hook_vehicle_group(block_vehicles):
+                continue
+            if all(
+                source_track in vehicle_by_no[vno].goal.allowed_target_tracks
+                for vno in block
+            ):
+                continue
+            # When already carrying: only pick up if block shares a destination.
+            if state.loco_carry:
+                block_goals: set[str] = set()
+                for vno in block:
+                    v = vehicle_by_no.get(vno)
+                    if v is not None:
+                        block_goals.update(v.goal.allowed_target_tracks)
+                if not (block_goals & carry_goal_tracks):
+                    continue
+            path_tracks = [source_track]
+            moves.append(
+                HookAction(
+                    source_track=source_track,
+                    target_track="LOCO",
+                    vehicle_nos=list(block),
+                    path_tracks=path_tracks,
+                    action_type="ATTACH",
+                )
+            )
+
+    # --- DETACH moves ---
+    if state.loco_carry:
+        carry = list(state.loco_carry)
+        for prefix_size in range(1, len(carry) + 1):
+            drop_block = carry[:prefix_size]
+            drop_vehicles = [vehicle_by_no[vno] for vno in drop_block if vno in vehicle_by_no]
+            if not drop_vehicles:
+                continue
+            if validate_hook_vehicle_group(drop_vehicles):
+                continue
+            block_length = sum(length_by_vehicle.get(vno, 0.0) for vno in drop_block)
+            goal_targets: set[str] = set()
+            for vno in drop_block:
+                v = vehicle_by_no.get(vno)
+                if v is None:
+                    continue
+                if v.need_weigh and vno not in state.weighed_vehicle_nos:
+                    goal_targets.add("机库")
+                else:
+                    goal_targets.update(v.goal.allowed_target_tracks)
+            detach_targets: list[str] = sorted(goal_targets)
+            for target_track in detach_targets:
+                move = _build_candidate_move(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    block=drop_block,
+                    block_vehicles=drop_vehicles,
+                    block_length=block_length,
+                    state=state,
+                    capacity_by_track=effective_capacity_by_track,
+                    length_by_vehicle=length_by_vehicle,
+                    vehicle_by_no=vehicle_by_no,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                )
+                if move is None:
+                    continue
+                moves.append(
+                    HookAction(
+                        source_track="LOCO",
+                        target_track=target_track,
+                        vehicle_nos=list(drop_block),
+                        path_tracks=move.path_tracks,
+                        action_type="DETACH",
+                    )
+                )
+            staging_targets = _candidate_staging_targets(
+                source_track=state.loco_track_name,
+                block=drop_block,
+                state=state,
+                plan_input=plan_input,
+                master=master,
+                vehicle_by_no=vehicle_by_no,
+                goal_target_hints=tuple(sorted(goal_targets)),
+                route_oracle=route_oracle,
+            )
+            staged_count = 0
+            for target_track in staging_targets:
+                if target_track in goal_targets:
+                    continue
+                if staged_count > 0 and _is_fallback_staging_track(master, target_track):
+                    break
+                move = _build_candidate_move(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    block=drop_block,
+                    block_vehicles=drop_vehicles,
+                    block_length=block_length,
+                    state=state,
+                    capacity_by_track=effective_capacity_by_track,
+                    length_by_vehicle=length_by_vehicle,
+                    vehicle_by_no=vehicle_by_no,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                )
+                if move is None:
+                    continue
+                moves.append(
+                    HookAction(
+                        source_track="LOCO",
+                        target_track=target_track,
+                        vehicle_nos=list(drop_block),
+                        path_tracks=move.path_tracks,
+                        action_type="DETACH",
+                    )
+                )
+                staged_count += 1
+                if staged_count >= MAX_STAGING_TARGETS:
+                    break
+
+    return _dedup_moves(moves)
+
+
 def _generate_capacity_eviction_moves(
     plan_input: NormalizedPlanInput,
     state: ReplayState,

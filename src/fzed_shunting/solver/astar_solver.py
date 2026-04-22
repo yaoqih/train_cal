@@ -171,7 +171,49 @@ def solve_with_simple_astar_result(
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
+    elif solver_mode == "real_hook":
+        # Run the standard exact/anytime solver first, then compile to ATTACH/DETACH.
+        _ts = perf_counter()
+        put_result = solve_with_simple_astar_result(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            solver_mode="exact",
+            heuristic_weight=heuristic_weight,
+            beam_width=beam_width,
+            debug_stats=debug_stats,
+            time_budget_ms=time_budget_ms,
+            node_budget=node_budget,
+            verify=False,
+            enable_anytime_fallback=enable_anytime_fallback,
+            enable_constructive_seed=enable_constructive_seed,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+        from fzed_shunting.solver.real_hook_compiler import compile_put_to_real_hook
+        real_hook_plan = compile_put_to_real_hook(put_result.plan)
+        result = replace(
+            put_result,
+            plan=real_hook_plan,
+            fallback_stage="real_hook",
+            is_proven_optimal=False,
+        )
+        phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
+        # Skip PUT-specific post-processing (LNS, depot-late, verify).
+        from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
+        result = replace(
+            result,
+            depot_earliness=depot_earliness(result.plan),
+            depot_hook_count=sum(1 for h in result.plan if is_depot_hook(h)),
+        )
+        telemetry = _build_telemetry(
+            plan_input=plan_input, result=result, phase_timings=phase_timings,
+            total_ms=(perf_counter() - started_at) * 1000,
+            time_budget_ms=time_budget_ms, node_budget=node_budget,
+        )
+        emit_telemetry(telemetry)
+        return replace(result, telemetry=telemetry)
     else:
+        effective_heuristic_weight = heuristic_weight
         exact_time_budget_ms: float | None = time_budget_ms
         if (
             solver_mode == "exact"
@@ -186,7 +228,7 @@ def solve_with_simple_astar_result(
                 initial_state=initial_state,
                 master=master,
                 solver_mode=solver_mode,
-                heuristic_weight=heuristic_weight,
+                heuristic_weight=effective_heuristic_weight,
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
@@ -579,7 +621,7 @@ def _validate_solver_options(
     heuristic_weight: float,
     beam_width: int | None,
 ) -> None:
-    if solver_mode not in {"exact", "weighted", "beam", "lns"}:
+    if solver_mode not in {"exact", "weighted", "beam", "lns", "real_hook"}:
         raise ValueError(f"Unsupported solver_mode: {solver_mode}")
     if heuristic_weight < 1.0:
         raise ValueError("heuristic_weight must be >= 1.0")

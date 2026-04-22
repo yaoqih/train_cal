@@ -9,6 +9,8 @@ from fzed_shunting.verify.replay import ReplayState
 
 
 def _is_goal(plan_input: NormalizedPlanInput, state: ReplayState) -> bool:
+    if state.loco_carry:
+        return False
     current_track_by_vehicle = _vehicle_track_lookup(state)
     for vehicle in plan_input.vehicles:
         current_track = current_track_by_vehicle[vehicle.vehicle_no]
@@ -70,6 +72,20 @@ def _apply_move(
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict[str, NormalizedVehicle],
 ) -> ReplayState:
+    if move.action_type == "ATTACH":
+        return _apply_attach(state=state, move=move)
+    if move.action_type == "DETACH":
+        return _apply_detach(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+    return _apply_put(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+
+
+def _apply_put(
+    *,
+    state: ReplayState,
+    move: HookAction,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> ReplayState:
     source_seq = state.track_sequences.get(move.source_track, [])
     if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
         raise ValueError("Vehicle block is not at the north-end prefix of source track")
@@ -105,6 +121,69 @@ def _apply_move(
         loco_track_name=move.target_track,
         weighed_vehicle_nos=next_weighed_vehicle_nos,
         spot_assignments=next_spot_assignments,
+        loco_carry=state.loco_carry,
+    )
+
+
+def _apply_attach(
+    *,
+    state: ReplayState,
+    move: HookAction,
+) -> ReplayState:
+    source_seq = state.track_sequences.get(move.source_track, [])
+    if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
+        raise ValueError("Vehicle block is not at the north-end prefix of source track")
+    next_track_sequences = dict(state.track_sequences)
+    next_track_sequences[move.source_track] = list(source_seq[len(move.vehicle_nos):])
+    return ReplayState(
+        track_sequences=next_track_sequences,
+        loco_track_name=move.source_track,
+        weighed_vehicle_nos=set(state.weighed_vehicle_nos),
+        spot_assignments=dict(state.spot_assignments),
+        loco_carry=state.loco_carry + tuple(move.vehicle_nos),
+    )
+
+
+def _apply_detach(
+    *,
+    state: ReplayState,
+    move: HookAction,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> ReplayState:
+    carry_list = list(state.loco_carry)
+    k = len(move.vehicle_nos)
+    if carry_list[:k] != move.vehicle_nos:
+        raise ValueError("Vehicle block is not at the front of loco_carry")
+    next_carry = tuple(carry_list[k:])
+    next_track_sequences = dict(state.track_sequences)
+    next_target_seq = list(state.track_sequences.get(move.target_track, []))
+    next_target_seq.extend(move.vehicle_nos)
+    next_track_sequences[move.target_track] = next_target_seq
+    next_spot_assignments = dict(state.spot_assignments)
+    for vehicle_no in move.vehicle_nos:
+        next_spot_assignments.pop(vehicle_no, None)
+    block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in move.vehicle_nos]
+    new_spot_assignments = allocate_spots_for_block(
+        vehicles=block_vehicles,
+        target_track=move.target_track,
+        yard_mode=plan_input.yard_mode,
+        occupied_spot_assignments=next_spot_assignments,
+    )
+    if new_spot_assignments is None:
+        raise ValueError(
+            f"No available depot spot for detach to {move.target_track}: {move.vehicle_nos}"
+        )
+    next_spot_assignments.update(new_spot_assignments)
+    next_weighed_vehicle_nos = set(state.weighed_vehicle_nos)
+    if move.target_track == "机库":
+        next_weighed_vehicle_nos.update(move.vehicle_nos)
+    return ReplayState(
+        track_sequences=next_track_sequences,
+        loco_track_name=move.target_track,
+        weighed_vehicle_nos=next_weighed_vehicle_nos,
+        spot_assignments=next_spot_assignments,
+        loco_carry=next_carry,
     )
 
 
@@ -136,4 +215,5 @@ def _state_key(
         ),
         tuple(sorted(state.weighed_vehicle_nos)),
         spot_items,
+        state.loco_carry,
     )

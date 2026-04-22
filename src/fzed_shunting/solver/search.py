@@ -17,10 +17,11 @@ from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.budget import SearchBudget
-from fzed_shunting.solver.heuristic import make_state_heuristic
+from fzed_shunting.solver.heuristic import make_state_heuristic, make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
     generate_goal_moves,
+    generate_real_hook_moves,
 )
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.state import (
@@ -63,7 +64,11 @@ def _solve_search_result(
     counter = count()
     queue: list[QueueItem] = []
     canonical_random_depot_vehicle_nos = _canonical_random_depot_vehicle_nos(plan_input)
-    state_heuristic = make_state_heuristic(plan_input)
+    state_heuristic = (
+        make_state_heuristic_real_hook(plan_input)
+        if solver_mode == "real_hook"
+        else make_state_heuristic(plan_input)
+    )
     initial_key = _state_key(
         initial_state,
         canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
@@ -112,34 +117,43 @@ def _solve_search_result(
         if _is_goal(plan_input, current.state):
             if best_goal_plan is None or len(current.plan) < len(best_goal_plan):
                 best_goal_plan = current.plan
-            if solver_mode == "exact":
+            if solver_mode in ("exact", "real_hook"):
                 return SolverResult(
                     plan=current.plan,
                     expanded_nodes=expanded_nodes,
                     generated_nodes=generated_nodes,
                     closed_nodes=len(closed_state_keys),
                     elapsed_ms=(perf_counter() - started_at) * 1000,
-                    is_proven_optimal=True,
-                    fallback_stage="exact",
+                    is_proven_optimal=solver_mode == "exact",
+                    fallback_stage=solver_mode,
                     debug_stats=debug_stats,
                 )
             continue
         move_stats = {} if debug_stats is not None else None
-        blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
-            plan_input=plan_input,
-            state=current.state,
-            goal_by_vehicle=goal_by_vehicle,
-            vehicle_by_no=vehicle_by_no,
-            route_oracle=route_oracle,
-        )
-        moves = generate_goal_moves(
-            plan_input,
-            current.state,
-            master=master,
-            route_oracle=route_oracle,
-            blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-            debug_stats=move_stats,
-        )
+        blocking_goal_targets_by_source: dict[str, set[str]] = {}
+        if solver_mode == "real_hook":
+            moves = generate_real_hook_moves(
+                plan_input,
+                current.state,
+                master=master,
+                route_oracle=route_oracle,
+            )
+        else:
+            blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
+                plan_input=plan_input,
+                state=current.state,
+                goal_by_vehicle=goal_by_vehicle,
+                vehicle_by_no=vehicle_by_no,
+                route_oracle=route_oracle,
+            )
+            moves = generate_goal_moves(
+                plan_input,
+                current.state,
+                master=master,
+                route_oracle=route_oracle,
+                blocking_goal_targets_by_source=blocking_goal_targets_by_source,
+                debug_stats=move_stats,
+            )
         if debug_stats is not None:
             _accumulate_move_debug_stats(
                 debug_stats=debug_stats,
@@ -248,7 +262,7 @@ def _priority(
             -blocker_bonus,
             heuristic,
         )
-    if solver_mode == "weighted":
+    if solver_mode in ("weighted", "real_hook"):
         return (
             cost + heuristic_weight * heuristic,
             cost,

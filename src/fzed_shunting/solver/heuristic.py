@@ -38,6 +38,102 @@ def compute_admissible_heuristic(
     return compute_heuristic_breakdown(plan_input, state).value
 
 
+def compute_admissible_heuristic_real_hook(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+) -> int:
+    """Admissible heuristic for the real-hook (ATTACH/DETACH) model.
+
+    Each old PUT = 2 real hooks (1 ATTACH + 1 DETACH), so scale all existing
+    lower bounds by 2.  Vehicles already in loco_carry only need DETACHes, so
+    their contribution is cheaper: count the number of distinct goal target
+    tracks among the carried vehicles that are not yet at their goal.
+    """
+    bd = compute_heuristic_breakdown(plan_input, state)
+    h_on_tracks = max(
+        2 * (bd.h_distinct_transfer_pairs + bd.h_tight_capacity),
+        2 * bd.h_blocking,
+        2 * bd.h_weigh,
+        2 * bd.h_spot_evict,
+    )
+    h_carry = _h_carry_detach(plan_input, state)
+    return h_on_tracks + h_carry
+
+
+def _h_carry_detach(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
+    """Lower bound on remaining DETACHes for vehicles currently in loco_carry."""
+    if not state.loco_carry:
+        return 0
+    vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
+    distinct_goal_tracks: set[str] = set()
+    for vehicle_no in state.loco_carry:
+        v = vehicle_by_no.get(vehicle_no)
+        if v is None:
+            continue
+        allowed = v.goal.allowed_target_tracks
+        if len(allowed) == 1:
+            distinct_goal_tracks.add(allowed[0])
+        elif allowed:
+            distinct_goal_tracks.add(allowed[0])
+    return len(distinct_goal_tracks)
+
+
+def make_state_heuristic_real_hook(
+    plan_input: NormalizedPlanInput,
+) -> Callable[[ReplayState], int]:
+    """Closure-style heuristic factory for the real-hook search mode."""
+    vehicles = tuple(plan_input.vehicles)
+    vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+    length_by_vno = {v.vehicle_no: v.vehicle_length for v in vehicles}
+    weigh_vehicle_nos = frozenset(v.vehicle_no for v in vehicles if v.need_weigh)
+
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for v in vehicles:
+        initial_occupation_by_track[v.current_track] = (
+            initial_occupation_by_track.get(v.current_track, 0.0) + v.vehicle_length
+        )
+    effective_cap_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
+
+    def _heuristic(state: ReplayState) -> int:
+        current_track_by_vehicle = _vehicle_track_lookup(state)
+        h_pairs = _h_distinct_transfer_pairs(
+            plan_input=plan_input,
+            current_track_by_vehicle=current_track_by_vehicle,
+        )
+        h_block = _h_blocking(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            current_track_by_vehicle=current_track_by_vehicle,
+        )
+        h_weigh = _h_weigh_remaining_precomputed(
+            weigh_vehicle_nos=weigh_vehicle_nos,
+            weighed_vehicle_nos=state.weighed_vehicle_nos,
+        )
+        h_spot = _h_spot_evict(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+        )
+        h_tight = _h_tight_capacity_eviction(
+            plan_input=plan_input,
+            state=state,
+            length_by_vno=length_by_vno,
+            current_track_by_vehicle=current_track_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            effective_cap_by_track=effective_cap_by_track,
+        )
+        h_on_tracks = max(2 * (h_pairs + h_tight), 2 * h_block, 2 * h_weigh, 2 * h_spot)
+        h_carry = _h_carry_detach(plan_input, state)
+        return h_on_tracks + h_carry
+
+    return _heuristic
+
+
 def compute_heuristic_breakdown(
     plan_input: NormalizedPlanInput,
     state: ReplayState,
