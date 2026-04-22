@@ -129,6 +129,33 @@ def solve_with_simple_astar_result(
         )
         phase_timings["constructive_ms"] = (perf_counter() - _ts) * 1000
 
+    # Stage 0.5: warm-start A* — if constructive stopped exactly 1 move from
+    # goal (h=1), replay its plan and let a brief focused A* close the gap.
+    # Limited to h=1 only: h≥2 states with evictions require expensive search
+    # that wastes budget better spent in the anytime chain.
+    if (
+        enable_constructive_seed
+        and constructive_seed is not None
+        and constructive_seed.fallback_stage == "constructive_partial"
+        and constructive_seed.plan
+        and time_budget_ms is not None
+    ):
+        _ts = perf_counter()
+        elapsed_so_far_ms = (perf_counter() - started_at) * 1000
+        warm_budget = min(500.0, max(50.0, (time_budget_ms - elapsed_so_far_ms) * 0.05))
+        warm_result = _try_warm_start_completion(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            constructive_plan=constructive_seed.plan,
+            master=master,
+            time_budget_ms=warm_budget,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            max_h=1,
+        )
+        if warm_result is not None:
+            constructive_seed = warm_result
+        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
     result: SolverResult
     if solver_mode == "lns":
         _ts = perf_counter()
@@ -151,7 +178,7 @@ def solve_with_simple_astar_result(
             and enable_anytime_fallback
             and time_budget_ms is not None
         ):
-            exact_time_budget_ms = max(1.0, time_budget_ms * 0.4)
+            exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
         _ts = perf_counter()
         try:
             result = _solve_search_result(
@@ -399,7 +426,7 @@ def _run_constructive_stage(
 
     constructive_budget = None
     if time_budget_ms is not None:
-        constructive_budget = min(5_000.0, max(200.0, time_budget_ms * 0.05))
+        constructive_budget = min(8_000.0, max(500.0, time_budget_ms * 0.15))
     try:
         ctr = solve_constructive(
             plan_input,
@@ -462,6 +489,60 @@ def _heuristic(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
     from fzed_shunting.solver.heuristic import compute_admissible_heuristic
 
     return compute_admissible_heuristic(plan_input, state)
+
+
+def _try_warm_start_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    constructive_plan: list[HookAction],
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+    max_h: int = 4,
+) -> SolverResult | None:
+    """Replay constructive plan to get near-goal state, then run focused A* to finish."""
+    from fzed_shunting.solver.heuristic import compute_admissible_heuristic
+    from fzed_shunting.io.normalize_input import NormalizedVehicle
+
+    vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
+    state = initial_state
+    try:
+        for move in constructive_plan:
+            state = _apply_move(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+    except Exception:  # noqa: BLE001
+        return None
+
+    h = compute_admissible_heuristic(plan_input, state)
+    if h == 0 or h > max_h:
+        return None
+
+    try:
+        completion = _solve_search_result(
+            plan_input=plan_input,
+            initial_state=state,
+            master=master,
+            solver_mode="exact",
+            heuristic_weight=1.0,
+            beam_width=None,
+            budget=SearchBudget(time_budget_ms=time_budget_ms),
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+    except ValueError:
+        return None
+    if not completion.plan:
+        return None
+
+    return SolverResult(
+        plan=list(constructive_plan) + list(completion.plan),
+        expanded_nodes=completion.expanded_nodes,
+        generated_nodes=completion.generated_nodes,
+        closed_nodes=completion.closed_nodes,
+        elapsed_ms=completion.elapsed_ms,
+        is_proven_optimal=False,
+        fallback_stage="constructive_warm_start",
+        debug_stats=completion.debug_stats,
+    )
 
 def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> None:
     capacity_by_track = {

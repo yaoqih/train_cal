@@ -69,7 +69,7 @@ def _run_anytime_fallback_chain(
                 "heuristic_weight": 5.0,
                 "beam_width": None,
             },
-            0.12,
+            0.40,
         ),
         (
             "beam_greedy_128",

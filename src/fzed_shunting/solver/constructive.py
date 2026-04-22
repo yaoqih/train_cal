@@ -288,6 +288,17 @@ def _greedy_forward(
             )
 
         # Score and sort all moves (ascending — lowest tuple wins).
+        # Precompute satisfied-vehicle counts per track (used as burial tiebreaker)
+        # once per step rather than re-deriving inside _score_move per move.
+        satisfied_by_track: dict[str, int] = {
+            track: sum(
+                1 for vn in seq
+                if vn in vehicle_by_no
+                and track in vehicle_by_no[vn].goal.allowed_target_tracks
+            )
+            for track, seq in state.track_sequences.items()
+            if seq
+        }
         scored: list[tuple[tuple, int, HookAction, bool]] = []
         for move in moves:
             score, tier = _score_move(
@@ -295,6 +306,7 @@ def _greedy_forward(
                 state=state,
                 vehicle_by_no=vehicle_by_no,
                 goal_tracks_needed=goal_tracks_needed,
+                satisfied_by_track=satisfied_by_track,
             )
             is_inverse = _is_inverse_of_recent(move, recent_moves)
             scored.append((score, tier, move, is_inverse))
@@ -477,6 +489,7 @@ def _score_move(
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
+    satisfied_by_track: dict[str, int] | None = None,
 ) -> tuple[tuple, int]:
     block_vehicles = [vehicle_by_no[vn] for vn in move.vehicle_nos]
     source_track = move.source_track
@@ -555,6 +568,17 @@ def _score_move(
     if displaces_satisfied:
         tier += 100
 
+    # Burial cost: prefer placing non-goal vehicles on tracks with fewer
+    # satisfied vehicles (deeper burials are harder to undo). Used as a
+    # within-tier tiebreaker rather than a hard penalty so the constructive
+    # never gets stuck when storage-track burial is the only available move.
+    burial_depth = _move_burial_depth(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        satisfied_by_track=satisfied_by_track,
+    )
+
     block_size = len(move.vehicle_nos)
     path_length = len(move.path_tracks)
     # SPOT/AREA finalizations are "pinpoint" goals: the vehicle only reaches
@@ -571,12 +595,52 @@ def _score_move(
         tier,
         0 if is_spot_or_area_finalization else 1,
         -delta,
+        burial_depth,
         -block_size,
         path_length,
         source_track,
         target_track,
     )
     return score, min(tier, 5)
+
+
+def _move_burial_depth(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    satisfied_by_track: dict[str, int] | None = None,
+) -> int:
+    """Number of satisfied-goal vehicles that would block the moved block on target_track.
+
+    Returns 0 if all moved vehicles are going to their goal at target_track
+    (no burial concern).  Otherwise returns the count of vehicles already on
+    target_track whose goal IS that track — each one represents a future
+    displacement needed to unbury the newly placed block.
+
+    Used as a within-tier tiebreaker (prefer destinations with fewer blockers)
+    without hard-penalising moves where burial is the only option.
+    Pass ``satisfied_by_track`` (precomputed per step) to avoid O(n) work per move.
+    """
+    target_track = move.target_track
+
+    # If all moved vehicles are going to their goal here, no burial concern.
+    if all(
+        target_track in vehicle_by_no[vn].goal.allowed_target_tracks
+        for vn in move.vehicle_nos
+        if vn in vehicle_by_no
+    ):
+        return 0
+
+    if satisfied_by_track is not None:
+        return satisfied_by_track.get(target_track, 0)
+
+    target_seq = state.track_sequences.get(target_track, [])
+    return sum(
+        1
+        for vn in target_seq
+        if vn in vehicle_by_no and target_track in vehicle_by_no[vn].goal.allowed_target_tracks
+    )
 
 
 def _move_clears_goal_blocker(

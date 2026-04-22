@@ -191,7 +191,287 @@ def generate_goal_moves(
                         break
                 if feasible_target_count > 0:
                     break
+    moves.extend(
+        _generate_capacity_eviction_moves(
+            plan_input=plan_input,
+            state=state,
+            goal_by_vehicle=goal_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            length_by_vehicle=length_by_vehicle,
+            effective_capacity_by_track=effective_capacity_by_track,
+            master=master,
+            route_oracle=route_oracle,
+        )
+    )
+    moves.extend(
+        _generate_spot_eviction_moves(
+            plan_input=plan_input,
+            state=state,
+            goal_by_vehicle=goal_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            length_by_vehicle=length_by_vehicle,
+            effective_capacity_by_track=effective_capacity_by_track,
+            master=master,
+            route_oracle=route_oracle,
+        )
+    )
     return _dedup_moves(moves)
+
+
+def _generate_capacity_eviction_moves(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    goal_by_vehicle: dict,
+    vehicle_by_no: dict,
+    length_by_vehicle: dict[str, float],
+    effective_capacity_by_track: dict[str, float],
+    master: MasterData | None,
+    route_oracle: RouteOracle | None,
+) -> list[HookAction]:
+    """Generate staging moves for identity-goal vehicles at capacity-full target tracks.
+
+    When pending single-target arrivals at track T exceed available slack (after
+    accounting for non-identity vehicles that will naturally depart), identity-goal
+    vehicles at T must be temporarily evicted to make room. Generates those moves.
+    """
+    current_track_by_vehicle: dict[str, str] = {
+        vno: track
+        for track, seq in state.track_sequences.items()
+        for vno in seq
+    }
+    pending_arrival_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        allowed = vehicle.goal.allowed_target_tracks
+        if len(allowed) != 1:
+            continue
+        target = allowed[0]
+        if current_track_by_vehicle.get(vehicle.vehicle_no) == target:
+            continue
+        pending_arrival_by_track[target] = (
+            pending_arrival_by_track.get(target, 0.0)
+            + length_by_vehicle.get(vehicle.vehicle_no, vehicle.vehicle_length)
+        )
+
+    eviction_moves: list[HookAction] = []
+    for track, seq in state.track_sequences.items():
+        if not seq:
+            continue
+        pending = pending_arrival_by_track.get(track, 0.0)
+        if pending <= 1e-9:
+            continue
+        effective_cap = effective_capacity_by_track.get(track)
+        if effective_cap is None:
+            continue
+        current_mass = sum(length_by_vehicle.get(vno, 0.0) for vno in seq)
+        available_slack = effective_cap - current_mass
+        # Non-identity vehicles will leave anyway: their departure is free slack
+        non_identity_mass = sum(
+            length_by_vehicle.get(vno, 0.0)
+            for vno in seq
+            if not (
+                len(goal_by_vehicle[vno].allowed_target_tracks) == 1
+                and goal_by_vehicle[vno].allowed_target_tracks[0] == track
+            )
+        )
+        effective_slack = available_slack + non_identity_mass
+        if effective_slack >= pending - 1e-9:
+            continue
+        # Collect consecutive identity-goal prefix sizes from the near end
+        eviction_sizes: list[int] = []
+        for prefix_size in range(1, len(seq) + 1):
+            vno = seq[prefix_size - 1]
+            allowed = goal_by_vehicle[vno].allowed_target_tracks
+            if len(allowed) != 1 or allowed[0] != track:
+                break
+            block = seq[:prefix_size]
+            block_vehicles = [vehicle_by_no[bvno] for bvno in block]
+            if validate_hook_vehicle_group(block_vehicles):
+                continue
+            if any(
+                vehicle_by_no[bvno].need_weigh and bvno not in state.weighed_vehicle_nos
+                for bvno in block
+            ):
+                continue
+            eviction_sizes.append(prefix_size)
+        if not eviction_sizes:
+            continue
+        # Use smallest valid eviction to minimise disruption
+        prefix_size = eviction_sizes[0]
+        block = seq[:prefix_size]
+        block_length = sum(length_by_vehicle.get(vno, 0.0) for vno in block)
+        block_vehicles = [vehicle_by_no[vno] for vno in block]
+        feasible_count = 0
+        for staging_target in _candidate_staging_targets(
+            source_track=track,
+            block=block,
+            state=state,
+            plan_input=plan_input,
+            master=master,
+            vehicle_by_no=vehicle_by_no,
+            goal_target_hints=(track,),
+            route_oracle=route_oracle,
+        ):
+            if feasible_count > 0 and _is_fallback_staging_track(master, staging_target):
+                break
+            move = _build_candidate_move(
+                source_track=track,
+                target_track=staging_target,
+                block=block,
+                block_vehicles=block_vehicles,
+                block_length=block_length,
+                state=state,
+                capacity_by_track=effective_capacity_by_track,
+                length_by_vehicle=length_by_vehicle,
+                vehicle_by_no=vehicle_by_no,
+                plan_input=plan_input,
+                route_oracle=route_oracle,
+            )
+            if move is None:
+                continue
+            eviction_moves.append(move)
+            feasible_count += 1
+            if feasible_count >= MAX_STAGING_TARGETS:
+                break
+    return eviction_moves
+
+
+def _generate_spot_eviction_moves(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    goal_by_vehicle: dict,
+    vehicle_by_no: dict,
+    length_by_vehicle: dict[str, float],
+    effective_capacity_by_track: dict[str, float],
+    master: MasterData | None,
+    route_oracle: RouteOracle | None,
+) -> list[HookAction]:
+    """Generate staging moves to free spots blocked by vehicles that need to be evicted.
+
+    Two cases handled:
+    1. SPOT-mode: a vehicle needs a specific spot currently held by another vehicle.
+    2. AREA-mode overflow: an AREA vehicle can't be allocated to ANY of its allowed
+       target tracks because all their spots are full. Evict front vehicle from one target.
+    """
+    reverse_assignments: dict[str, str] = {
+        spot: vno for vno, spot in state.spot_assignments.items()
+    }
+    current_track_by_vehicle: dict[str, str] = {
+        vno: track
+        for track, seq in state.track_sequences.items()
+        for vno in seq
+    }
+    # evict_requests[track] = near-end prefix size needed to remove all blockers
+    evict_requests: dict[str, int] = {}
+
+    # Case 1: SPOT-mode conflicts
+    for vehicle in plan_input.vehicles:
+        goal = vehicle.goal
+        if goal.target_mode != "SPOT":
+            continue
+        target_spot = goal.target_spot_code
+        if target_spot is None:
+            continue
+        if state.spot_assignments.get(vehicle.vehicle_no) == target_spot:
+            continue
+        occupant_vno = reverse_assignments.get(target_spot)
+        if occupant_vno is None or occupant_vno == vehicle.vehicle_no:
+            continue
+        occupant_track = current_track_by_vehicle.get(occupant_vno)
+        if occupant_track is None:
+            continue
+        seq = state.track_sequences.get(occupant_track, [])
+        try:
+            occ_pos = seq.index(occupant_vno)
+        except ValueError:
+            continue
+        evict_requests[occupant_track] = max(evict_requests.get(occupant_track, 0), occ_pos + 1)
+
+    # Case 2: AREA-mode overflow — vehicle can't be allocated to any allowed target
+    for vehicle in plan_input.vehicles:
+        current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
+        if current_track in vehicle.goal.allowed_target_tracks:
+            continue
+        allowed = vehicle.goal.allowed_target_tracks
+        if len(allowed) == 0:
+            continue
+        any_feasible = False
+        for target in allowed:
+            result = allocate_spots_for_block(
+                vehicles=[vehicle],
+                target_track=target,
+                yard_mode=plan_input.yard_mode,
+                occupied_spot_assignments=state.spot_assignments,
+            )
+            if result is not None:
+                any_feasible = True
+                break
+        if any_feasible:
+            continue
+        # All targets have full spot assignments: evict front of the first available target
+        for target in allowed:
+            seq = state.track_sequences.get(target, [])
+            if not seq:
+                continue
+            front_vno = seq[0]
+            front_goal = goal_by_vehicle.get(front_vno)
+            if front_goal is None:
+                continue
+            # Don't evict identity-goal vehicles with single target — they have nowhere else to go
+            if len(front_goal.allowed_target_tracks) == 1 and front_goal.allowed_target_tracks[0] == target:
+                continue
+            evict_requests[target] = max(evict_requests.get(target, 0), 1)
+            break
+
+    eviction_moves: list[HookAction] = []
+    for track, prefix_size in evict_requests.items():
+        seq = state.track_sequences.get(track, [])
+        if not seq or prefix_size > len(seq):
+            continue
+        block = seq[:prefix_size]
+        block_vehicles = [vehicle_by_no[vno] for vno in block]
+        if validate_hook_vehicle_group(block_vehicles):
+            continue
+        if any(
+            vehicle_by_no[vno].need_weigh and vno not in state.weighed_vehicle_nos
+            for vno in block
+        ):
+            continue
+        block_length = sum(length_by_vehicle.get(vno, 0.0) for vno in block)
+        lead_goal = goal_by_vehicle.get(block[0])
+        goal_hints = tuple(sorted(lead_goal.allowed_target_tracks)) if lead_goal else ()
+        feasible_count = 0
+        for staging_target in _candidate_staging_targets(
+            source_track=track,
+            block=block,
+            state=state,
+            plan_input=plan_input,
+            master=master,
+            vehicle_by_no=vehicle_by_no,
+            goal_target_hints=goal_hints,
+            route_oracle=route_oracle,
+        ):
+            if feasible_count > 0 and _is_fallback_staging_track(master, staging_target):
+                break
+            move = _build_candidate_move(
+                source_track=track,
+                target_track=staging_target,
+                block=block,
+                block_vehicles=block_vehicles,
+                block_length=block_length,
+                state=state,
+                capacity_by_track=effective_capacity_by_track,
+                length_by_vehicle=length_by_vehicle,
+                vehicle_by_no=vehicle_by_no,
+                plan_input=plan_input,
+                route_oracle=route_oracle,
+            )
+            if move is None:
+                continue
+            eviction_moves.append(move)
+            feasible_count += 1
+            if feasible_count >= MAX_STAGING_TARGETS:
+                break
+    return eviction_moves
 
 
 def _dedup_moves(moves: list[HookAction]) -> list[HookAction]:

@@ -1402,8 +1402,8 @@
       "targetAreaCode": "大库:RANDOM"
     },
     {
-      "trackName": "存2",
-      "order": "99",
+      "trackName": "存5南",
+      "order": "1",
       "vehicleModel": "C70E",
       "vehicleNo": "T003",
       "repairProcess": "段修",

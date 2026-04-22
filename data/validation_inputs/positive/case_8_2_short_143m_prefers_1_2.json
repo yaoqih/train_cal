@@ -1120,19 +1120,6 @@
       "targetAreaCode": "大库:RANDOM"
     },
     {
-      "trackName": "存5北",
-      "order": "7",
-      "vehicleModel": "KZ70",
-      "vehicleNo": "5541056",
-      "repairProcess": "段修",
-      "vehicleLength": 12.1,
-      "targetMode": "AREA",
-      "targetTrack": "大库",
-      "isSpotting": "",
-      "vehicleAttributes": "",
-      "targetAreaCode": "大库:RANDOM"
-    },
-    {
       "trackName": "修3库内",
       "order": "304",
       "vehicleModel": "G70K",

@@ -192,6 +192,7 @@ def main():
         )
         if scenario_meta and scenario_meta.get("description"):
             st.caption(str(scenario_meta["description"]))
+    vehicle_display_metadata = _build_vehicle_display_metadata(payload)
     plan_payload = None
     if plan_path:
         candidate = Path(plan_path)
@@ -300,11 +301,11 @@ def main():
         if autoplay:
             for auto_index in range(len(view.steps)):
                 with step_container:
-                    _render_step(view, auto_index)
+                    _render_step(view, auto_index, vehicle_display_metadata=vehicle_display_metadata)
                 time.sleep(autoplay_interval_ms / 1000)
         else:
             with step_container:
-                _render_step(view, step_index)
+                _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
 
     with vehicles_tab:
         st.caption("初始车辆分布与各自目的地，用来核对求解器的输入。")
@@ -454,6 +455,7 @@ def _render_workflow_demo(
     if view is None:
         st.error("阶段无结果")
         return
+    vehicle_display_metadata = _build_vehicle_display_metadata(stage.input_payload)
 
     summary_cols = st.columns(6)
     summary_cols[0].metric("阶段车辆数", view.summary.vehicle_count)
@@ -494,20 +496,24 @@ def _render_workflow_demo(
         value=0,
         key=f"workflow-step-{stage_index}",
     )
-    _render_step(view, step_index)
+    _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
 
 
 def _is_workflow_payload(payload: dict) -> bool:
     return isinstance(payload.get("workflowStages"), list)
 
 
-def _render_step(view, step_index: int):
+def _render_step(view, step_index: int, *, vehicle_display_metadata: dict[str, dict[str, str]] | None = None):
     step = view.steps[step_index]
+    vehicle_meta = vehicle_display_metadata or {}
     if step.hook is None:
         st.info("Step 0 为初始状态。")
     else:
         st.write(f"第 {step.hook.hook_no} 钩: {step.hook.source_track} -> {step.hook.target_track}")
-        st.caption(f"车辆: {' '.join(step.hook.vehicle_nos)} | 路径: {' -> '.join(step.hook.path_tracks)}")
+        st.caption(
+            f"车辆: {_format_hook_vehicle_text(step.hook.vehicle_nos, vehicle_meta)} | "
+            f"路径: {' -> '.join(step.hook.path_tracks)}"
+        )
         if step.hook.remark:
             st.caption(step.hook.remark)
         if step.verifier_errors:
@@ -533,13 +539,13 @@ def _render_step(view, step_index: int):
 
     detail_tabs = st.tabs(["股道变化", "车辆明细", "校验结果", "本钩路径距离"])
     with detail_tabs[0]:
-        rows = _build_step_state_rows(step.track_map)
+        rows = _build_step_state_rows(step.track_map, vehicle_meta)
         if rows:
             st.dataframe(rows, use_container_width=True, hide_index=True)
         else:
             st.caption("当前无需要关注的股道状态。")
     with detail_tabs[1]:
-        _render_vehicle_detail_panel(step, view)
+        _render_vehicle_detail_panel(step, view, vehicle_meta)
     with detail_tabs[2]:
         _render_verifier_panel(step, view)
     with detail_tabs[3]:
@@ -897,7 +903,11 @@ def _build_hook_sidebar_rows(step) -> list[dict[str, str]]:
     ]
 
 
-def _build_step_state_rows(track_map) -> list[dict[str, str]]:
+def _build_step_state_rows(
+    track_map,
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    vehicle_meta = vehicle_display_metadata or {}
     rows: list[dict[str, str]] = []
     for track_code, node in track_map.track_nodes.items():
         if not (node.is_in_active_path or node.is_changed or node.is_occupied or node.has_loco):
@@ -914,7 +924,11 @@ def _build_step_state_rows(track_map) -> list[dict[str, str]]:
             {
                 "trackCode": track_code,
                 "state": " / ".join(state_parts),
-                "vehicles": " ".join(node.vehicle_nos) if node.vehicle_nos else "无车辆",
+                "vehicles": (
+                    _format_hook_vehicle_text(node.vehicle_nos, vehicle_meta)
+                    if node.vehicle_nos
+                    else "无车辆"
+                ),
             }
         )
     rows.sort(key=lambda item: item["trackCode"])
@@ -1115,12 +1129,82 @@ def _build_vehicle_roster_rows(payload: dict) -> list[dict[str, object]]:
     return rows
 
 
-def _render_vehicle_detail_panel(step, view) -> None:
+def _build_vehicle_display_metadata(payload: dict) -> dict[str, dict[str, str]]:
+    metadata: dict[str, dict[str, str]] = {}
+    sources = []
+    initial_vehicle_info = payload.get("initialVehicleInfo")
+    if isinstance(initial_vehicle_info, list):
+        sources.append(initial_vehicle_info)
+    vehicle_info = payload.get("vehicleInfo")
+    if isinstance(vehicle_info, list):
+        sources.append(vehicle_info)
+    for source in sources:
+        for item in source:
+            vehicle_no = str(item.get("vehicleNo", "")).strip()
+            if not vehicle_no:
+                continue
+            attributes_value = str(item.get("vehicleAttributes", "") or "").strip()
+            metadata[vehicle_no] = {
+                "requirement": _format_vehicle_requirement_text(item),
+                "attributes": attributes_value or "无",
+                "length": _format_vehicle_length_text(item.get("vehicleLength")),
+            }
+    return metadata
+
+
+def _format_vehicle_requirement_text(vehicle_info: dict) -> str:
+    target_track = str(vehicle_info.get("targetTrack", "") or "").strip()
+    spotting_value = str(vehicle_info.get("isSpotting", "") or "").strip()
+    target_spot_code = str(vehicle_info.get("targetSpotCode", "") or "").strip()
+    if target_spot_code:
+        return target_spot_code
+    if spotting_value.isdigit() or spotting_value == "迎检":
+        return spotting_value
+    if spotting_value == "是":
+        return f"{target_track}作业区" if target_track else "需要对位"
+    if target_track:
+        return target_track
+    return "无"
+
+
+def _format_vehicle_length_text(length_value) -> str:
+    try:
+        return f"{float(length_value):.1f}m"
+    except (TypeError, ValueError):
+        return "未知"
+
+
+def _format_vehicle_display_text(
+    vehicle_no: str,
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> str:
+    vehicle_meta = (vehicle_display_metadata or {}).get(vehicle_no)
+    if not vehicle_meta:
+        return vehicle_no
+    return (
+        f"{vehicle_no}(对位={vehicle_meta['requirement']}，"
+        f"属性={vehicle_meta['attributes']}，"
+        f"长度={vehicle_meta['length']})"
+    )
+
+
+def _format_hook_vehicle_text(
+    vehicle_nos: list[str],
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> str:
+    return " ".join(
+        _format_vehicle_display_text(vehicle_no, vehicle_display_metadata)
+        for vehicle_no in vehicle_nos
+    )
+
+
+def _render_vehicle_detail_panel(step, view, vehicle_display_metadata: dict[str, dict[str, str]] | None = None) -> None:
+    vehicle_meta = vehicle_display_metadata or {}
     if step.hook is not None and step.hook.vehicle_nos:
         st.dataframe(
             [
                 {
-                    "vehicleNo": vehicle_no,
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
                     "sourceTrack": step.hook.source_track,
                     "targetTrack": step.hook.target_track,
                 }
@@ -1132,12 +1216,15 @@ def _render_vehicle_detail_panel(step, view) -> None:
     else:
         st.caption("当前步骤无车辆移动。")
     if step.weighed_vehicle_nos:
-        st.caption(f"本步已称重车辆: {' '.join(step.weighed_vehicle_nos)}")
+        st.caption(f"本步已称重车辆: {_format_hook_vehicle_text(step.weighed_vehicle_nos, vehicle_meta)}")
     if step.spot_assignments:
         st.markdown("**当前台位分配**")
         st.dataframe(
             [
-                {"vehicleNo": vehicle_no, "spotCode": spot_code}
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "spotCode": spot_code,
+                }
                 for vehicle_no, spot_code in step.spot_assignments.items()
             ],
             use_container_width=True,
@@ -1147,7 +1234,10 @@ def _render_vehicle_detail_panel(step, view) -> None:
         st.markdown("**最终台位分配**")
         st.dataframe(
             [
-                {"vehicleNo": vehicle_no, "spotCode": spot_code}
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "spotCode": spot_code,
+                }
                 for vehicle_no, spot_code in view.final_spot_assignments.items()
             ],
             use_container_width=True,
