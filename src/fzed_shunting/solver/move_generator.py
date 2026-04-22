@@ -761,7 +761,8 @@ def _candidate_targets(
         vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
         for vehicle_no in block
     ):
-        return ["机库"]
+        # 机库 weighing is 单钩 — only single-vehicle blocks may be sent there.
+        return ["机库"] if len(block) == 1 else []
     goal = vehicle_by_no[block[0]].goal
     targets = list(goal.allowed_target_tracks)
     if goal.target_area_code == "大库:RANDOM":

@@ -79,15 +79,9 @@ def _apply_move(
     return _apply_put(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
 
 
-def _place_on_track(
-    existing: list[str],
-    new_vehicles: list[str],
-    plan_input: NormalizedPlanInput,
-    target_track: str,
-) -> list[str]:
-    if target_track in plan_input.single_end_track_names:
-        return list(new_vehicles) + existing
-    return existing + list(new_vehicles)
+def _place_on_track(existing: list[str], new_vehicles: list[str]) -> list[str]:
+    """All placement is at the north (accessible) end — new vehicles prepend."""
+    return list(new_vehicles) + existing
 
 
 def _apply_put(
@@ -169,7 +163,7 @@ def _apply_detach(
     next_carry = tuple(carry_list[k:])
     next_track_sequences = dict(state.track_sequences)
     existing_target_seq = list(state.track_sequences.get(move.target_track, []))
-    next_target_seq = _place_on_track(existing_target_seq, move.vehicle_nos, plan_input, move.target_track)
+    next_target_seq = _place_on_track(existing_target_seq, move.vehicle_nos)
     next_track_sequences[move.target_track] = next_target_seq
     next_spot_assignments = dict(state.spot_assignments)
     for vehicle_no in move.vehicle_nos:
