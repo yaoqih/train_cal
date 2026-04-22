@@ -97,9 +97,8 @@ def _apply_put(
 
     next_track_sequences = dict(state.track_sequences)
     next_track_sequences[move.source_track] = list(source_seq[len(move.vehicle_nos):])
-    next_target_seq = list(state.track_sequences.get(move.target_track, []))
-    next_target_seq.extend(move.vehicle_nos)
-    next_track_sequences[move.target_track] = next_target_seq
+    existing_target = list(state.track_sequences.get(move.target_track, []))
+    next_track_sequences[move.target_track] = list(move.vehicle_nos) + existing_target
 
     next_spot_assignments = dict(state.spot_assignments)
     for vehicle_no in move.vehicle_nos:

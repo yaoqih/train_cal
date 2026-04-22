@@ -814,7 +814,8 @@ def _candidate_staging_targets(
             ]
             if follow_distances:
                 combined_distance = source_distance + min(follow_distances)
-        targets.append(((type_priority, combined_distance, source_distance, info.track_name), info.track_name))
+        occupancy = len(state.track_sequences.get(info.track_name, []))
+        targets.append(((type_priority, occupancy, combined_distance, source_distance, info.track_name), info.track_name))
     targets.sort(key=lambda item: item[0])
     return [track_name for _, track_name in targets]
 
@@ -1062,7 +1063,7 @@ def _violates_close_door_hook_rule(
 ) -> bool:
     if target_track == "存4北":
         existing_seq = state.track_sequences.get("存4北", [])
-        projected_seq = list(existing_seq) + list(block)
+        projected_seq = list(block) + list(existing_seq)
         for position_index in range(min(3, len(projected_seq))):
             vehicle_no = projected_seq[position_index]
             vehicle = vehicle_by_no.get(vehicle_no)

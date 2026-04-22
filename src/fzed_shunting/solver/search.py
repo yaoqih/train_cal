@@ -192,8 +192,8 @@ def _solve_search_result(
                 # primary-objective regions, so leave priority unchanged
                 # there and rely on LNS and post-processing reorder for
                 # depot-lateness.
-                from fzed_shunting.solver.depot_late import depot_index_sum
-                neg_depot_index_sum = -depot_index_sum(next_plan)
+                from fzed_shunting.solver.depot_late import weighted_depot_index_sum
+                neg_depot_index_sum = -weighted_depot_index_sum(next_plan, vehicle_by_no)
             heappush(
                 queue,
                 QueueItem(
