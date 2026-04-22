@@ -113,11 +113,13 @@ def solve_with_simple_astar_result(
     }
 
     # Stage 0: constructive baseline (always returns a plan — SLA safety net).
+    # Run for both "exact" and "beam" so beam search has a fallback when the
+    # LIFO-aware state space makes beam exploration fail to find a solution.
     constructive_seed: SolverResult | None = None
     if (
         enable_constructive_seed
         and enable_anytime_fallback
-        and solver_mode == "exact"
+        and solver_mode in {"exact", "beam"}
     ):
         _ts = perf_counter()
         constructive_seed = _run_constructive_stage(
@@ -221,6 +223,15 @@ def solve_with_simple_astar_result(
             and time_budget_ms is not None
         ):
             exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
+        elif (
+            solver_mode == "beam"
+            and enable_anytime_fallback
+            and time_budget_ms is not None
+        ):
+            # Use the same 20% primary budget as exact mode so the anytime
+            # fallback chain gets an equivalent 80% share — matching exact mode
+            # performance on hard cases that beam search can't solve directly.
+            exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
         _ts = perf_counter()
         try:
             result = _solve_search_result(
@@ -270,6 +281,10 @@ def solve_with_simple_astar_result(
         if solver_mode == "beam" and beam_width is not None:
             _ts = perf_counter()
             improved = result
+            _lns_remaining_ms = (
+                max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000)
+                if time_budget_ms is not None else None
+            )
             for _ in range(BEAM_POST_REPAIR_MAX_ROUNDS):
                 candidate = _improve_incumbent_result(
                     plan_input=plan_input,
@@ -282,12 +297,49 @@ def solve_with_simple_astar_result(
                     max_rounds=1,
                     solve_search_result=_solve_search_result,
                     enable_depot_late_scheduling=enable_depot_late_scheduling,
+                    time_budget_ms=_lns_remaining_ms,
                 )
                 if len(candidate.plan) >= len(improved.plan):
                     break
                 improved = candidate
             result = improved
             phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
+            # If beam search found no plan, run the anytime fallback chain.
+            # When the constructive seed is partial, pass an empty incumbent so
+            # the chain's early-exit guard (`if current.plan: break`) doesn't
+            # short-circuit immediately.
+            if not result.plan and enable_anytime_fallback:
+                _ts = perf_counter()
+                chain_incumbent = (
+                    SolverResult(
+                        plan=[],
+                        expanded_nodes=0,
+                        generated_nodes=0,
+                        closed_nodes=0,
+                        elapsed_ms=0.0,
+                        is_proven_optimal=False,
+                        fallback_stage="beam",
+                        debug_stats=debug_stats,
+                    )
+                    if constructive_seed is not None
+                    and constructive_seed.fallback_stage == "constructive_partial"
+                    else (constructive_seed if constructive_seed is not None else result)
+                )
+                result = _anytime_run_fallback_chain(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                    incumbent=chain_incumbent,
+                    started_at=started_at,
+                    time_budget_ms=time_budget_ms,
+                    node_budget=node_budget,
+                    heuristic_weight=heuristic_weight,
+                    beam_width=beam_width,
+                    debug_stats=debug_stats,
+                    solve_search_result=_solve_search_result,
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
+                )
+                phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
 
     # If search produced nothing, fall back to constructive seed (which may be
     # a full-goal plan or a best-effort partial). Either way the SLA contract

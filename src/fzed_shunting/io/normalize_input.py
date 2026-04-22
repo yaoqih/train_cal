@@ -42,6 +42,7 @@ class NormalizedPlanInput(BaseModel):
     vehicles: list[NormalizedVehicle] = Field(default_factory=list)
     loco_track_name: str
     yard_mode: str
+    single_end_track_names: frozenset[str] = Field(default_factory=frozenset)
 
 
 WORK_AREA_DEFAULTS = {
@@ -165,6 +166,9 @@ def normalize_plan_input(
         vehicles=vehicles,
         loco_track_name=loco_track_name,
         yard_mode=yard_mode,
+        single_end_track_names=frozenset(
+            code for code, track in master.tracks.items() if len(track.connection_nodes) == 1
+        ),
     )
 
 

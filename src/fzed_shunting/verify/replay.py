@@ -49,6 +49,9 @@ def replay_plan(
         if plan_input is not None
         else {}
     )
+    single_end_tracks: frozenset[str] = (
+        plan_input.single_end_track_names if plan_input is not None else frozenset()
+    )
     for hook in hook_plan:
         action_type = hook.get("actionType", "PUT")
         vehicle_nos = hook["vehicleNos"]
@@ -93,10 +96,14 @@ def replay_plan(
             if carry_list[: len(vehicle_nos)] != vehicle_nos:
                 raise ValueError("Vehicle block is not at the front of loco_carry")
             state.loco_carry = tuple(carry_list[len(vehicle_nos):])
-            target_seq = state.track_sequences.setdefault(target, [])
             for vehicle_no in vehicle_nos:
                 state.spot_assignments.pop(vehicle_no, None)
-            target_seq.extend(vehicle_nos)
+            target_seq = state.track_sequences.setdefault(target, [])
+            if target in single_end_tracks:
+                state.track_sequences[target] = list(vehicle_nos) + target_seq
+                target_seq = state.track_sequences[target]
+            else:
+                target_seq.extend(vehicle_nos)
             if plan_input is not None:
                 block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in vehicle_nos]
                 new_spot_assignments = allocate_spots_for_block(

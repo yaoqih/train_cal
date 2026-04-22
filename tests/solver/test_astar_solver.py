@@ -144,6 +144,7 @@ def test_simple_astar_result_can_return_debug_stats():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临3", "trackDistance": 62.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -780,6 +781,7 @@ def test_simple_astar_can_clear_front_blocker_via_temporary_track():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临3", "trackDistance": 62.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -828,11 +830,11 @@ def test_simple_astar_can_clear_front_blocker_via_temporary_track():
     )
 
     assert len(plan) == 3
-    assert (plan[0].source_track, plan[0].target_track, plan[0].vehicle_nos) == (
-        "存5北",
-        "临1",
-        ["E7"],
-    )
+    # With single-end PREPEND, solver uses a staging track that doesn't block
+    # the 存5北→机库 route (e.g. 临3); the specific staging track may vary.
+    assert plan[0].source_track == "存5北"
+    assert plan[0].vehicle_nos == ["E7"]
+    assert plan[0].target_track in {"临1", "临3"}
     assert replay.final_state.track_sequences["存5北"] == ["E7"]
     assert replay.final_state.track_sequences["机库"] == ["E8"]
 
