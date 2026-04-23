@@ -311,7 +311,7 @@ def generate_real_hook_moves(
             moves.append(
                 HookAction(
                     source_track=source_track,
-                    target_track="LOCO",
+                    target_track=source_track,
                     vehicle_nos=list(block),
                     path_tracks=path_tracks,
                     action_type="ATTACH",
@@ -357,7 +357,7 @@ def generate_real_hook_moves(
                     continue
                 moves.append(
                     HookAction(
-                        source_track="LOCO",
+                        source_track=state.loco_track_name,
                         target_track=target_track,
                         vehicle_nos=list(drop_block),
                         path_tracks=move.path_tracks,
@@ -397,7 +397,7 @@ def generate_real_hook_moves(
                     continue
                 moves.append(
                     HookAction(
-                        source_track="LOCO",
+                        source_track=state.loco_track_name,
                         target_track=target_track,
                         vehicle_nos=list(drop_block),
                         path_tracks=move.path_tracks,

@@ -148,7 +148,7 @@ def make_state_heuristic_real_hook(
             vehicle_by_no=vehicle_by_no,
             effective_cap_by_track=effective_cap_by_track,
         )
-        h_on_tracks = max(2 * (h_pairs + h_tight), 2 * h_block, 2 * h_weigh, 2 * h_spot)
+        h_on_tracks = max(h_pairs + h_tight, h_block, h_weigh, h_spot)
         h_carry = _h_carry_detach(plan_input, state)
         return h_on_tracks + h_carry
 

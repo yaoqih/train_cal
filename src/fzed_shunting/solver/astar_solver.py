@@ -174,10 +174,9 @@ def solve_with_simple_astar_result(
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
     elif solver_mode == "real_hook":
-        # Hook-native search: directly optimize ATTACH/DETACH count.
-        # Phase 1: weighted A* in ATTACH/DETACH space (uses generate_real_hook_moves
-        # and make_state_heuristic_real_hook). Each ATTACH and each DETACH costs 1
-        # hook — the search minimizes the total count natively.
+        # Hook-native search: directly optimize DETACH count (= number of delivery trips).
+        # Phase 1: A* in ATTACH/DETACH space (generate_real_hook_moves +
+        # make_state_heuristic_real_hook). ATTACH costs 0, DETACH costs 1.
         # Phase 2: PUT exact + compile as fallback when Phase 1 times out.
         _ts = perf_counter()
 

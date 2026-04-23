@@ -7,7 +7,7 @@ loop shape itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from heapq import heapify, heappop, heappush
 from itertools import count
 from time import perf_counter
@@ -43,6 +43,7 @@ class QueueItem:
     state_key: tuple
     state: ReplayState
     plan: list[HookAction]
+    cost: int = field(default=0, compare=False)
 
 
 def _solve_search_result(
@@ -105,7 +106,7 @@ def _solve_search_result(
             budget_exhausted = True
             break
         current = heappop(queue)
-        current_cost = len(current.plan)
+        current_cost = current.cost
         if best_cost.get(current.state_key) != current_cost:
             continue
         expanded_nodes += 1
@@ -169,7 +170,10 @@ def _solve_search_result(
                 vehicle_by_no=vehicle_by_no,
             )
             next_plan = current.plan + [move]
-            cost = len(next_plan)
+            if solver_mode == "real_hook":
+                cost = current_cost + (1 if move.action_type == "DETACH" else 0)
+            else:
+                cost = len(next_plan)
             state_key = _state_key(
                 next_state,
                 canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
@@ -209,6 +213,7 @@ def _solve_search_result(
                     state_key=state_key,
                     state=next_state,
                     plan=next_plan,
+                    cost=cost,
                 ),
             )
             generated_nodes += 1

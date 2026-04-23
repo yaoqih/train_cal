@@ -200,6 +200,8 @@ class RouteOracle:
         if path_tracks[0] != source_track or path_tracks[-1] != target_track:
             errors.append("pathTracks must start at source and end at target")
             return PathValidationResult(is_valid=False, errors=errors)
+        if source_track == target_track:
+            return PathValidationResult(is_valid=True)
 
         if expected_path_tracks is None:
             expected_path_tracks = self.resolve_path_tracks(source_track, target_track)
