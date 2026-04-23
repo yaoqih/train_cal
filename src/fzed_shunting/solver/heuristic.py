@@ -61,21 +61,42 @@ def compute_admissible_heuristic_real_hook(
 
 
 def _h_carry_detach(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
-    """Lower bound on remaining DETACHes for vehicles currently in loco_carry."""
+    """Admissible lower bound on remaining DETACHes for vehicles in loco_carry.
+
+    Greedy forward scan: maintain the intersection of allowed target tracks
+    across the current DETACH prefix. When the intersection hits empty, a
+    new DETACH group must start (increment count). Handles need_weigh vehicles
+    by treating their effective goal as {"机库"} until weighed.
+
+    Example: carry=[v1(T1), v2(T2), v3(T1)] → 3 groups (T1∩T2=∅, T2∩T1=∅).
+    Previous distinct-targets count gave 2, which underestimated.
+    """
     if not state.loco_carry:
         return 0
     vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
-    distinct_goal_tracks: set[str] = set()
+    groups = 0
+    shared: set[str] = set()
     for vehicle_no in state.loco_carry:
         v = vehicle_by_no.get(vehicle_no)
         if v is None:
+            groups += 1
+            shared = set()
             continue
-        allowed = v.goal.allowed_target_tracks
-        if len(allowed) == 1:
-            distinct_goal_tracks.add(allowed[0])
-        elif allowed:
-            distinct_goal_tracks.add(allowed[0])
-    return len(distinct_goal_tracks)
+        if v.need_weigh and vehicle_no not in state.weighed_vehicle_nos:
+            effective: set[str] = {"机库"}
+        else:
+            effective = set(v.goal.allowed_target_tracks)
+        if not shared:
+            groups += 1
+            shared = effective.copy()
+        else:
+            new_shared = shared & effective
+            if not new_shared:
+                groups += 1
+                shared = effective.copy()
+            else:
+                shared = new_shared
+    return groups
 
 
 def make_state_heuristic_real_hook(

@@ -289,6 +289,24 @@ def generate_real_hook_moves(
                         block_goals.update(v.goal.allowed_target_tracks)
                 if not (block_goals & carry_goal_tracks):
                     continue
+                # Weighing-last constraint: if carry already has an unweighed
+                # need_weigh vehicle, only ATTACH more need_weigh vehicles so
+                # the weigh group stays at the tail (DETACHed last to 机库).
+                carry_has_unweighed_needweigh = any(
+                    (cv := vehicle_by_no.get(cv_no)) is not None
+                    and cv.need_weigh
+                    and cv_no not in state.weighed_vehicle_nos
+                    for cv_no in state.loco_carry
+                )
+                if carry_has_unweighed_needweigh:
+                    block_all_needweigh = all(
+                        (bv := vehicle_by_no.get(bv_no)) is not None
+                        and bv.need_weigh
+                        and bv_no not in state.weighed_vehicle_nos
+                        for bv_no in block
+                    )
+                    if not block_all_needweigh:
+                        continue
             path_tracks = [source_track]
             moves.append(
                 HookAction(
@@ -1062,22 +1080,27 @@ def _violates_close_door_hook_rule(
     state: ReplayState,
 ) -> bool:
     if target_track == "存4北":
-        existing_seq = state.track_sequences.get("存4北", [])
-        projected_seq = list(block) + list(existing_seq)
-        for position_index in range(min(3, len(projected_seq))):
-            vehicle_no = projected_seq[position_index]
-            vehicle = vehicle_by_no.get(vehicle_no)
-            if vehicle is None:
-                continue
-            if not vehicle.is_close_door:
-                continue
-            goal = vehicle.goal
-            if (
-                goal.target_mode == "TRACK"
-                and goal.target_track == "存4北"
-                and list(goal.allowed_target_tracks) == ["存4北"]
-            ):
-                return True
+        # PREPEND model: a close-door vehicle in block lands at index 0 and only
+        # reaches position ≥ 4 (required by goal) if ≥ 3 OTHER vehicles are
+        # placed on 存4北 AFTER it.  "Pending" = not in this block, not currently
+        # on 存4北, goal includes 存4北.
+        cd_in_block = any(
+            (v := vehicle_by_no.get(vno)) is not None and v.is_close_door
+            for vno in block
+        )
+        if cd_in_block:
+            block_set = set(block)
+            current_4bei = set(state.track_sequences.get("存4北", []))
+            pending = sum(
+                1
+                for vno, v in vehicle_by_no.items()
+                if vno not in block_set
+                and vno not in current_4bei
+                and v is not None
+                and "存4北" in getattr(v.goal, "allowed_target_tracks", [])
+            )
+            if pending < 3:
+                return True  # not enough vehicles to push CD to position ≥ 4
         return False
     if len(block) <= 10:
         return False

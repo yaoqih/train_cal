@@ -225,7 +225,8 @@ def test_constructive_respects_close_door_four_north_constraint():
     for m in result.plan:
         src = current.track_sequences.get(m.source_track, [])
         current.track_sequences[m.source_track] = src[len(m.vehicle_nos):]
-        current.track_sequences.setdefault(m.target_track, []).extend(m.vehicle_nos)
+        existing = list(current.track_sequences.get(m.target_track, []))
+        current.track_sequences[m.target_track] = list(m.vehicle_nos) + existing
     final_4bei = current.track_sequences.get("存4北", [])
     assert "CD" in final_4bei
     final_seq_pos = final_4bei.index("CD") + 1

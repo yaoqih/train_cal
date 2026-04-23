@@ -174,8 +174,58 @@ def solve_with_simple_astar_result(
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
     elif solver_mode == "real_hook":
-        # Run the standard exact/anytime solver first, then compile to ATTACH/DETACH.
+        # Hook-native search: directly optimize ATTACH/DETACH count.
+        # Phase 1: weighted A* in ATTACH/DETACH space (uses generate_real_hook_moves
+        # and make_state_heuristic_real_hook). Each ATTACH and each DETACH costs 1
+        # hook — the search minimizes the total count natively.
+        # Phase 2: PUT exact + compile as fallback when Phase 1 times out.
         _ts = perf_counter()
+
+        hook_native_result: SolverResult | None = None
+        # Give hook-native search 75% of the budget; reserve 25% for PUT fallback.
+        native_budget_ms: float | None = None
+        if time_budget_ms is not None:
+            native_budget_ms = max(1.0, time_budget_ms * 0.75)
+
+        # Run a short exact pass first, then a greedy pass, within the native budget.
+        native_started = perf_counter()
+        for hook_weight in (1.0, 3.0, 8.0):
+            elapsed_native = (perf_counter() - native_started) * 1000
+            if native_budget_ms is not None and elapsed_native >= native_budget_ms:
+                break
+            remaining_native = (
+                max(1.0, native_budget_ms - elapsed_native)
+                if native_budget_ms is not None
+                else None
+            )
+            try:
+                candidate = _solve_search_result(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                    solver_mode="real_hook",
+                    heuristic_weight=hook_weight,
+                    beam_width=beam_width,
+                    debug_stats=debug_stats,
+                    budget=SearchBudget(
+                        time_budget_ms=remaining_native,
+                        node_budget=node_budget,
+                    ),
+                    enable_depot_late_scheduling=False,
+                )
+            except ValueError:
+                continue
+            if candidate.plan and (
+                hook_native_result is None
+                or len(candidate.plan) < len(hook_native_result.plan)
+            ):
+                hook_native_result = replace(candidate, fallback_stage="real_hook_native")
+            if hook_native_result is not None and hook_weight == 1.0:
+                # Exact solution found — no need for greedy passes.
+                break
+
+        # Phase 2: PUT-solver fallback (compile PUT plan → ATTACH/DETACH).
+        remaining_ms = max(1.0, time_budget_ms - (perf_counter() - _ts) * 1000) if time_budget_ms is not None else None
         put_result = solve_with_simple_astar_result(
             plan_input=plan_input,
             initial_state=initial_state,
@@ -184,7 +234,7 @@ def solve_with_simple_astar_result(
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
             debug_stats=debug_stats,
-            time_budget_ms=time_budget_ms,
+            time_budget_ms=remaining_ms,
             node_budget=node_budget,
             verify=False,
             enable_anytime_fallback=enable_anytime_fallback,
@@ -192,15 +242,28 @@ def solve_with_simple_astar_result(
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         from fzed_shunting.solver.real_hook_compiler import compile_put_to_real_hook
-        real_hook_plan = compile_put_to_real_hook(put_result.plan)
-        result = replace(
+        compiled_plan = compile_put_to_real_hook(put_result.plan)
+        compiled_result = replace(
             put_result,
-            plan=real_hook_plan,
-            fallback_stage="real_hook",
+            plan=compiled_plan,
+            fallback_stage="real_hook_compiled",
             is_proven_optimal=False,
         )
+
+        # Pick whichever gives fewer hooks (native wins ties — it's truly hook-optimal).
+        if (
+            hook_native_result is not None
+            and hook_native_result.plan
+            and (
+                not compiled_result.plan
+                or len(hook_native_result.plan) <= len(compiled_result.plan)
+            )
+        ):
+            result = hook_native_result
+        else:
+            result = compiled_result
+
         phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
-        # Skip PUT-specific post-processing (LNS, depot-late, verify).
         from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
         result = replace(
             result,

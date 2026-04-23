@@ -114,7 +114,7 @@ def main():
         beam_width = 32
         time_budget_ms: float | None = float(timeout_seconds) * 1000.0
     else:
-        solver = st.selectbox("Solver", options=["exact", "weighted", "beam", "lns"], index=0)
+        solver = st.selectbox("Solver", options=["real_hook", "exact", "weighted", "beam", "lns"], index=0)
         heuristic_weight = st.number_input("Heuristic Weight", min_value=1.0, value=1.0, step=0.5)
         beam_width = st.number_input("Beam Width", min_value=1, value=16, step=1)
         time_budget_ms = None
