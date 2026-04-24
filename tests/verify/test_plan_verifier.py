@@ -197,6 +197,58 @@ def test_plan_verifier_requires_work_area_spot_assignment():
     assert report.is_valid is True
 
 
+def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HV_SRC",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": ["HV_SRC"],
+                "pathTracks": ["存5北"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "DETACH",
+                "sourceTrack": "临1",
+                "targetTrack": "机库",
+                "vehicleNos": ["HV_SRC"],
+                "pathTracks": ["临1", "临2", "渡4", "机库"],
+            },
+        ],
+    )
+
+    assert report.is_valid is False
+    assert any("DETACH sourceTrack" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_capacity_overflow():
     master = load_master_data(DATA_DIR)
     payload = {

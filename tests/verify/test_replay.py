@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
@@ -279,3 +281,54 @@ def test_replay_assigns_dispatch_pre_repair_spot():
 
     assert result.final_state.track_sequences["调棚"] == ["C4"]
     assert result.final_state.spot_assignments["C4"] == "调棚:PRE_REPAIR"
+
+
+def test_replay_rejects_detach_source_that_does_not_match_loco_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SRC1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    with pytest.raises(ValueError, match="DETACH sourceTrack"):
+        replay_plan(
+            initial,
+            [
+                {
+                    "hookNo": 1,
+                    "actionType": "ATTACH",
+                    "sourceTrack": "存5北",
+                    "targetTrack": "存5北",
+                    "vehicleNos": ["SRC1"],
+                    "pathTracks": ["存5北"],
+                },
+                {
+                    "hookNo": 2,
+                    "actionType": "DETACH",
+                    "sourceTrack": "临1",
+                    "targetTrack": "机库",
+                    "vehicleNos": ["SRC1"],
+                    "pathTracks": ["临1", "临2", "渡4", "机库"],
+                },
+            ],
+            plan_input=normalized,
+        )

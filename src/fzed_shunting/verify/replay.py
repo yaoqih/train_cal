@@ -65,6 +65,11 @@ def replay_plan(
             state.loco_carry = state.loco_carry + tuple(vehicle_nos)
             state.loco_track_name = source
         elif action_type == "DETACH":
+            source = hook["sourceTrack"]
+            if source != state.loco_track_name:
+                raise ValueError(
+                    f"DETACH sourceTrack {source} does not match loco track {state.loco_track_name}"
+                )
             target = hook["targetTrack"]
             carry_list = list(state.loco_carry)
             if carry_list[: len(vehicle_nos)] != vehicle_nos:

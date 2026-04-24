@@ -204,3 +204,41 @@ PYTHONPATH=src .venv/bin/python scripts/run_external_validation_parallel.py \
   - Build a verifier-guarded local plan compressor for staging-to-staging chains.
   - The compressor should work on complete valid plans, propose local rewrites, replay and verify before accepting, and compare `(hook_count, staging_to_staging_hook_count, max_vehicle_touch_count)`.
   - Avoid more greedy scoring penalties until the compressor provides counterexamples and accepted rewrite patterns.
+
+### 2026-04-25 Continued
+
+- Native hook semantic hardening:
+  - Added a replay/verifier invariant for native `DETACH`: the hook `sourceTrack` must match the current loco track before detaching carried vehicles.
+  - Rationale: an empty loco may move to any source track for `ATTACH`, but a loaded loco cannot detach from a different source than its actual current track. Without this invariant, post-solve compression can create physically discontinuous false-short plans.
+  - Focused verification: `PYTHONPATH=src .venv/bin/pytest -q tests/verify/test_replay.py tests/verify/test_plan_verifier.py tests/verify/test_route_constraints.py tests/solver/test_plan_compressor.py tests/solver/test_astar_solver.py::test_simple_astar_can_clear_interfering_track_via_temporary_track tests/solver/test_depot_late.py` passed with `70 passed`.
+  - Core regression after hardening: `234 passed, 5 skipped`.
+- Wave 4A implemented: verifier-guarded plan compressor.
+  - Delete-window compression removes redundant local windows when the terminal state is unchanged and full verification passes.
+  - Single-source window rebuild replaces a local chain that starts by attaching a source prefix and eventually leaves only those vehicles on final prefixes, preserving source-order detach groups and continuous native hook sources.
+  - Compression runs before depot-late sequencing so hook count remains the primary objective; depot-late remains a secondary reorder.
+  - Compression now runs up to a conservative bounded convergence limit (`max_passes=8`) because truth validation showed many cases exactly hitting the previous 2-pass cap.
+- Wave 4A validation before convergence-limit increase:
+  - Truth artifact: `artifacts/validation_inputs_truth_compressor_wave3/summary.json`.
+  - Truth result: `117/127` solved; failures remained `10 capacity_infeasible`.
+  - Truth hook distribution improved from baseline `min=5, p50=76, p75=122, p90=167, p95=192, max=443` to `min=5, p50=74, p75=110, p90=163, p95=188, max=439`.
+  - Compression accepted `154` rewrites across truth solved cases; `82` solved truth cases shortened.
+  - Positive remained `64/64` solved, but p95 was unstable across runs (`102` parallel, `113` solo versus baseline `86`), while max improved from `150` to `147`. This indicates the next major gain should come from search/constructive stability and staging-chain prevention, not only post-solve compression.
+- Wave 4B in progress:
+  - Bounded convergence compression (`max_passes=8`) is implemented and under full validation as:
+    - `artifacts/validation_inputs_positive_compressor_wave4`
+    - `artifacts/validation_inputs_truth_compressor_wave4`
+  - Decision gate after Wave 4B validation:
+    - Keep convergence compression if truth p75/p90/p95 improves without positive solvability loss.
+    - If positive p95 remains worse, do not add more broad post-processing; implement a lower-layer staging-chain prevention or stable candidate-selection improvement instead.
+- Wave 4C adopted:
+  - Increased verifier-guarded compression convergence to `max_passes=16`.
+  - Focused tests cover redundant-window deletion, single-source rebuilds, repeated rebuild windows beyond the old two-pass cap, convergence over many rebuild windows, and rejection of source-discontinuous candidates.
+  - Core regression after the convergence increase: `PYTHONPATH=src .venv/bin/pytest -q tests/solver/test_plan_compressor.py tests/solver/test_constructive.py tests/solver/test_astar_solver.py tests/solver/test_external_validation_parallel_runs.py tests/solver/test_depot_late.py tests/solver/test_heuristic.py tests/solver/test_move_generator.py tests/solver/test_structural_metrics.py tests/verify/test_plan_verifier.py tests/verify/test_replay.py tests/verify/test_route_constraints.py` passed with `235 passed, 5 skipped`.
+  - Positive validation artifact: `artifacts/validation_inputs_positive_compressor_wave5/summary.json`.
+  - Positive result: `64/64` solved; hook distribution `min=2, p50=13, p75=26, p90=85, p95=86, max=129`; accepted rewrites `45`.
+  - Truth validation artifact: `artifacts/validation_inputs_truth_compressor_wave5/summary.json`.
+  - Truth result: `117/127` solved; failures unchanged at `10`, all previously classified as capacity-infeasible; hook distribution `min=5, p50=60, p75=97, p90=129, p95=149, max=433`; accepted rewrites `645`.
+  - Remaining long tails are not solved by larger local compression windows:
+    - `validation_20260310W.json`: `433` hooks, only `4` accepted rewrites, `staging_hook_count=296`, `staging_to_staging_hook_count=209`, `max_vehicle_touch_count=94`.
+    - `validation_20260127W.json`: `388` hooks, `24` accepted rewrites, `staging_hook_count=48`, `staging_to_staging_hook_count=21`, `max_vehicle_touch_count=154`.
+  - Next algorithm layer should act before plan construction commits to poor temporary tracks: add route/contention-aware staging target ordering as a soft tiebreaker, not a hard prune, then compare against Wave 4C.

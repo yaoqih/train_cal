@@ -477,6 +477,14 @@ def solve_with_simple_astar_result(
     # _score_move prevents partial plans upstream, making post-hoc rescue
     # redundant.
 
+    result = _compress_complete_plan(
+        result,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+        debug_stats=debug_stats,
+    )
+
     # Depot-late post-processing: only when the flag is on and we have a plan.
     # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
     # toward the tail, preserving replay-equivalent final state. On failure
@@ -561,6 +569,41 @@ def solve_with_simple_astar_result(
     )
     emit_telemetry(telemetry)
     return replace(result, telemetry=telemetry)
+
+
+def _compress_complete_plan(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    debug_stats: dict[str, Any] | None,
+) -> SolverResult:
+    stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
+    if not result.is_complete or not result.plan or master is None:
+        stats["plan_compression"] = {
+            "accepted_rewrite_count": 0,
+            "before_hook_count": len(result.plan),
+            "after_hook_count": len(result.plan),
+        }
+        return replace(result, debug_stats=stats)
+
+    from fzed_shunting.solver.plan_compressor import compress_plan
+
+    compressed = compress_plan(
+        plan_input,
+        initial_state,
+        result.plan,
+        master=master,
+    )
+    stats["plan_compression"] = {
+        "accepted_rewrite_count": compressed.accepted_rewrite_count,
+        "before_hook_count": len(result.plan),
+        "after_hook_count": len(compressed.compressed_plan),
+    }
+    if len(compressed.compressed_plan) < len(result.plan):
+        return replace(result, plan=compressed.compressed_plan, debug_stats=stats)
+    return replace(result, debug_stats=stats)
 
 
 def _attach_structural_debug_stats(
