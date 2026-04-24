@@ -104,6 +104,8 @@ def spot_candidates_for_vehicle(
 ) -> list[str]:
     if vehicle.need_weigh and target_track == "机库":
         return list(WORK_AREA_SPOTS["机库:WEIGH"])
+    if vehicle.goal.target_mode == "TRACK" and vehicle.goal.target_track == target_track and is_depot_inner_track(target_track):
+        return list_track_spots(target_track, yard_mode)
     if vehicle.goal.target_mode == "SPOT":
         work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
         if work_area_spot is not None:
@@ -155,7 +157,11 @@ def _random_depot_spot_candidates(
     if not is_depot_inner_track(target_track):
         return []
     available_spots = list_track_spots(target_track, yard_mode)
-    if vehicle.vehicle_length >= 17.6 and target_track not in LONG_DEPOT_TRACKS:
+    if vehicle.goal.preferred_target_tracks or vehicle.goal.fallback_target_tracks:
+        allowed_tracks = set(vehicle.goal.preferred_target_tracks) | set(vehicle.goal.fallback_target_tracks)
+        if target_track not in allowed_tracks:
+            return []
+    elif vehicle.vehicle_length >= 17.6 and target_track not in LONG_DEPOT_TRACKS:
         return []
     return available_spots
 
@@ -172,6 +178,11 @@ def _requires_spot_assignment(vehicle: NormalizedVehicle, target_track: str) -> 
     """
     if vehicle.need_weigh and target_track == "机库":
         return True
+    if vehicle.goal.target_mode == "TRACK" and is_depot_inner_track(target_track):
+        # Explicit TRACK goals on depot inner lines still consume physical
+        # slots; otherwise random-depot preferred/fallback feasibility will
+        # incorrectly treat occupied tracks as having spare capacity.
+        return vehicle.goal.target_track == target_track
     if vehicle.goal.target_mode == "SPOT":
         # Only require spot at the declared target track. In transit through
         # staging/other tracks, the vehicle carries no spot.

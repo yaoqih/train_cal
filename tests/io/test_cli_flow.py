@@ -11,6 +11,33 @@ from fzed_shunting.cli import app
 runner = CliRunner()
 
 
+def _native_direct_plan(
+    *,
+    source_track: str,
+    target_track: str,
+    vehicle_nos: list[str],
+    detach_path_tracks: list[str],
+) -> list[dict]:
+    return [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": source_track,
+            "targetTrack": source_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": [source_track],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": source_track,
+            "targetTrack": target_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": detach_path_tracks,
+        },
+    ]
+
+
 def test_generate_and_solve_cli_flow(tmp_path: Path):
     scenario_path = tmp_path / "scenario.json"
     result = runner.invoke(
@@ -221,16 +248,12 @@ def test_verify_cli_returns_hook_reports(tmp_path: Path):
     plan_path = tmp_path / "plan_verify.json"
     plan_path.write_text(
         json.dumps(
-            [
-                {
-                    "hookNo": 1,
-                    "actionType": "PUT",
-                    "sourceTrack": "存5北",
-                    "targetTrack": "修1库内",
-                    "vehicleNos": ["C1"],
-                    "pathTracks": ["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
-                }
-            ],
+            _native_direct_plan(
+                source_track="存5北",
+                target_track="修1库内",
+                vehicle_nos=["C1"],
+                detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+            ),
             ensure_ascii=False,
         )
     )
@@ -613,5 +636,5 @@ def test_solve_workflow_cli_supports_multi_vehicle_workflow(tmp_path: Path):
     assert payload["stageCount"] == 3
     assert payload["stages"][0]["finalSpotAssignments"] == {"CLIW2A": "调棚:1"}
     assert payload["stages"][1]["finalSpotAssignments"] == {"CLIW2A": "101"}
-    assert payload["stages"][2]["hookCount"] == 2
+    assert payload["stages"][2]["hookCount"] == 3
     assert payload["stages"][2]["finalTracks"] == ["存4北"]

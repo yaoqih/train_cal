@@ -8,7 +8,7 @@ class HookAction(BaseModel):
     target_track: str
     vehicle_nos: list[str] = Field(default_factory=list)
     path_tracks: list[str] = Field(default_factory=list)
-    action_type: str = "PUT"
+    action_type: str
 
     def __lt__(self, other: object) -> bool:
         if not isinstance(other, HookAction):

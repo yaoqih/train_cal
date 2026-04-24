@@ -13,6 +13,8 @@ class GoalSpec(BaseModel):
     target_mode: str
     target_track: str
     allowed_target_tracks: list[str] = Field(default_factory=list)
+    preferred_target_tracks: list[str] = Field(default_factory=list)
+    fallback_target_tracks: list[str] = Field(default_factory=list)
     target_area_code: str | None = None
     target_spot_code: str | None = None
 
@@ -89,6 +91,10 @@ AREA_ALLOWED_TRACKS = {
     "大库外:RANDOM": ["修1库外", "修2库外", "修3库外", "修4库外"],
 }
 
+DEPOT_INNER_PREFERRED_TRACKS_SHORT = ["修1库内", "修2库内"]
+DEPOT_INNER_FALLBACK_TRACKS_SHORT = ["修3库内", "修4库内"]
+DEPOT_INNER_PREFERRED_TRACKS_LONG = ["修3库内", "修4库内"]
+
 VALID_IS_SPOTTING_LITERALS = {"", "否", "是", "迎检"}
 WORK_SPOT_BY_TARGET = {
     "调棚": ("调棚:WORK", {"1", "2", "3", "4"}),
@@ -97,6 +103,12 @@ WORK_SPOT_BY_TARGET = {
     "抛": ("抛:WORK", {"1", "2"}),
 }
 FORBIDDEN_FINAL_AREA_CODES = {"机库:WEIGH"}
+
+
+def _random_depot_track_preferences(vehicle_length: float) -> tuple[list[str], list[str]]:
+    if vehicle_length >= 17.6:
+        return (list(DEPOT_INNER_PREFERRED_TRACKS_LONG), [])
+    return (list(DEPOT_INNER_PREFERRED_TRACKS_SHORT), list(DEPOT_INNER_FALLBACK_TRACKS_SHORT))
 
 
 def normalize_plan_input(
@@ -224,11 +236,19 @@ def _normalize_goal(
     if spotting in ("", "否"):
         if target_track in WORK_AREA_DEFAULTS:
             area_code = WORK_AREA_DEFAULTS[target_track]
+            preferred_target_tracks: list[str] = []
+            fallback_target_tracks: list[str] = []
+            if area_code == "大库:RANDOM":
+                preferred_target_tracks, fallback_target_tracks = _random_depot_track_preferences(
+                    float(raw["vehicleLength"])
+                )
             return (
                 GoalSpec(
                     target_mode="AREA",
                     target_track=_area_track(area_code, target_track),
                     allowed_target_tracks=AREA_ALLOWED_TRACKS[area_code],
+                    preferred_target_tracks=preferred_target_tracks or list(AREA_ALLOWED_TRACKS[area_code]),
+                    fallback_target_tracks=fallback_target_tracks,
                     target_area_code=area_code,
                 ),
                 vehicle_yard_mode,
@@ -270,11 +290,16 @@ def _normalize_goal(
     if spotting == "迎检":
         if target_track != "大库":
             raise InputValidationError("迎检 only allowed for 大库")
+        preferred_target_tracks, fallback_target_tracks = _random_depot_track_preferences(
+            float(raw["vehicleLength"])
+        )
         return (
             GoalSpec(
                 target_mode="AREA",
                 target_track="修1库内",
                 allowed_target_tracks=AREA_ALLOWED_TRACKS["大库:RANDOM"],
+                preferred_target_tracks=preferred_target_tracks,
+                fallback_target_tracks=fallback_target_tracks,
                 target_area_code="大库:RANDOM",
             ),
             "INSPECTION",
@@ -360,6 +385,16 @@ def _normalize_explicit_goal(
                 target_mode="AREA",
                 target_track=target_track,
                 allowed_target_tracks=list(allowed_tracks),
+                preferred_target_tracks=(
+                    _random_depot_track_preferences(float(raw["vehicleLength"]))[0]
+                    if explicit_area_code == "大库:RANDOM"
+                    else list(allowed_tracks)
+                ),
+                fallback_target_tracks=(
+                    _random_depot_track_preferences(float(raw["vehicleLength"]))[1]
+                    if explicit_area_code == "大库:RANDOM"
+                    else []
+                ),
                 target_area_code=explicit_area_code,
                 target_spot_code=explicit_spot_code,
             ),

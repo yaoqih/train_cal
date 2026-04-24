@@ -7,7 +7,7 @@ A* / anytime-fallback optimisation layers.
 The algorithm is a greedy event-driven loop:
 
 1. If the current state already satisfies ``_is_goal``, return the plan.
-2. Ask ``move_generator.generate_goal_moves`` for all legal candidates.
+2. Ask ``move_generator.generate_real_hook_moves`` for all legal candidates.
 3. Score each candidate with a tuple-based priority and pick the minimum.
 4. Apply the move, repeat until goal or the budget is exhausted.
 
@@ -34,9 +34,12 @@ from typing import Any
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.depot_late import DEPOT_INNER_TRACKS
-from fzed_shunting.solver.heuristic import make_state_heuristic
-from fzed_shunting.solver.move_generator import generate_goal_moves
+from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
+from fzed_shunting.solver.move_generator import generate_real_hook_moves
+from fzed_shunting.solver.purity import compute_state_purity
+from fzed_shunting.solver.state import _state_key
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -76,6 +79,7 @@ def solve_constructive(
     max_backtracks: int = 5,
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
+    strict_staging_regrab: bool = True,
 ) -> ConstructiveResult:
     """Priority-rule dispatcher with bounded backtracking.
 
@@ -114,6 +118,7 @@ def solve_constructive(
             max_iterations=max_iterations,
             stuck_threshold=stuck_threshold,
             time_budget_ms=remaining_budget,
+            strict_staging_regrab=strict_staging_regrab,
         )
 
         if best_attempt is None or _is_better_attempt(result, best_attempt):
@@ -211,6 +216,7 @@ def _greedy_forward(
     max_iterations: int,
     stuck_threshold: int,
     time_budget_ms: float | None,
+    strict_staging_regrab: bool,
 ) -> ConstructiveResult:
     """Single greedy forward sweep, optionally biased by ``alternatives``.
 
@@ -227,26 +233,59 @@ def _greedy_forward(
         vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles
     }
     goal_tracks_needed = _collect_goal_tracks(plan_input)
-    state_heuristic = make_state_heuristic(plan_input)
+    state_heuristic = make_state_heuristic_real_hook(plan_input)
 
     state = initial_state
     plan: list[HookAction] = []
     best_heuristic = state_heuristic(state)
+    last_safe_plan: list[HookAction] = []
+    last_safe_iterations = 0
+    last_safe_heuristic = best_heuristic
     stale_rounds = 0
     purposeful_stale = 0
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] = deque(maxlen=_INVERSE_GUARD_WINDOW)
+    recent_state_keys: deque[tuple] = deque(maxlen=64)
+    recent_state_key_set: set[tuple] = set()
+    initial_key = _state_key(state, plan_input)
+    recent_state_keys.append(initial_key)
+    recent_state_key_set.add(initial_key)
     stats: dict[str, int] = {
-        "tier0_close_door_final": 0,
-        "tier1_weigh_to_jiku": 0,
-        "tier2_blocker_clearance": 0,
-        "tier3_goal_satisfaction": 0,
-        "tier4_dig_out_buried_seeker": 0,
-        "tier5_lateral": 0,
-        "tier6_staging": 0,
+        "tier0_goal_detach": 0,
+        "tier1_attach_progress": 0,
+        "tier2_clearance": 0,
+        "tier3_productive_detach": 0,
+        "tier4_staging_detach": 0,
+        "tier5_setup_attach": 0,
     }
 
     stuck_reason: str | None = None
     final_heuristic: float = best_heuristic
+
+    def _build_partial_result(
+        *,
+        iterations: int,
+        stuck_reason: str,
+        final_heuristic: float,
+    ) -> ConstructiveResult:
+        if not state.loco_carry:
+            return _build_result(
+                plan=plan,
+                reached_goal=False,
+                iterations=iterations,
+                started_at=started_at,
+                stats=stats,
+                stuck_reason=stuck_reason,
+                final_heuristic=final_heuristic,
+            )
+        return _build_result(
+            plan=last_safe_plan,
+            reached_goal=False,
+            iterations=last_safe_iterations,
+            started_at=started_at,
+            stats=stats,
+            stuck_reason=f"{stuck_reason}; rewound to empty-carry checkpoint",
+            final_heuristic=last_safe_heuristic,
+        )
 
     for iteration in range(max_iterations):
         if _is_goal(plan_input, state):
@@ -260,29 +299,21 @@ def _greedy_forward(
             )
         if time_budget_ms is not None:
             if (perf_counter() - started_at) * 1000 > time_budget_ms:
-                return _build_result(
-                    plan=plan,
-                    reached_goal=False,
+                return _build_partial_result(
                     iterations=iteration,
-                    started_at=started_at,
-                    stats=stats,
                     stuck_reason="time budget exhausted",
                     final_heuristic=state_heuristic(state),
                 )
 
-        moves = generate_goal_moves(
+        moves = generate_real_hook_moves(
             plan_input,
             state,
             master=master,
             route_oracle=route_oracle,
         )
         if not moves:
-            return _build_result(
-                plan=plan,
-                reached_goal=False,
+            return _build_partial_result(
                 iterations=iteration,
-                started_at=started_at,
-                stats=stats,
                 stuck_reason="no legal moves",
                 final_heuristic=state_heuristic(state),
             )
@@ -294,19 +325,39 @@ def _greedy_forward(
             track: sum(
                 1 for vn in seq
                 if vn in vehicle_by_no
-                and track in vehicle_by_no[vn].goal.allowed_target_tracks
+                and goal_is_satisfied(
+                    vehicle_by_no[vn],
+                    track_name=track,
+                    state=state,
+                    plan_input=plan_input,
+                )
             )
             for track, seq in state.track_sequences.items()
             if seq
         }
         scored: list[tuple[tuple, int, HookAction, bool]] = []
+        current_heuristic = state_heuristic(state)
         for move in moves:
-            score, tier = _score_move(
+            next_state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+            next_heuristic = state_heuristic(next_state)
+            score, tier = _score_native_move(
                 move=move,
                 state=state,
+                next_state=next_state,
+                plan_input=plan_input,
+                current_heuristic=current_heuristic,
+                next_heuristic=next_heuristic,
                 vehicle_by_no=vehicle_by_no,
                 goal_tracks_needed=goal_tracks_needed,
                 satisfied_by_track=satisfied_by_track,
+                recent_moves=recent_moves,
+                repeats_recent_state=_state_key(next_state, plan_input) in recent_state_key_set,
+                strict_staging_regrab=strict_staging_regrab,
             )
             is_inverse = _is_inverse_of_recent(move, recent_moves)
             scored.append((score, tier, move, is_inverse))
@@ -319,12 +370,8 @@ def _greedy_forward(
         step_idx = len(plan)
         alt_idx = alternatives.get(step_idx, 0)
         if alt_idx >= len(pool):
-            return _build_result(
-                plan=plan,
-                reached_goal=False,
+            return _build_partial_result(
                 iterations=iteration,
-                started_at=started_at,
-                stats=stats,
                 stuck_reason=f"alternative exhausted at step {step_idx}",
                 final_heuristic=state_heuristic(state),
             )
@@ -344,8 +391,18 @@ def _greedy_forward(
         recent_moves.append(
             (chosen_move.source_track, chosen_move.target_track, tuple(chosen_move.vehicle_nos))
         )
+        chosen_state_key = _state_key(state, plan_input)
+        if len(recent_state_keys) == recent_state_keys.maxlen:
+            evicted_key = recent_state_keys.popleft()
+            recent_state_key_set.discard(evicted_key)
+        recent_state_keys.append(chosen_state_key)
+        recent_state_key_set.add(chosen_state_key)
         current_heuristic = state_heuristic(state)
         final_heuristic = current_heuristic
+        if not state.loco_carry:
+            last_safe_plan = list(plan)
+            last_safe_iterations = iteration + 1
+            last_safe_heuristic = current_heuristic
         if current_heuristic < best_heuristic:
             best_heuristic = current_heuristic
             stale_rounds = 0
@@ -359,45 +416,33 @@ def _greedy_forward(
         else:
             stale_rounds += 1
         if stale_rounds >= stuck_threshold:
-            return _build_result(
-                plan=plan,
-                reached_goal=False,
+            return _build_partial_result(
                 iterations=iteration + 1,
-                started_at=started_at,
-                stats=stats,
                 stuck_reason=f"heuristic stale for {stuck_threshold} regressive rounds",
                 final_heuristic=final_heuristic,
             )
         if purposeful_stale >= _PURPOSEFUL_STUCK_THRESHOLD:
-            return _build_result(
-                plan=plan,
-                reached_goal=False,
+            return _build_partial_result(
                 iterations=iteration + 1,
-                started_at=started_at,
-                stats=stats,
                 stuck_reason=f"heuristic stale for {_PURPOSEFUL_STUCK_THRESHOLD} purposeful rounds",
                 final_heuristic=final_heuristic,
             )
 
-    return _build_result(
-        plan=plan,
-        reached_goal=False,
+    return _build_partial_result(
         iterations=max_iterations,
-        started_at=started_at,
-        stats=stats,
         stuck_reason="max iterations reached",
         final_heuristic=final_heuristic,
     )
 
 
 _TIER_NAMES = {
-    0: "close_door_final",
-    1: "weigh_to_jiku",
-    2: "blocker_clearance",
-    3: "goal_satisfaction",
-    4: "dig_out_buried_seeker",
-    5: "lateral",
-    6: "staging",
+    0: "goal_detach",
+    1: "attach_progress",
+    2: "clearance",
+    3: "productive_detach",
+    4: "staging_detach",
+    5: "setup_attach",
+    6: "reserve",
 }
 
 
@@ -426,7 +471,7 @@ def _build_result(
 def _collect_goal_tracks(plan_input: NormalizedPlanInput) -> set[str]:
     tracks: set[str] = set()
     for vehicle in plan_input.vehicles:
-        tracks.update(vehicle.goal.allowed_target_tracks)
+        tracks.update(vehicle.goal.preferred_target_tracks or vehicle.goal.allowed_target_tracks)
     return tracks
 
 
@@ -489,6 +534,7 @@ def _score_move(
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
+    plan_input: NormalizedPlanInput | None = None,
     satisfied_by_track: dict[str, int] | None = None,
 ) -> tuple[tuple, int]:
     block_vehicles = [vehicle_by_no[vn] for vn in move.vehicle_nos]
@@ -500,8 +546,8 @@ def _score_move(
     # 0 if it is a pure staging / lateral motion,
     # <0 if it evicts already-placed vehicles off their target tracks.
     delta = sum(
-        int(target_track in v.goal.allowed_target_tracks)
-        - int(source_track in v.goal.allowed_target_tracks)
+        int(target_track in (v.goal.preferred_target_tracks or v.goal.allowed_target_tracks))
+        - int(source_track in (v.goal.preferred_target_tracks or v.goal.allowed_target_tracks))
         for v in block_vehicles
     )
 
@@ -524,6 +570,7 @@ def _score_move(
             state=state,
             vehicle_by_no=vehicle_by_no,
             goal_tracks_needed=goal_tracks_needed,
+            plan_input=plan_input,
         )
     )
     exposes_buried_seeker = (
@@ -532,6 +579,7 @@ def _score_move(
             move=move,
             state=state,
             vehicle_by_no=vehicle_by_no,
+            plan_input=plan_input,
         )
     )
     is_staging = target_track in STAGING_TRACKS
@@ -586,7 +634,7 @@ def _score_move(
     # block moves that merely inch other vehicles forward with bulk-delta
     # wins — otherwise a large return block can outrank a single SPOT finish.
     is_spot_or_area_finalization = delta > 0 and any(
-        target_track in v.goal.allowed_target_tracks
+        target_track in (v.goal.preferred_target_tracks or v.goal.allowed_target_tracks)
         and (v.goal.target_mode == "SPOT" or v.goal.target_area_code is not None)
         for v in block_vehicles
     )
@@ -602,6 +650,235 @@ def _score_move(
         target_track,
     )
     return score, min(tier, 5)
+
+
+def _score_native_move(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    next_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    current_heuristic: int,
+    next_heuristic: int,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    goal_tracks_needed: set[str],
+    satisfied_by_track: dict[str, int] | None = None,
+    recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
+    repeats_recent_state: bool = False,
+    strict_staging_regrab: bool = True,
+) -> tuple[tuple, int]:
+    improves_heuristic = next_heuristic < current_heuristic
+    future_detach_groups = (
+        _count_effective_target_groups(
+            move.vehicle_nos,
+            state=state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        if move.action_type == "ATTACH"
+        else 0
+    )
+    is_goal_detach = _native_detach_hits_effective_goal(
+        move=move,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
+    clears_blocker = (
+        move.action_type == "ATTACH"
+        and _move_exposes_buried_goal_seeker(
+            move=move,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            plan_input=plan_input,
+        )
+    ) or (
+        move.action_type == "DETACH"
+        and _move_clears_goal_blocker(
+            move=move,
+            state=next_state,
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks_needed,
+            plan_input=plan_input,
+        )
+    )
+    exposes_committed_carry = (
+        move.action_type == "DETACH"
+        and _move_exposes_committed_carry_vehicle(
+            move=move,
+            state=state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+    )
+    is_regrabbing_unfinished_staging = (
+        move.action_type == "ATTACH"
+        and move.source_track in STAGING_TRACKS
+        and _was_recently_staged(move, recent_moves)
+        and (
+            strict_staging_regrab
+            or not _attach_has_non_staging_goal(move, vehicle_by_no)
+        )
+        and any(
+            not goal_is_satisfied(
+                vehicle_by_no[vehicle_no],
+                track_name=move.source_track,
+                state=state,
+                plan_input=plan_input,
+            )
+            for vehicle_no in move.vehicle_nos
+            if vehicle_no in vehicle_by_no
+        )
+    )
+    is_staging_detach = move.action_type == "DETACH" and not is_goal_detach
+    preferred_violation_delta = 0
+    if move.action_type == "DETACH":
+        for vehicle_no in move.vehicle_nos:
+            vehicle = vehicle_by_no.get(vehicle_no)
+            if vehicle is None:
+                continue
+            if move.target_track in vehicle.goal.preferred_target_tracks:
+                preferred_violation_delta -= 1
+            elif move.target_track in vehicle.goal.fallback_target_tracks:
+                preferred_violation_delta += 1
+
+    if move.action_type == "DETACH" and is_goal_detach and preferred_violation_delta < 0:
+        tier = 0
+    elif move.action_type == "DETACH" and is_goal_detach:
+        tier = 1
+    elif exposes_committed_carry:
+        tier = 2
+    elif (
+        move.action_type == "ATTACH"
+        and improves_heuristic
+        and not is_regrabbing_unfinished_staging
+    ):
+        tier = 2
+    elif clears_blocker:
+        tier = 3
+    elif move.action_type == "DETACH" and improves_heuristic:
+        tier = 4
+    elif is_staging_detach:
+        tier = 5
+    else:
+        tier = 6
+
+    burial_depth = _move_burial_depth(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        satisfied_by_track=satisfied_by_track,
+    )
+    next_purity = compute_state_purity(
+        plan_input,
+        next_state,
+    )
+    if is_regrabbing_unfinished_staging and tier < 5:
+        tier = 5
+
+    score = (
+        tier,
+        1 if repeats_recent_state else 0,
+        1 if is_regrabbing_unfinished_staging else 0,
+        0 if preferred_violation_delta < 0 else 1 if preferred_violation_delta == 0 else 2,
+        future_detach_groups,
+        next_heuristic,
+        next_purity.preferred_violation_count,
+        next_purity.staging_pollution_count,
+        next_purity.unfinished_count,
+        0 if move.action_type == "DETACH" else 1,
+        burial_depth,
+        -len(move.vehicle_nos),
+        len(move.path_tracks),
+        move.source_track,
+        move.target_track,
+    )
+    return score, tier
+
+
+def _attach_has_non_staging_goal(
+    move: HookAction,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    for vehicle_no in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            continue
+        if any(track not in STAGING_TRACKS for track in vehicle.goal.allowed_target_tracks):
+            return True
+    return False
+
+
+def _was_recently_staged(
+    move: HookAction,
+    recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None,
+) -> bool:
+    if not recent_moves:
+        return False
+    move_vehicle_set = set(move.vehicle_nos)
+    for _prev_source, prev_target, prev_vehicles in recent_moves:
+        if prev_target != move.source_track:
+            continue
+        if move_vehicle_set & set(prev_vehicles):
+            return True
+    return False
+
+
+def _count_effective_target_groups(
+    vehicle_nos: list[str],
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    if not vehicle_nos:
+        return 0
+    groups = 0
+    shared_targets: set[str] = set()
+    for vehicle_no in vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            groups += 1
+            shared_targets = set()
+            continue
+        effective_targets = set(goal_effective_allowed_tracks(vehicle, state=state, plan_input=plan_input))
+        if not effective_targets:
+            groups += 1
+            shared_targets = set()
+            continue
+        if not shared_targets:
+            groups += 1
+            shared_targets = effective_targets
+            continue
+        next_shared_targets = shared_targets & effective_targets
+        if next_shared_targets:
+            shared_targets = next_shared_targets
+            continue
+        groups += 1
+        shared_targets = effective_targets
+    return groups
+
+
+def _native_detach_hits_effective_goal(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if move.action_type != "DETACH":
+        return False
+    for vehicle_no in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return False
+        if vehicle.need_weigh and vehicle_no not in state.weighed_vehicle_nos:
+            effective_targets = {"机库"}
+        else:
+            effective_targets = set(goal_effective_allowed_tracks(vehicle, state=state, plan_input=plan_input))
+        if move.target_track not in effective_targets:
+            return False
+    return True
 
 
 def _move_burial_depth(
@@ -649,6 +926,7 @@ def _move_clears_goal_blocker(
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_tracks_needed: set[str],
+    plan_input: NormalizedPlanInput | None = None,
 ) -> bool:
     source_track = move.source_track
     if source_track not in goal_tracks_needed:
@@ -665,7 +943,16 @@ def _move_clears_goal_blocker(
         vehicle = vehicle_by_no.get(vn)
         if vehicle is None:
             continue
-        if source_track in vehicle.goal.allowed_target_tracks:
+        if plan_input is None:
+            if source_track in vehicle.goal.allowed_target_tracks:
+                return True
+            continue
+        if goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=state,
+            plan_input=plan_input,
+        ):
             return True
     return False
 
@@ -674,6 +961,7 @@ def _move_exposes_buried_goal_seeker(
     move: HookAction,
     state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
+    plan_input: NormalizedPlanInput | None = None,
 ) -> bool:
     """True when the north-end block move reveals a buried vehicle whose goal
     cannot be satisfied while it remains at ``source_track`` — i.e. purposeful
@@ -701,11 +989,63 @@ def _move_exposes_buried_goal_seeker(
         vehicle = vehicle_by_no.get(vn)
         if vehicle is None:
             continue
-        if source_track not in vehicle.goal.allowed_target_tracks:
-            return True
-        if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
+        if plan_input is None:
+            if source_track not in vehicle.goal.allowed_target_tracks:
+                return True
+            if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
+                return True
+            continue
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=state,
+            plan_input=plan_input,
+        ):
             return True
     return False
+
+
+def _move_exposes_committed_carry_vehicle(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if move.action_type != "DETACH":
+        return False
+    carry = list(state.loco_carry)
+    if not carry:
+        return False
+    prefix_size = len(move.vehicle_nos)
+    if carry[:prefix_size] != move.vehicle_nos:
+        return False
+
+    first_committed_index: int | None = None
+    for index, vehicle_no in enumerate(carry):
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            continue
+        if _is_critical_carry_vehicle(vehicle, state=state, plan_input=plan_input):
+            first_committed_index = index
+            break
+
+    return first_committed_index is not None and 0 < first_committed_index and prefix_size <= first_committed_index
+
+
+def _is_critical_carry_vehicle(
+    vehicle: NormalizedVehicle,
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> bool:
+    if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
+        return True
+    if vehicle.goal.target_mode == "SPOT":
+        return True
+    if vehicle.goal.target_area_code not in {None, "大库:RANDOM", "大库外:RANDOM"}:
+        return True
+    return bool(vehicle.goal.preferred_target_tracks and not vehicle.goal.fallback_target_tracks)
 
 
 def _move_displaces_satisfied_vehicle(

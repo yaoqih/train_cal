@@ -50,40 +50,18 @@ def replay_plan(
         else {}
     )
     for hook in hook_plan:
-        action_type = hook.get("actionType", "PUT")
+        action_type = hook.get("actionType")
+        if not action_type:
+            raise ValueError("hook actionType is required")
         vehicle_nos = hook["vehicleNos"]
-        if action_type == "PUT":
+        if action_type == "ATTACH":
             source = hook["sourceTrack"]
-            target = hook["targetTrack"]
             source_seq = state.track_sequences.setdefault(source, [])
             if source_seq[: len(vehicle_nos)] != vehicle_nos:
                 raise ValueError("Vehicle block is not at the north-end prefix of source track")
             del source_seq[: len(vehicle_nos)]
             for vehicle_no in vehicle_nos:
                 state.spot_assignments.pop(vehicle_no, None)
-            state.track_sequences[target] = list(vehicle_nos) + list(state.track_sequences.get(target, []))
-            if plan_input is not None:
-                block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in vehicle_nos]
-                new_spot_assignments = allocate_spots_for_block(
-                    vehicles=block_vehicles,
-                    target_track=target,
-                    yard_mode=plan_input.yard_mode,
-                    occupied_spot_assignments=state.spot_assignments,
-                )
-                if new_spot_assignments is None:
-                    raise ValueError(
-                        f"No available depot spot for hook to {target}: {vehicle_nos}"
-                    )
-                state.spot_assignments.update(new_spot_assignments)
-            state.loco_track_name = target
-            if target == "机库":
-                state.weighed_vehicle_nos.update(vehicle_nos)
-        elif action_type == "ATTACH":
-            source = hook["sourceTrack"]
-            source_seq = state.track_sequences.setdefault(source, [])
-            if source_seq[: len(vehicle_nos)] != vehicle_nos:
-                raise ValueError("Vehicle block is not at the north-end prefix of source track")
-            del source_seq[: len(vehicle_nos)]
             state.loco_carry = state.loco_carry + tuple(vehicle_nos)
             state.loco_track_name = source
         elif action_type == "DETACH":
@@ -112,6 +90,6 @@ def replay_plan(
             if target == "机库":
                 state.weighed_vehicle_nos.update(vehicle_nos)
         else:
-            raise ValueError(f"Unsupported actionType: {action_type}")
+            raise ValueError(f"Unsupported native hook actionType: {action_type}")
         snapshots.append(ReplayState.model_validate(deepcopy(state.model_dump())))
     return ReplayResult(snapshots=snapshots, final_state=state)

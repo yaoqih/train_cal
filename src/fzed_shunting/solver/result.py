@@ -38,9 +38,13 @@ class SolverTelemetry:
     total_ms: float = 0.0
 
     # Outcome
+    is_complete: bool = False
     plan_hook_count: int = 0
     fallback_stage: str | None = None
     is_valid: bool | None = None
+    partial_hook_count: int = 0
+    partial_fallback_stage: str | None = None
+    partial_is_valid: bool | None = None
     is_proven_optimal: bool = False
 
     # Solver budget
@@ -53,15 +57,23 @@ class SolverResult:
     """Outcome of a solver invocation.
 
     Attributes:
-        plan: ordered list of hooks. Empty when no plan was produced.
+        plan: ordered list of hooks for a complete deliverable solution.
+            A complete zero-hook solution is represented as ``is_complete=True``
+            and ``plan=[]``.
+        is_complete: True only when ``plan`` is a complete deliverable
+            solution. False means the solve did not finish.
+        partial_plan: best-effort artifact for debugging/analysis when the
+            solver failed to finish. Never treated as a solved result.
         expanded_nodes / generated_nodes / closed_nodes: search telemetry.
         elapsed_ms: wall-clock time spent producing this result.
         is_proven_optimal: True only when exact search ran to completion.
         fallback_stage: which anytime stage produced the final plan
             (``"exact" | "weighted" | "beam" | "weighted_greedy" |
             "beam_greedy_128" | "beam_greedy_256" | "weighted_very_greedy" |
-            "constructive" | "constructive_partial"``).
-        verification_report: populated after _attach_verification.
+            "constructive" | "constructive_warm_start"``).
+        partial_fallback_stage: which stage produced ``partial_plan``.
+        verification_report: verifier result for the complete plan.
+        partial_verification_report: verifier result for ``partial_plan``.
         debug_stats: optional telemetry bag.
         telemetry: structured per-phase metrics for production observability.
         depot_earliness / depot_hook_count: populated for observability when enable_depot_late_scheduling is available; may be None.
@@ -72,9 +84,13 @@ class SolverResult:
     generated_nodes: int
     closed_nodes: int
     elapsed_ms: float
+    is_complete: bool = False
     is_proven_optimal: bool = False
     fallback_stage: str | None = None
+    partial_plan: list[HookAction] = field(default_factory=list)
+    partial_fallback_stage: str | None = None
     verification_report: Any | None = None
+    partial_verification_report: Any | None = None
     debug_stats: dict[str, Any] | None = None
     telemetry: SolverTelemetry | None = None
     depot_earliness: int | None = None
@@ -84,8 +100,8 @@ class SolverResult:
 class PlanVerificationError(Exception):
     """Raised when verify=True and the produced plan fails verifier checks.
 
-    Partial plans flagged as best-effort (``fallback_stage="constructive_partial"``)
-    never raise this; callers inspect ``SolverResult.verification_report.is_valid``.
+    Partial artifacts never raise this; callers inspect
+    ``SolverResult.partial_verification_report``.
     """
 
     def __init__(self, report: Any) -> None:

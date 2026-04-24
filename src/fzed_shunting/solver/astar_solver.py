@@ -13,9 +13,11 @@ from fzed_shunting.solver.anytime import (
 )
 from fzed_shunting.solver.budget import SearchBudget
 from fzed_shunting.solver.lns import (
+    _build_repair_plan_input,
     _improve_incumbent_result,
     _solve_with_lns_result,
 )
+from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.result import (
     PlanVerificationError,
     SolverResult,
@@ -46,6 +48,14 @@ from fzed_shunting.verify.replay import ReplayState
 
 BEAM_POST_REPAIR_PASSES = 1
 BEAM_POST_REPAIR_MAX_ROUNDS = 1
+LOCALIZED_RESUME_MAX_UNFINISHED = 16
+PARTIAL_RESUME_MAX_CHECKPOINTS = 6
+BEAM_COMPLETE_SEED_MIN_BUDGET_RATIO = 0.20
+BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS = 100
+RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS = 8_000.0
+LOCALIZED_RESUME_BUDGET_RATIO = 0.50
+LOCALIZED_RESUME_MIN_FULL_BEAM_MS = 500.0
+RELAXED_RESCUE_MAX_FINAL_HEURISTIC = 4
 
 
 def solve_with_simple_astar(
@@ -95,6 +105,7 @@ def solve_with_simple_astar_result(
     enable_constructive_seed: bool = True,
     enable_depot_late_scheduling: bool = True,
 ) -> SolverResult:
+    solver_mode = _normalize_solver_mode(solver_mode)
     _validate_solver_options(
         solver_mode=solver_mode,
         heuristic_weight=heuristic_weight,
@@ -111,6 +122,11 @@ def solve_with_simple_astar_result(
         "lns_ms": 0.0,
         "verify_ms": 0.0,
     }
+    optimize_depot_late_in_search = (
+        enable_depot_late_scheduling
+        and time_budget_ms is None
+        and node_budget is None
+    )
 
     # Stage 0: constructive baseline (always returns a plan — SLA safety net).
     # Run for both "exact" and "beam" so beam search has a fallback when the
@@ -127,7 +143,7 @@ def solve_with_simple_astar_result(
             initial_state=initial_state,
             master=master,
             time_budget_ms=time_budget_ms,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
         )
         phase_timings["constructive_ms"] = (perf_counter() - _ts) * 1000
 
@@ -138,8 +154,8 @@ def solve_with_simple_astar_result(
     if (
         enable_constructive_seed
         and constructive_seed is not None
-        and constructive_seed.fallback_stage == "constructive_partial"
-        and constructive_seed.plan
+        and not constructive_seed.is_complete
+        and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
         _ts = perf_counter()
@@ -148,14 +164,99 @@ def solve_with_simple_astar_result(
         warm_result = _try_warm_start_completion(
             plan_input=plan_input,
             initial_state=initial_state,
-            constructive_plan=constructive_seed.plan,
+            constructive_plan=constructive_seed.partial_plan,
             master=master,
             time_budget_ms=warm_budget,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
             max_h=1,
         )
         if warm_result is not None:
             constructive_seed = warm_result
+        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
+    # Stage 0.6: partial-resume search. If constructive reached a later
+    # empty-carry checkpoint but still stopped short of goal, continue search
+    # from that honest native state instead of always restarting from scratch.
+    if (
+        enable_constructive_seed
+        and constructive_seed is not None
+        and not constructive_seed.is_complete
+        and constructive_seed.partial_plan
+        and time_budget_ms is not None
+    ):
+        _ts = perf_counter()
+        elapsed_so_far_ms = (perf_counter() - started_at) * 1000
+        resume_budget = min(5_000.0, max(500.0, (time_budget_ms - elapsed_so_far_ms) * 0.20))
+        resume_result = _try_resume_partial_completion(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            constructive_plan=constructive_seed.partial_plan,
+            master=master,
+            time_budget_ms=resume_budget,
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
+        )
+        if resume_result is not None:
+            constructive_seed = resume_result
+        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
+    # Stage 0.7: relaxed constructive rescue.  Strict anti-oscillation is a
+    # better default for hook count, but some yard states need a late re-grab
+    # from staging before a short tail search can close the plan.  Run this
+    # before primary beam consumes the full budget; otherwise the rescue has no
+    # time left precisely on hard partial cases.
+    if (
+        enable_constructive_seed
+        and enable_anytime_fallback
+        and solver_mode in {"exact", "beam"}
+        and constructive_seed is not None
+        and not constructive_seed.is_complete
+        and constructive_seed.partial_plan
+        and time_budget_ms is not None
+    ):
+        _ts = perf_counter()
+        relaxed_seed = _run_constructive_stage(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            time_budget_ms=min(time_budget_ms, RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS),
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
+            strict_staging_regrab=False,
+            budget_fraction=1.0,
+        )
+        if relaxed_seed is not None:
+            relaxed_candidate = relaxed_seed
+            relaxed_final_h = _solver_result_final_heuristic(relaxed_candidate)
+            if (
+                not relaxed_candidate.is_complete
+                and relaxed_candidate.partial_plan
+                and (
+                    relaxed_final_h is None
+                    or relaxed_final_h <= RELAXED_RESCUE_MAX_FINAL_HEURISTIC
+                )
+            ):
+                relaxed_remaining_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+                if relaxed_remaining_ms > 250:
+                    relaxed_resume = _try_resume_partial_completion(
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        constructive_plan=relaxed_candidate.partial_plan,
+                        master=master,
+                        time_budget_ms=relaxed_remaining_ms,
+                        enable_depot_late_scheduling=optimize_depot_late_in_search,
+                    )
+                    if relaxed_resume is not None:
+                        relaxed_candidate = relaxed_resume
+            constructive_seed = _shorter_complete_result(constructive_seed, relaxed_candidate)
+            if (
+                not constructive_seed.is_complete
+                and relaxed_candidate.partial_plan
+                and len(relaxed_candidate.partial_plan) > len(constructive_seed.partial_plan)
+            ):
+                constructive_seed = replace(
+                    constructive_seed,
+                    partial_plan=list(relaxed_candidate.partial_plan),
+                    partial_fallback_stage=relaxed_candidate.partial_fallback_stage,
+                )
         phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     result: SolverResult
@@ -170,112 +271,9 @@ def solve_with_simple_astar_result(
             debug_stats=debug_stats,
             repair_passes=4,
             solve_search_result=_solve_search_result,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
         )
         phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
-    elif solver_mode == "real_hook":
-        # Hook-native search: directly optimize DETACH count (= number of delivery trips).
-        # Phase 1: A* in ATTACH/DETACH space (generate_real_hook_moves +
-        # make_state_heuristic_real_hook). ATTACH costs 0, DETACH costs 1.
-        # Phase 2: PUT exact + compile as fallback when Phase 1 times out.
-        _ts = perf_counter()
-
-        hook_native_result: SolverResult | None = None
-        # Give hook-native search 75% of the budget; reserve 25% for PUT fallback.
-        native_budget_ms: float | None = None
-        if time_budget_ms is not None:
-            native_budget_ms = max(1.0, time_budget_ms * 0.75)
-
-        # Run a short exact pass first, then a greedy pass, within the native budget.
-        native_started = perf_counter()
-        for hook_weight in (1.0, 3.0, 8.0):
-            elapsed_native = (perf_counter() - native_started) * 1000
-            if native_budget_ms is not None and elapsed_native >= native_budget_ms:
-                break
-            remaining_native = (
-                max(1.0, native_budget_ms - elapsed_native)
-                if native_budget_ms is not None
-                else None
-            )
-            try:
-                candidate = _solve_search_result(
-                    plan_input=plan_input,
-                    initial_state=initial_state,
-                    master=master,
-                    solver_mode="real_hook",
-                    heuristic_weight=hook_weight,
-                    beam_width=beam_width,
-                    debug_stats=debug_stats,
-                    budget=SearchBudget(
-                        time_budget_ms=remaining_native,
-                        node_budget=node_budget,
-                    ),
-                    enable_depot_late_scheduling=False,
-                )
-            except ValueError:
-                continue
-            if candidate.plan and (
-                hook_native_result is None
-                or len(candidate.plan) < len(hook_native_result.plan)
-            ):
-                hook_native_result = replace(candidate, fallback_stage="real_hook_native")
-            if hook_native_result is not None and hook_weight == 1.0:
-                # Exact solution found — no need for greedy passes.
-                break
-
-        # Phase 2: PUT-solver fallback (compile PUT plan → ATTACH/DETACH).
-        remaining_ms = max(1.0, time_budget_ms - (perf_counter() - _ts) * 1000) if time_budget_ms is not None else None
-        put_result = solve_with_simple_astar_result(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            master=master,
-            solver_mode="exact",
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width,
-            debug_stats=debug_stats,
-            time_budget_ms=remaining_ms,
-            node_budget=node_budget,
-            verify=False,
-            enable_anytime_fallback=enable_anytime_fallback,
-            enable_constructive_seed=enable_constructive_seed,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
-        )
-        from fzed_shunting.solver.real_hook_compiler import compile_put_to_real_hook
-        compiled_plan = compile_put_to_real_hook(put_result.plan)
-        compiled_result = replace(
-            put_result,
-            plan=compiled_plan,
-            fallback_stage="real_hook_compiled",
-            is_proven_optimal=False,
-        )
-
-        # Pick whichever gives fewer hooks (native wins ties — it's truly hook-optimal).
-        if (
-            hook_native_result is not None
-            and hook_native_result.plan
-            and (
-                not compiled_result.plan
-                or len(hook_native_result.plan) <= len(compiled_result.plan)
-            )
-        ):
-            result = hook_native_result
-        else:
-            result = compiled_result
-
-        phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
-        from fzed_shunting.solver.depot_late import depot_earliness, is_depot_hook
-        result = replace(
-            result,
-            depot_earliness=depot_earliness(result.plan),
-            depot_hook_count=sum(1 for h in result.plan if is_depot_hook(h)),
-        )
-        telemetry = _build_telemetry(
-            plan_input=plan_input, result=result, phase_timings=phase_timings,
-            total_ms=(perf_counter() - started_at) * 1000,
-            time_budget_ms=time_budget_ms, node_budget=node_budget,
-        )
-        emit_telemetry(telemetry)
-        return replace(result, telemetry=telemetry)
     else:
         effective_heuristic_weight = heuristic_weight
         exact_time_budget_ms: float | None = time_budget_ms
@@ -289,14 +287,20 @@ def solve_with_simple_astar_result(
             solver_mode == "beam"
             and enable_anytime_fallback
             and time_budget_ms is not None
+            and constructive_seed is not None
+            and constructive_seed.is_complete
         ):
-            # Use the same 20% primary budget as exact mode so the anytime
-            # fallback chain gets an equivalent 80% share — matching exact mode
-            # performance on hard cases that beam search can't solve directly.
-            exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
+            # Beam is the native primary search, so partial constructive cases
+            # keep the full budget.  Once constructive already has a valid
+            # short plan, beam is only a cheap optimiser; for long seeds it is
+            # the main hook-count compressor and must keep enough budget.
+            exact_time_budget_ms = _beam_complete_seed_budget_ms(
+                time_budget_ms=time_budget_ms,
+                constructive_seed=constructive_seed,
+            )
         _ts = perf_counter()
         try:
-            result = _solve_search_result(
+            search_result = _solve_search_result(
                 plan_input=plan_input,
                 initial_state=initial_state,
                 master=master,
@@ -305,8 +309,9 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
-                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
+            result = _shorter_complete_result(constructive_seed, search_result)
         except ValueError:
             if constructive_seed is None:
                 # No seed to fall back on; preserve the legacy "no solution" signal.
@@ -318,6 +323,7 @@ def solve_with_simple_astar_result(
                 generated_nodes=0,
                 closed_nodes=0,
                 elapsed_ms=(perf_counter() - started_at) * 1000,
+                is_complete=False,
                 is_proven_optimal=False,
                 fallback_stage=solver_mode,
                 debug_stats=debug_stats,
@@ -337,7 +343,7 @@ def solve_with_simple_astar_result(
                 beam_width=beam_width,
                 debug_stats=debug_stats,
                 solve_search_result=_solve_search_result,
-                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
             phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "beam" and beam_width is not None:
@@ -358,10 +364,16 @@ def solve_with_simple_astar_result(
                     repair_passes=BEAM_POST_REPAIR_PASSES,
                     max_rounds=1,
                     solve_search_result=_solve_search_result,
-                    enable_depot_late_scheduling=enable_depot_late_scheduling,
+                    enable_depot_late_scheduling=optimize_depot_late_in_search,
                     time_budget_ms=_lns_remaining_ms,
                 )
-                if len(candidate.plan) >= len(improved.plan):
+                if (
+                    not candidate.is_complete
+                    or (
+                        improved.is_complete
+                        and len(candidate.plan) >= len(improved.plan)
+                    )
+                ):
                     break
                 improved = candidate
             result = improved
@@ -370,7 +382,7 @@ def solve_with_simple_astar_result(
             # When the constructive seed is partial, pass an empty incumbent so
             # the chain's early-exit guard (`if current.plan: break`) doesn't
             # short-circuit immediately.
-            if not result.plan and enable_anytime_fallback:
+            if not result.is_complete and enable_anytime_fallback:
                 _ts = perf_counter()
                 chain_incumbent = (
                     SolverResult(
@@ -379,12 +391,13 @@ def solve_with_simple_astar_result(
                         generated_nodes=0,
                         closed_nodes=0,
                         elapsed_ms=0.0,
+                        is_complete=False,
                         is_proven_optimal=False,
                         fallback_stage="beam",
                         debug_stats=debug_stats,
                     )
                     if constructive_seed is not None
-                    and constructive_seed.fallback_stage == "constructive_partial"
+                    and not constructive_seed.is_complete
                     else (constructive_seed if constructive_seed is not None else result)
                 )
                 result = _anytime_run_fallback_chain(
@@ -399,16 +412,19 @@ def solve_with_simple_astar_result(
                     beam_width=beam_width,
                     debug_stats=debug_stats,
                     solve_search_result=_solve_search_result,
-                    enable_depot_late_scheduling=enable_depot_late_scheduling,
+                    enable_depot_late_scheduling=optimize_depot_late_in_search,
                 )
                 phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
 
-    # If search produced nothing, fall back to constructive seed (which may be
-    # a full-goal plan or a best-effort partial). Either way the SLA contract
-    # is preserved: callers always get a non-empty plan unless the input is
-    # intrinsically infeasible (pre-check already rejected those).
-    if not result.plan and constructive_seed is not None and constructive_seed.plan:
-        result = constructive_seed
+    if not result.is_complete and constructive_seed is not None:
+        if constructive_seed.is_complete:
+            result = constructive_seed
+        elif constructive_seed.partial_plan:
+            result = replace(
+                result,
+                partial_plan=list(constructive_seed.partial_plan),
+                partial_fallback_stage=constructive_seed.partial_fallback_stage,
+            )
 
     # Post-search LNS polish: on fallback-stage plans (non-exact), spend any
     # remaining budget compressing hook count via destroy/repair. Exact plans
@@ -418,9 +434,10 @@ def solve_with_simple_astar_result(
     # post-repair loop above with its own tuned budget.
     if (
         solver_mode != "beam"
+        and result.is_complete
         and result.plan
         and not result.is_proven_optimal
-        and result.fallback_stage not in {"constructive_partial", "constructive"}
+        and result.fallback_stage not in {"constructive"}
         and len(result.plan) > 40
     ):
         remaining_ms = None
@@ -446,9 +463,9 @@ def solve_with_simple_astar_result(
                 max_rounds=3,
                 solve_search_result=_solve_search_result,
                 time_budget_ms=polish_budget_ms,
-                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
-            if len(polished.plan) < len(result.plan):
+            if polished.is_complete and len(polished.plan) < len(result.plan):
                 result = polished
             phase_timings["lns_ms"] += (perf_counter() - _ts) * 1000
 
@@ -462,7 +479,7 @@ def solve_with_simple_astar_result(
     # (either an internal simulate rejection or a full-verifier rejection of
     # the reordered plan — e.g. intermediate route interference that
     # _apply_move doesn't detect) the plan is left unchanged.
-    if enable_depot_late_scheduling and result.plan:
+    if enable_depot_late_scheduling and result.is_complete and result.plan:
         from fzed_shunting.solver.depot_late import reorder_depot_late
 
         reordered_plan = reorder_depot_late(result.plan, initial_state, plan_input)
@@ -505,8 +522,12 @@ def solve_with_simple_astar_result(
 
     result = replace(
         result,
-        depot_earliness=depot_earliness(result.plan),
-        depot_hook_count=sum(1 for h in result.plan if is_depot_hook(h)),
+        depot_earliness=depot_earliness(result.plan if result.is_complete else result.partial_plan),
+        depot_hook_count=sum(
+            1
+            for h in (result.plan if result.is_complete else result.partial_plan)
+            if is_depot_hook(h)
+        ),
     )
 
     if verify:
@@ -547,6 +568,9 @@ def _build_telemetry(
     is_valid: bool | None = None
     if result.verification_report is not None:
         is_valid = bool(result.verification_report.is_valid)
+    partial_is_valid: bool | None = None
+    if result.partial_verification_report is not None:
+        partial_is_valid = bool(result.partial_verification_report.is_valid)
     return SolverTelemetry(
         input_vehicle_count=len(plan_input.vehicles),
         input_track_count=len(plan_input.track_info),
@@ -560,13 +584,50 @@ def _build_telemetry(
         lns_ms=phase_timings.get("lns_ms", 0.0),
         verify_ms=phase_timings.get("verify_ms", 0.0),
         total_ms=total_ms,
+        is_complete=result.is_complete,
         plan_hook_count=len(result.plan),
         fallback_stage=result.fallback_stage,
         is_valid=is_valid,
+        partial_hook_count=len(result.partial_plan),
+        partial_fallback_stage=result.partial_fallback_stage,
+        partial_is_valid=partial_is_valid,
         is_proven_optimal=result.is_proven_optimal,
         time_budget_ms=time_budget_ms,
         node_budget=node_budget,
     )
+
+
+def _beam_complete_seed_budget_ms(
+    *,
+    time_budget_ms: float,
+    constructive_seed: SolverResult,
+) -> float:
+    seed_hook_count = len(constructive_seed.plan)
+    ratio = max(
+        BEAM_COMPLETE_SEED_MIN_BUDGET_RATIO,
+        min(1.0, seed_hook_count / BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS),
+    )
+    return min(time_budget_ms, max(1.0, time_budget_ms * ratio))
+
+
+def _shorter_complete_result(
+    incumbent: SolverResult | None,
+    candidate: SolverResult,
+) -> SolverResult:
+    if incumbent is None or not incumbent.is_complete:
+        return candidate
+    if not candidate.is_complete:
+        return incumbent
+    if len(candidate.plan) < len(incumbent.plan):
+        return candidate
+    return incumbent
+
+
+def _solver_result_final_heuristic(result: SolverResult) -> float | None:
+    if result.debug_stats is None:
+        return None
+    value = result.debug_stats.get("final_heuristic")
+    return float(value) if value is not None else None
 
 
 def _run_constructive_stage(
@@ -576,13 +637,15 @@ def _run_constructive_stage(
     master: MasterData | None,
     time_budget_ms: float | None,
     enable_depot_late_scheduling: bool = False,
+    strict_staging_regrab: bool = True,
+    budget_fraction: float = 0.15,
 ) -> SolverResult | None:
     """Run the priority-rule dispatcher and wrap the result as a SolverResult."""
     from fzed_shunting.solver.constructive import solve_constructive
 
     constructive_budget = None
     if time_budget_ms is not None:
-        constructive_budget = min(8_000.0, max(500.0, time_budget_ms * 0.15))
+        constructive_budget = min(8_000.0, max(500.0, time_budget_ms * budget_fraction))
     try:
         ctr = solve_constructive(
             plan_input,
@@ -590,20 +653,27 @@ def _run_constructive_stage(
             master=master,
             max_iterations=1500,
             time_budget_ms=constructive_budget,
+            strict_staging_regrab=strict_staging_regrab,
         )
     except Exception:  # noqa: BLE001
         return None
-    if not ctr.plan:
+    if not ctr.plan and not ctr.reached_goal:
         return None
+    debug_stats = dict(ctr.debug_stats or {})
+    if ctr.final_heuristic is not None:
+        debug_stats["final_heuristic"] = ctr.final_heuristic
     return SolverResult(
-        plan=list(ctr.plan),
+        plan=list(ctr.plan) if ctr.reached_goal else [],
         expanded_nodes=ctr.iterations,
         generated_nodes=ctr.iterations,
         closed_nodes=0,
         elapsed_ms=ctr.elapsed_ms,
+        is_complete=ctr.reached_goal,
         is_proven_optimal=False,
-        fallback_stage="constructive" if ctr.reached_goal else "constructive_partial",
-        debug_stats=ctr.debug_stats,
+        fallback_stage="constructive" if ctr.reached_goal else None,
+        partial_plan=[] if ctr.reached_goal else list(ctr.plan),
+        partial_fallback_stage=None if ctr.reached_goal else "constructive_partial",
+        debug_stats=debug_stats,
     )
 
 
@@ -616,11 +686,31 @@ def _attach_verification(
 ) -> SolverResult:
     if master is None:
         return result
-    if not result.plan:
+    if not result.is_complete and not result.partial_plan:
         return result
     from fzed_shunting.verify.plan_verifier import verify_plan
 
-    hook_plan = [
+    if result.is_complete:
+        hook_plan = [
+            {
+                "hookNo": index,
+                "actionType": move.action_type,
+                "sourceTrack": move.source_track,
+                "targetTrack": move.target_track,
+                "vehicleNos": list(move.vehicle_nos),
+                "pathTracks": list(move.path_tracks),
+            }
+            for index, move in enumerate(result.plan, start=1)
+        ]
+        report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
+        if not report.is_valid:
+            raise PlanVerificationError(report)
+        return replace(result, verification_report=report)
+
+    if not result.partial_plan:
+        return result
+
+    partial_hook_plan = [
         {
             "hookNo": index,
             "actionType": move.action_type,
@@ -629,22 +719,20 @@ def _attach_verification(
             "vehicleNos": list(move.vehicle_nos),
             "pathTracks": list(move.path_tracks),
         }
-        for index, move in enumerate(result.plan, start=1)
+        for index, move in enumerate(result.partial_plan, start=1)
     ]
-    report = verify_plan(master, plan_input, hook_plan, initial_state_override=initial_state)
-    # Treat any plan derived from the constructive fallback (including
-    # "+rescue"-annotated stages) as best-effort: it's already the last
-    # resort and partial completeness is informative, not fatal.
-    stage = result.fallback_stage or ""
-    best_effort = stage.startswith("constructive_partial")
-    if not report.is_valid and not best_effort:
-        raise PlanVerificationError(report)
-    return replace(result, verification_report=report)
+    partial_report = verify_plan(
+        master,
+        plan_input,
+        partial_hook_plan,
+        initial_state_override=initial_state,
+    )
+    return replace(result, partial_verification_report=partial_report)
 
 def _heuristic(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
-    from fzed_shunting.solver.heuristic import compute_admissible_heuristic
+    from fzed_shunting.solver.heuristic import compute_admissible_heuristic_real_hook
 
-    return compute_admissible_heuristic(plan_input, state)
+    return compute_admissible_heuristic_real_hook(plan_input, state)
 
 
 def _try_warm_start_completion(
@@ -658,7 +746,7 @@ def _try_warm_start_completion(
     max_h: int = 4,
 ) -> SolverResult | None:
     """Replay constructive plan to get near-goal state, then run focused A* to finish."""
-    from fzed_shunting.solver.heuristic import compute_admissible_heuristic
+    from fzed_shunting.solver.heuristic import compute_admissible_heuristic_real_hook
     from fzed_shunting.io.normalize_input import NormalizedVehicle
 
     vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
@@ -669,7 +757,7 @@ def _try_warm_start_completion(
     except Exception:  # noqa: BLE001
         return None
 
-    h = compute_admissible_heuristic(plan_input, state)
+    h = compute_admissible_heuristic_real_hook(plan_input, state)
     if h == 0 or h > max_h:
         return None
 
@@ -686,7 +774,7 @@ def _try_warm_start_completion(
         )
     except ValueError:
         return None
-    if not completion.plan:
+    if not completion.is_complete:
         return None
 
     return SolverResult(
@@ -695,10 +783,201 @@ def _try_warm_start_completion(
         generated_nodes=completion.generated_nodes,
         closed_nodes=completion.closed_nodes,
         elapsed_ms=completion.elapsed_ms,
+        is_complete=True,
         is_proven_optimal=False,
         fallback_stage="constructive_warm_start",
         debug_stats=completion.debug_stats,
     )
+
+
+def _try_resume_partial_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    constructive_plan: list[HookAction],
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    from fzed_shunting.io.normalize_input import NormalizedVehicle
+
+    if not constructive_plan:
+        return None
+    vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
+    state = initial_state
+    resumed_prefix: list[HookAction] = []
+    checkpoints: list[tuple[int, int, list[HookAction], ReplayState]] = []
+    try:
+        for move in constructive_plan:
+            state = _apply_move(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+            resumed_prefix.append(move)
+            if not state.loco_carry and not _is_goal(plan_input, state):
+                purity = compute_state_purity(plan_input, state)
+                checkpoints.append((
+                    purity.unfinished_count,
+                    -len(resumed_prefix),
+                    list(resumed_prefix),
+                    state,
+                ))
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not checkpoints:
+        return None
+
+    last_checkpoint = checkpoints[-1]
+    last_result = _try_resume_from_checkpoint(
+        plan_input=plan_input,
+        checkpoint_prefix=last_checkpoint[2],
+        checkpoint_state=last_checkpoint[3],
+        master=master,
+        time_budget_ms=time_budget_ms,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+    if last_result is not None:
+        return last_result
+
+    ranked_checkpoints = [
+        checkpoint
+        for checkpoint in sorted(checkpoints)[:PARTIAL_RESUME_MAX_CHECKPOINTS]
+        if checkpoint is not last_checkpoint
+    ]
+    per_checkpoint_budget = max(250.0, time_budget_ms / max(1, len(ranked_checkpoints)))
+
+    for _unfinished_count, _negative_prefix_len, checkpoint_prefix, checkpoint_state in ranked_checkpoints:
+        checkpoint_result = _try_resume_from_checkpoint(
+            plan_input=plan_input,
+            checkpoint_prefix=checkpoint_prefix,
+            checkpoint_state=checkpoint_state,
+            master=master,
+            time_budget_ms=per_checkpoint_budget,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+        if checkpoint_result is not None:
+            return checkpoint_result
+    return None
+
+
+def _try_resume_from_checkpoint(
+    *,
+    plan_input: NormalizedPlanInput,
+    checkpoint_prefix: list[HookAction],
+    checkpoint_state: ReplayState,
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    started_at = perf_counter()
+    localized_budget_ms = max(
+        250.0,
+        time_budget_ms * LOCALIZED_RESUME_BUDGET_RATIO,
+    )
+    localized_completion = _try_localized_resume_completion(
+        plan_input=plan_input,
+        initial_state=checkpoint_state,
+        master=master,
+        time_budget_ms=localized_budget_ms,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+    if localized_completion is None:
+        remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if remaining_budget_ms < LOCALIZED_RESUME_MIN_FULL_BEAM_MS:
+            return None
+        try:
+            localized_completion = _solve_search_result(
+                plan_input=plan_input,
+                initial_state=checkpoint_state,
+                master=master,
+                solver_mode="beam",
+                heuristic_weight=1.0,
+                beam_width=8,
+                budget=SearchBudget(time_budget_ms=remaining_budget_ms),
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+            )
+        except ValueError:
+            localized_completion = None
+    if localized_completion is None or not localized_completion.is_complete:
+        return None
+    return SolverResult(
+        plan=checkpoint_prefix + list(localized_completion.plan),
+        expanded_nodes=localized_completion.expanded_nodes,
+        generated_nodes=localized_completion.generated_nodes,
+        closed_nodes=localized_completion.closed_nodes,
+        elapsed_ms=localized_completion.elapsed_ms,
+        is_complete=True,
+        is_proven_optimal=False,
+        fallback_stage="constructive_partial_resume",
+        debug_stats=localized_completion.debug_stats,
+    )
+
+
+def _try_localized_resume_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if initial_state.loco_carry:
+        return None
+    purity = compute_state_purity(plan_input, initial_state)
+    if purity.unfinished_count == 0:
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            is_proven_optimal=False,
+            fallback_stage="localized_resume",
+        )
+    if purity.unfinished_count > LOCALIZED_RESUME_MAX_UNFINISHED:
+        return None
+
+    localized_input = _build_repair_plan_input(plan_input, initial_state)
+    exact_completion: SolverResult | None = None
+    if purity.unfinished_count <= 2:
+        exact_budget_ms = min(5_000.0, max(500.0, time_budget_ms * 0.5))
+        try:
+            exact_completion = _solve_search_result(
+                plan_input=localized_input,
+                initial_state=initial_state,
+                master=master,
+                solver_mode="exact",
+                heuristic_weight=1.0,
+                beam_width=None,
+                budget=SearchBudget(time_budget_ms=exact_budget_ms),
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+            )
+        except ValueError:
+            exact_completion = None
+        if exact_completion is not None and exact_completion.is_complete:
+            return replace(exact_completion, fallback_stage="localized_resume_exact")
+
+    beam_budget_ms = max(
+        250.0,
+        time_budget_ms - (exact_completion.elapsed_ms if exact_completion is not None else 0.0),
+    )
+    if beam_budget_ms <= 0:
+        return None
+    try:
+        beam_completion = _solve_search_result(
+            plan_input=localized_input,
+            initial_state=initial_state,
+            master=master,
+            solver_mode="beam",
+            heuristic_weight=1.0,
+            beam_width=16,
+            budget=SearchBudget(time_budget_ms=beam_budget_ms),
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+    except ValueError:
+        return None
+    if not beam_completion.is_complete:
+        return None
+    return replace(beam_completion, fallback_stage="localized_resume_beam")
 
 def _validate_final_track_goal_capacities(plan_input: NormalizedPlanInput) -> None:
     capacity_by_track = {
@@ -743,6 +1022,12 @@ def _validate_solver_options(
         raise ValueError("beam_width must be > 0")
     if solver_mode == "beam" and beam_width is None:
         raise ValueError("beam_width is required when solver_mode=beam")
+
+
+def _normalize_solver_mode(solver_mode: str) -> str:
+    if solver_mode == "real_hook":
+        return "exact"
+    return solver_mode
 
 
 

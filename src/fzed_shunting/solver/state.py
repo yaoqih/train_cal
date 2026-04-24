@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_candidates_for_vehicle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.goal_logic import goal_is_satisfied
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -14,29 +15,13 @@ def _is_goal(plan_input: NormalizedPlanInput, state: ReplayState) -> bool:
     current_track_by_vehicle = _vehicle_track_lookup(state)
     for vehicle in plan_input.vehicles:
         current_track = current_track_by_vehicle[vehicle.vehicle_no]
-        if current_track not in vehicle.goal.allowed_target_tracks:
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
             return False
-        if vehicle.need_weigh and vehicle.vehicle_no not in state.weighed_vehicle_nos:
-            return False
-        if vehicle.goal.target_mode == "SPOT":
-            if state.spot_assignments.get(vehicle.vehicle_no) != vehicle.goal.target_spot_code:
-                return False
-        if vehicle.goal.target_area_code == "大库:RANDOM" and current_track in vehicle.goal.allowed_target_tracks:
-            assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                return False
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, current_track, plan_input.yard_mode):
-                return False
-        if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
-            assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                return False
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, current_track, plan_input.yard_mode):
-                return False
-        if vehicle.is_close_door and current_track == "存4北":
-            final_seq = state.track_sequences.get("存4北", [])
-            if final_seq.index(vehicle.vehicle_no) < 3:
-                return False
     return True
 
 
@@ -76,57 +61,12 @@ def _apply_move(
         return _apply_attach(state=state, move=move)
     if move.action_type == "DETACH":
         return _apply_detach(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
-    return _apply_put(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
+    raise ValueError(f"Unsupported native hook action_type: {move.action_type}")
 
 
 def _place_on_track(existing: list[str], new_vehicles: list[str]) -> list[str]:
     """All placement is at the north (accessible) end — new vehicles prepend."""
     return list(new_vehicles) + existing
-
-
-def _apply_put(
-    *,
-    state: ReplayState,
-    move: HookAction,
-    plan_input: NormalizedPlanInput,
-    vehicle_by_no: dict[str, NormalizedVehicle],
-) -> ReplayState:
-    source_seq = state.track_sequences.get(move.source_track, [])
-    if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-        raise ValueError("Vehicle block is not at the north-end prefix of source track")
-
-    next_track_sequences = dict(state.track_sequences)
-    next_track_sequences[move.source_track] = list(source_seq[len(move.vehicle_nos):])
-    existing_target = list(state.track_sequences.get(move.target_track, []))
-    next_track_sequences[move.target_track] = list(move.vehicle_nos) + existing_target
-
-    next_spot_assignments = dict(state.spot_assignments)
-    for vehicle_no in move.vehicle_nos:
-        next_spot_assignments.pop(vehicle_no, None)
-    block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in move.vehicle_nos]
-    new_spot_assignments = allocate_spots_for_block(
-        vehicles=block_vehicles,
-        target_track=move.target_track,
-        yard_mode=plan_input.yard_mode,
-        occupied_spot_assignments=next_spot_assignments,
-    )
-    if new_spot_assignments is None:
-        raise ValueError(
-            f"No available depot spot for hook to {move.target_track}: {move.vehicle_nos}"
-        )
-    next_spot_assignments.update(new_spot_assignments)
-
-    next_weighed_vehicle_nos = set(state.weighed_vehicle_nos)
-    if move.target_track == "机库":
-        next_weighed_vehicle_nos.update(move.vehicle_nos)
-
-    return ReplayState(
-        track_sequences=next_track_sequences,
-        loco_track_name=move.target_track,
-        weighed_vehicle_nos=next_weighed_vehicle_nos,
-        spot_assignments=next_spot_assignments,
-        loco_carry=state.loco_carry,
-    )
 
 
 def _apply_attach(
@@ -139,11 +79,14 @@ def _apply_attach(
         raise ValueError("Vehicle block is not at the north-end prefix of source track")
     next_track_sequences = dict(state.track_sequences)
     next_track_sequences[move.source_track] = list(source_seq[len(move.vehicle_nos):])
+    next_spot_assignments = dict(state.spot_assignments)
+    for vehicle_no in move.vehicle_nos:
+        next_spot_assignments.pop(vehicle_no, None)
     return ReplayState(
         track_sequences=next_track_sequences,
         loco_track_name=move.source_track,
         weighed_vehicle_nos=set(state.weighed_vehicle_nos),
-        spot_assignments=dict(state.spot_assignments),
+        spot_assignments=next_spot_assignments,
         loco_carry=state.loco_carry + tuple(move.vehicle_nos),
     )
 
@@ -217,6 +160,7 @@ def _state_key(
             for track, seq in sorted(state.track_sequences.items())
             if seq
         ),
+        state.loco_track_name,
         tuple(sorted(state.weighed_vehicle_nos)),
         spot_items,
         state.loco_carry,

@@ -4,8 +4,10 @@ from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.heuristic import (
     compute_admissible_heuristic,
+    compute_admissible_heuristic_real_hook,
     compute_heuristic_breakdown,
     make_state_heuristic,
+    make_state_heuristic_real_hook,
 )
 from fzed_shunting.verify.replay import ReplayState, build_initial_state
 
@@ -188,6 +190,42 @@ def test_h_blocking_strengthens_when_target_has_blocker():
     assert breakdown.h_blocking >= 1
 
 
+def test_h_blocking_counts_same_track_weigh_pending_front_vehicle_as_blocker():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload(
+        [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "GOAL1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存1",
+                "order": "1",
+                "vehicleModel": "敞车",
+                "vehicleNo": "WEIGH_BLOCKER",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "存1",
+                "isSpotting": "",
+                "vehicleAttributes": "称重",
+            },
+        ]
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+
+    assert breakdown.h_blocking >= 1
+
+
 def test_make_state_heuristic_matches_compute_admissible_heuristic():
     master = load_master_data(DATA_DIR)
     payload = _base_payload(
@@ -220,6 +258,31 @@ def test_make_state_heuristic_matches_compute_admissible_heuristic():
     initial = build_initial_state(normalized)
     stateful = make_state_heuristic(normalized)
     assert stateful(initial) == compute_admissible_heuristic(normalized, initial)
+
+
+def test_make_state_heuristic_real_hook_matches_compute_admissible_heuristic_real_hook():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload(
+        [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "RH1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ]
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    stateful = make_state_heuristic_real_hook(normalized)
+    assert stateful(initial) == compute_admissible_heuristic_real_hook(normalized, initial)
+    assert stateful(initial) == 2
 
 
 def _tight_capacity_payload(vehicles: list[dict], track_distances: dict[str, float]) -> dict:
@@ -491,6 +554,66 @@ def test_h_tight_capacity_eviction_ignores_multi_target_vehicles():
     initial = build_initial_state(normalized)
     breakdown = compute_heuristic_breakdown(normalized, initial)
     assert breakdown.h_tight_capacity == 0
+
+
+def test_h_misplaced_counts_short_random_depot_vehicle_on_non_preferred_track_when_1_2_available():
+    master = load_master_data(DATA_DIR)
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "修3库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HPREF",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={
+            "修1库内": 151.7,
+            "修2库内": 151.7,
+            "修3库内": 151.7,
+            "修4库内": 151.7,
+        },
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    breakdown = compute_heuristic_breakdown(normalized, initial)
+    assert breakdown.h_misplaced >= 1
+
+
+def test_real_hook_heuristic_counts_short_random_depot_vehicle_on_fallback_track_when_preferred_feasible():
+    master = load_master_data(DATA_DIR)
+    payload = _tight_capacity_payload(
+        [
+            {
+                "trackName": "修4库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "RH_PREF",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        track_distances={
+            "修1库内": 151.7,
+            "修2库内": 151.7,
+            "修3库内": 151.7,
+            "修4库内": 151.7,
+        },
+    )
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    heuristic = make_state_heuristic_real_hook(normalized)
+
+    assert heuristic(initial) >= 2
 
 
 def test_h_tight_capacity_eviction_value_combines_with_transfer_pairs():

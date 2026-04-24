@@ -17,12 +17,12 @@ from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.budget import SearchBudget
-from fzed_shunting.solver.heuristic import make_state_heuristic, make_state_heuristic_real_hook
+from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
-    generate_goal_moves,
     generate_real_hook_moves,
 )
+from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.state import (
     _apply_move,
@@ -65,16 +65,13 @@ def _solve_search_result(
     counter = count()
     queue: list[QueueItem] = []
     canonical_random_depot_vehicle_nos = _canonical_random_depot_vehicle_nos(plan_input)
-    state_heuristic = (
-        make_state_heuristic_real_hook(plan_input)
-        if solver_mode == "real_hook"
-        else make_state_heuristic(plan_input)
-    )
+    state_heuristic = make_state_heuristic_real_hook(plan_input)
     initial_key = _state_key(
         initial_state,
         canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
     )
     initial_heuristic = state_heuristic(initial_state)
+    initial_purity = compute_state_purity(plan_input, initial_state)
     heappush(
         queue,
         QueueItem(
@@ -84,6 +81,11 @@ def _solve_search_result(
                 solver_mode=solver_mode,
                 heuristic_weight=heuristic_weight,
                 neg_depot_index_sum=0,
+                purity_metrics=(
+                    initial_purity.unfinished_count,
+                    initial_purity.preferred_violation_count,
+                    initial_purity.staging_pollution_count,
+                ),
             ),
             seq=next(counter),
             state_key=initial_key,
@@ -125,36 +127,27 @@ def _solve_search_result(
                     generated_nodes=generated_nodes,
                     closed_nodes=len(closed_state_keys),
                     elapsed_ms=(perf_counter() - started_at) * 1000,
+                    is_complete=True,
                     is_proven_optimal=solver_mode == "exact",
                     fallback_stage=solver_mode,
                     debug_stats=debug_stats,
                 )
             continue
         move_stats = {} if debug_stats is not None else None
-        blocking_goal_targets_by_source: dict[str, set[str]] = {}
-        if solver_mode == "real_hook":
-            moves = generate_real_hook_moves(
-                plan_input,
-                current.state,
-                master=master,
-                route_oracle=route_oracle,
-            )
-        else:
-            blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
-                plan_input=plan_input,
-                state=current.state,
-                goal_by_vehicle=goal_by_vehicle,
-                vehicle_by_no=vehicle_by_no,
-                route_oracle=route_oracle,
-            )
-            moves = generate_goal_moves(
-                plan_input,
-                current.state,
-                master=master,
-                route_oracle=route_oracle,
-                blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-                debug_stats=move_stats,
-            )
+        blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
+            plan_input=plan_input,
+            state=current.state,
+            goal_by_vehicle=goal_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            route_oracle=route_oracle,
+        )
+        moves = generate_real_hook_moves(
+            plan_input,
+            current.state,
+            master=master,
+            route_oracle=route_oracle,
+            debug_stats=move_stats,
+        )
         if debug_stats is not None:
             _accumulate_move_debug_stats(
                 debug_stats=debug_stats,
@@ -170,10 +163,7 @@ def _solve_search_result(
                 vehicle_by_no=vehicle_by_no,
             )
             next_plan = current.plan + [move]
-            if solver_mode == "real_hook":
-                cost = current_cost + (1 if move.action_type == "DETACH" else 0)
-            else:
-                cost = len(next_plan)
+            cost = len(next_plan)
             state_key = _state_key(
                 next_state,
                 canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
@@ -182,10 +172,17 @@ def _solve_search_result(
                 continue
             best_cost[state_key] = cost
             heuristic = state_heuristic(next_state)
+            next_purity = compute_state_purity(plan_input, next_state)
             blocker_bonus = _blocking_goal_target_bonus(
                 state=current.state,
                 move=move,
                 blocking_goal_targets_by_source=blocking_goal_targets_by_source,
+            )
+            blocker_bonus += _carry_exposure_bonus(
+                move=move,
+                state=current.state,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
             )
             neg_depot_index_sum = 0
             if enable_depot_late_scheduling and solver_mode == "exact":
@@ -208,6 +205,11 @@ def _solve_search_result(
                         solver_mode=solver_mode,
                         heuristic_weight=heuristic_weight,
                         neg_depot_index_sum=neg_depot_index_sum,
+                        purity_metrics=(
+                            next_purity.unfinished_count,
+                            next_purity.preferred_violation_count,
+                            next_purity.staging_pollution_count,
+                        ),
                     ),
                     seq=next(counter),
                     state_key=state_key,
@@ -229,6 +231,7 @@ def _solve_search_result(
                 generated_nodes=generated_nodes,
                 closed_nodes=len(closed_state_keys),
                 elapsed_ms=(perf_counter() - started_at) * 1000,
+                is_complete=False,
                 is_proven_optimal=False,
                 fallback_stage=solver_mode,
                 debug_stats=debug_stats,
@@ -241,6 +244,7 @@ def _solve_search_result(
         generated_nodes=generated_nodes,
         closed_nodes=len(closed_state_keys),
         elapsed_ms=(perf_counter() - started_at) * 1000,
+        is_complete=True,
         is_proven_optimal=proven_optimal,
         fallback_stage=solver_mode,
         debug_stats=debug_stats,
@@ -255,6 +259,7 @@ def _priority(
     solver_mode: str,
     heuristic_weight: float,
     neg_depot_index_sum: int = 0,
+    purity_metrics: tuple[int, int, int] = (0, 0, 0),
 ) -> tuple:
     if solver_mode == "beam":
         beam_heuristic_credit = 1 if blocker_bonus > 0 else 0
@@ -264,6 +269,7 @@ def _priority(
             cost,
             neg_depot_index_sum,
             adjusted_heuristic,
+            purity_metrics,
             -blocker_bonus,
             heuristic,
         )
@@ -273,6 +279,7 @@ def _priority(
             cost,
             neg_depot_index_sum,
             heuristic,
+            purity_metrics,
             -blocker_bonus,
         )
     return (
@@ -280,6 +287,7 @@ def _priority(
         cost,
         neg_depot_index_sum,
         heuristic,
+        purity_metrics,
         -blocker_bonus,
     )
 
@@ -293,14 +301,58 @@ def _blocking_goal_target_bonus(
     blocking_targets = blocking_goal_targets_by_source.get(move.source_track)
     if not blocking_targets:
         return 0
-    if move.target_track not in blocking_targets:
-        return 0
     source_seq = state.track_sequences.get(move.source_track, [])
     if len(move.vehicle_nos) != len(source_seq):
         return 0
     if tuple(source_seq[: len(move.vehicle_nos)]) != tuple(move.vehicle_nos):
         return 0
+    if move.action_type == "ATTACH":
+        return len(blocking_targets)
+    if move.target_track not in blocking_targets:
+        return 0
     return len(blocking_targets)
+
+
+def _carry_exposure_bonus(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, Any],
+) -> int:
+    if move.action_type != "DETACH":
+        return 0
+    carry = list(state.loco_carry)
+    prefix_size = len(move.vehicle_nos)
+    if not carry or carry[:prefix_size] != move.vehicle_nos:
+        return 0
+
+    first_committed_index: int | None = None
+    for index, vehicle_no in enumerate(carry):
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            continue
+        if _is_critical_carry_vehicle(vehicle, state=state, plan_input=plan_input):
+            first_committed_index = index
+            break
+    if first_committed_index is None or first_committed_index == 0 or prefix_size > first_committed_index:
+        return 0
+    return 1
+
+
+def _is_critical_carry_vehicle(
+    vehicle: Any,
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> bool:
+    if getattr(vehicle, "need_weigh", False) and vehicle.vehicle_no not in state.weighed_vehicle_nos:
+        return True
+    if vehicle.goal.target_mode == "SPOT":
+        return True
+    if vehicle.goal.target_area_code not in {None, "大库:RANDOM", "大库外:RANDOM"}:
+        return True
+    return bool(vehicle.goal.preferred_target_tracks and not vehicle.goal.fallback_target_tracks)
 
 
 def _prune_queue(
@@ -328,7 +380,7 @@ def _prune_queue(
         blocker_candidates = [
             item
             for item in ranked
-            if item.priority[4] < 0 and id(item) not in kept_ids
+            if item.priority[-2] < 0 and id(item) not in kept_ids
         ]
         if blocker_candidates:
             blocker_item = blocker_candidates[0]

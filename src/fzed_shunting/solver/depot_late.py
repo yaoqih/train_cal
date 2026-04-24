@@ -182,9 +182,6 @@ def _semantic_topo_reorder(
     def simulate(sequence: list[HookAction]) -> ReplayState | None:
         state = initial_state
         for move in sequence:
-            source_seq = state.track_sequences.get(move.source_track, [])
-            if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-                return None
             try:
                 state = _apply_move(
                     state=state,
@@ -256,9 +253,6 @@ def _adjacent_swap_polish(
     def simulate(sequence: list[HookAction]) -> ReplayState | None:
         state = initial_state
         for move in sequence:
-            source_seq = state.track_sequences.get(move.source_track, [])
-            if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-                return None
             try:
                 state = _apply_move(
                     state=state,

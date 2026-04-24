@@ -134,12 +134,14 @@ def test_plan_verification_error_raised_on_injected_bad_plan():
                     target_track="机库",
                     vehicle_nos=["DOES_NOT_EXIST"],
                     path_tracks=["存5北", "机库"],
+                    action_type="DETACH",
                 )
             ],
             expanded_nodes=0,
             generated_nodes=0,
             closed_nodes=0,
             elapsed_ms=0.0,
+            is_complete=True,
             is_proven_optimal=True,
             fallback_stage="exact",
         )

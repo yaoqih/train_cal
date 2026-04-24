@@ -7,6 +7,7 @@ from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
+from fzed_shunting.solver.goal_logic import goal_is_satisfied, goal_track_preference_level
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 
 
@@ -56,52 +57,33 @@ def verify_plan(
     final_state = replay.final_state
     for vehicle in plan_input.vehicles:
         final_track = _locate_vehicle(final_state.track_sequences, vehicle.vehicle_no)
-        if vehicle.need_weigh and vehicle.vehicle_no not in final_state.weighed_vehicle_nos:
-            global_errors.append(f"Vehicle {vehicle.vehicle_no} requires weigh before final track")
-            continue
-        if vehicle.goal.target_mode == "SPOT":
-            assigned_spot = final_state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot != vehicle.goal.target_spot_code:
-                global_errors.append(
-                    f"Vehicle {vehicle.vehicle_no} final spot {assigned_spot} "
-                    f"does not match target spot {vehicle.goal.target_spot_code}"
-                )
-                continue
-        if vehicle.goal.target_area_code == "大库:RANDOM" and final_track in vehicle.goal.allowed_target_tracks:
-            assigned_spot = final_state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                global_errors.append(f"Vehicle {vehicle.vehicle_no} missing depot spot assignment")
-                continue
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, final_track, plan_input.yard_mode):
-                global_errors.append(
-                    f"Vehicle {vehicle.vehicle_no} final spot {assigned_spot} "
-                    f"is not compatible with target track {final_track}"
-                )
-                continue
-        if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
-            assigned_spot = final_state.spot_assignments.get(vehicle.vehicle_no)
-            if assigned_spot is None:
-                global_errors.append(f"Vehicle {vehicle.vehicle_no} missing work-area spot assignment")
-                continue
-            if assigned_spot not in spot_candidates_for_vehicle(vehicle, final_track, plan_input.yard_mode):
-                global_errors.append(
-                    f"Vehicle {vehicle.vehicle_no} final spot {assigned_spot} "
-                    f"is not compatible with work area {vehicle.goal.target_area_code}"
-                )
-                continue
-        if vehicle.is_close_door and final_track == "存4北":
-            final_seq = final_state.track_sequences.get("存4北", [])
-            pos = final_seq.index(vehicle.vehicle_no) + 1
-            if pos <= 3:
-                global_errors.append(
-                    f"Close-door vehicle {vehicle.vehicle_no} cannot be placed in top-3 positions of 存4北"
-                )
-                continue
-        if final_track not in vehicle.goal.allowed_target_tracks:
-            global_errors.append(
-                f"Vehicle {vehicle.vehicle_no} final track {final_track} "
-                f"not in allowed final tracks {vehicle.goal.allowed_target_tracks}"
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=final_track,
+            state=final_state,
+            plan_input=plan_input,
+        ):
+            if vehicle.is_close_door and final_track == "存4北":
+                final_seq = final_state.track_sequences.get("存4北", [])
+                if vehicle.vehicle_no in final_seq:
+                    global_errors.append(
+                        f"Close-door vehicle {vehicle.vehicle_no} must be at position >= 4 on 存4北"
+                    )
+                    continue
+            preference_level = goal_track_preference_level(
+                vehicle,
+                final_track,
+                state=final_state,
+                plan_input=plan_input,
             )
+            if preference_level is None and vehicle.goal.fallback_target_tracks:
+                global_errors.append(
+                    f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
+                )
+            else:
+                global_errors.append(
+                    f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
+                )
             continue
         if final_track in master.tracks:
             track = master.tracks[final_track]

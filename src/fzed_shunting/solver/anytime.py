@@ -101,7 +101,7 @@ def _run_anytime_fallback_chain(
     ]
     current = incumbent
     for stage_name, stage_kwargs, budget_share in fallback_stages:
-        if current.plan:
+        if current.is_complete:
             break
         remaining_ms = _remaining_budget_ms(started_at, time_budget_ms)
         stage_time_budget_ms: float | None
@@ -130,9 +130,9 @@ def _run_anytime_fallback_chain(
             )
         except ValueError:
             continue
-        if not candidate.plan:
+        if not candidate.is_complete:
             continue
-        if not current.plan or len(candidate.plan) < len(current.plan):
+        if not current.is_complete or len(candidate.plan) < len(current.plan):
             current = replace(candidate, fallback_stage=stage_name)
     return current
 

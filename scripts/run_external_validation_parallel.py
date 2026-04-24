@@ -21,6 +21,10 @@ DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_inputs"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_parallel_runs"
 DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = None
+WORKER_TIMEOUT_BUDGET_MULTIPLIER = 4.0
+WORKER_TIMEOUT_GRACE_SECONDS = 30
+RETRY_TIME_BUDGET_MULTIPLIER = 2.0
+RETRY_MIN_TIME_BUDGET_MS = 90_000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,12 +92,29 @@ def solve_one(
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
-        if not result.plan:
+        if not result.is_complete:
+            error = "no solution within budget"
+            error_category = _classify_solve_error(error)
             return {
                 "scenario": scenario_path.name,
                 "solved": False,
-                "error": "no solution within budget",
+                "error": error,
+                "error_category": error_category,
+                "retryable": _is_retryable_error_category(error_category),
                 "fallback_stage": result.fallback_stage,
+                "is_complete": False,
+                "partial_hook_count": len(result.partial_plan),
+                "partial_fallback_stage": result.partial_fallback_stage,
+                "partial_is_valid": (
+                    result.partial_verification_report.is_valid
+                    if result.partial_verification_report is not None
+                    else None
+                ),
+                "partial_verifier_errors": (
+                    result.partial_verification_report.errors
+                    if result.partial_verification_report is not None
+                    else []
+                ),
                 "expanded_nodes": result.expanded_nodes,
                 "generated_nodes": result.generated_nodes,
                 "elapsed_ms": result.elapsed_ms,
@@ -115,8 +136,9 @@ def solve_one(
             report = verify_plan(master, normalized, hook_plan)
         return {
             "scenario": scenario_path.name,
-            "solved": True,
+            "solved": bool(result.is_complete and report.is_valid),
             "hook_count": len(result.plan),
+            "is_complete": result.is_complete,
             "is_valid": report.is_valid,
             "verifier_errors": report.errors,
             "is_proven_optimal": result.is_proven_optimal,
@@ -130,10 +152,14 @@ def solve_one(
             "debug_stats": debug_stats,
         }
     except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        error_category = _classify_solve_error(error)
         return {
             "scenario": scenario_path.name,
             "solved": False,
-            "error": str(exc),
+            "error": error,
+            "error_category": error_category,
+            "retryable": _is_retryable_error_category(error_category),
             "debug_stats": debug_stats,
         }
 
@@ -185,6 +211,10 @@ def _run_scenario_subprocess(
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
 ) -> dict[str, Any]:
+    effective_timeout_seconds = _effective_worker_timeout_seconds(
+        timeout_seconds=timeout_seconds,
+        time_budget_ms=time_budget_ms,
+    )
     cmd = _build_worker_command(
         master_dir=master_dir,
         scenario_path=scenario_path,
@@ -203,21 +233,27 @@ def _run_scenario_subprocess(
         start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        stdout, stderr = process.communicate(timeout=effective_timeout_seconds)
     except subprocess.TimeoutExpired:
         _kill_worker_process_group(process)
         return {
             "scenario": scenario_path.name,
             "solved": False,
             "error": "timeout",
+            "error_category": "timeout",
+            "retryable": False,
             "debug_stats": {},
         }
 
     if process.returncode != 0:
+        error = stderr.strip() or f"worker exited with code {process.returncode}"
+        error_category = _classify_solve_error(error)
         return {
             "scenario": scenario_path.name,
             "solved": False,
-            "error": stderr.strip() or f"worker exited with code {process.returncode}",
+            "error": error,
+            "error_category": error_category,
+            "retryable": _is_retryable_error_category(error_category),
             "debug_stats": {},
         }
     return json.loads(stdout)
@@ -229,7 +265,25 @@ def _kill_worker_process_group(process: subprocess.Popen[str]) -> None:
     except ProcessLookupError:
         pass
     finally:
-        process.wait()
+            process.wait()
+
+
+def _effective_worker_timeout_seconds(
+    *,
+    timeout_seconds: int,
+    time_budget_ms: float | None,
+) -> int:
+    if time_budget_ms is None:
+        return timeout_seconds
+    budget_seconds = time_budget_ms / 1000.0
+    budget_bound = int(budget_seconds * WORKER_TIMEOUT_BUDGET_MULTIPLIER + WORKER_TIMEOUT_GRACE_SECONDS)
+    return max(timeout_seconds, budget_bound)
+
+
+def _retry_time_budget_ms(time_budget_ms: float | None) -> float | None:
+    if time_budget_ms is None:
+        return None
+    return max(time_budget_ms * RETRY_TIME_BUDGET_MULTIPLIER, RETRY_MIN_TIME_BUDGET_MS)
 
 
 def run_parallel_scenarios(
@@ -310,11 +364,12 @@ def recover_no_solution_results(
             if (
                 scenario_name in scenario_path_by_name
                 and not merged_results[scenario_name].get("solved")
-                and "No solution found" in merged_results[scenario_name].get("error", "")
+                and _is_retryable_no_solution_error(merged_results[scenario_name].get("error", ""))
             )
         ]
         if not retry_scenarios:
             break
+        retry_time_budget_ms = _retry_time_budget_ms(time_budget_ms)
         retry_results = run_parallel_scenarios(
             master_dir=master_dir,
             scenario_paths=retry_scenarios,
@@ -322,8 +377,8 @@ def recover_no_solution_results(
             beam_width=retry_beam_width,
             heuristic_weight=heuristic_weight,
             timeout_seconds=timeout_seconds,
-            max_workers=max_workers,
-            time_budget_ms=time_budget_ms,
+            max_workers=1,
+            time_budget_ms=retry_time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
@@ -332,8 +387,29 @@ def recover_no_solution_results(
                 continue
             recovered = dict(retry_result)
             recovered["recovery_beam_width"] = retry_beam_width
+            recovered["recovery_time_budget_ms"] = retry_time_budget_ms
             merged_results[retry_result["scenario"]] = recovered
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
+
+
+def _is_retryable_no_solution_error(error: str) -> bool:
+    normalized = (error or "").strip().lower()
+    return normalized in {"no solution found", "no solution within budget"}
+
+
+def _classify_solve_error(error: str) -> str:
+    normalized = (error or "").strip().lower()
+    if "final arrangement exceeds track capacity" in normalized:
+        return "capacity_infeasible"
+    if _is_retryable_no_solution_error(normalized):
+        return "no_solution"
+    if normalized == "timeout":
+        return "timeout"
+    return "solver_error"
+
+
+def _is_retryable_error_category(error_category: str) -> bool:
+    return error_category == "no_solution"
 
 
 def _resolve_retry_no_solution_beam_width(
@@ -356,8 +432,8 @@ def _build_retry_beam_widths(
     retry_no_solution_beam_width: int,
 ) -> list[int]:
     if retry_no_solution_beam_width <= beam_width:
-        return []
-    retry_beam_widths: list[int] = []
+        return [beam_width]
+    retry_beam_widths: list[int] = [beam_width]
     multiplier = 2
     while multiplier * beam_width < retry_no_solution_beam_width:
         retry_beam_widths.append(multiplier * beam_width)

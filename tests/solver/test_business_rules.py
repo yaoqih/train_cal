@@ -117,12 +117,20 @@ def test_verifier_rejects_close_door_vehicle_at_front_of_cun4bei():
         [
             {
                 "hookNo": 1,
-                "actionType": "PUT",
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": ["CLOSE1"],
+                "pathTracks": ["存5北"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "DETACH",
                 "sourceTrack": "存5北",
                 "targetTrack": "存4北",
                 "vehicleNos": ["CLOSE1"],
                 "pathTracks": ["存5北", "存4北"],
-            }
+            },
         ],
     )
 

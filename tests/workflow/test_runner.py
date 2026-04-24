@@ -189,7 +189,8 @@ def test_solve_workflow_carries_weigh_state_across_stages():
     assert result.stages[1].view is not None
     assert result.stages[0].view.steps[-1].weighed_vehicle_nos == ["WFWEIGH1"]
     assert result.stages[1].view.steps[0].weighed_vehicle_nos == ["WFWEIGH1"]
-    assert [hook.target_track for hook in result.stages[1].view.hook_plan] == ["存4北"]
+    assert [hook.target_track for hook in result.stages[1].view.hook_plan] == ["机库", "存4北"]
+    assert [hook.action_type for hook in result.stages[1].view.hook_plan] == ["ATTACH", "DETACH"]
     assert result.stages[1].view.hook_plan[0].source_track == "机库"
 
 

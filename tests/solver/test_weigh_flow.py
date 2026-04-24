@@ -50,7 +50,8 @@ def test_solver_inserts_jiku_step_for_weigh_vehicle():
     ]
     report = verify_plan(master, normalized, hook_plan)
 
-    assert [item["targetTrack"] for item in hook_plan] == ["机库", "存4北"]
+    assert [item["actionType"] for item in hook_plan] == ["ATTACH", "DETACH", "ATTACH", "DETACH"]
+    assert [item["targetTrack"] for item in hook_plan if item["actionType"] == "DETACH"] == ["机库", "存4北"]
     assert report.is_valid is True
 
 
@@ -85,12 +86,20 @@ def test_verifier_rejects_direct_move_for_weigh_vehicle():
         [
             {
                 "hookNo": 1,
-                "actionType": "PUT",
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": ["W2"],
+                "pathTracks": ["存5北"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "DETACH",
                 "sourceTrack": "存5北",
                 "targetTrack": "存4北",
                 "vehicleNos": ["W2"],
                 "pathTracks": ["存5北", "存4北"],
-            }
+            },
         ],
     )
 

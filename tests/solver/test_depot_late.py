@@ -8,6 +8,7 @@ from fzed_shunting.solver.depot_late import (
     depot_index_sum,
     is_depot_hook,
 )
+from fzed_shunting.solver.lns import _plan_quality
 from fzed_shunting.solver.types import HookAction
 
 
@@ -17,7 +18,17 @@ def _hook(source: str, target: str, vehicles: list[str] | None = None) -> HookAc
         target_track=target,
         vehicle_nos=vehicles or ["V1"],
         path_tracks=[source, target],
-        action_type="PUT",
+        action_type="DETACH",
+    )
+
+
+def _attach(source: str, vehicles: list[str] | None = None) -> HookAction:
+    return HookAction(
+        source_track=source,
+        target_track=source,
+        vehicle_nos=vehicles or ["V1"],
+        path_tracks=[source],
+        action_type="ATTACH",
     )
 
 
@@ -101,6 +112,48 @@ class TestDepotMetrics:
         n = len(plan)
         k = sum(1 for h in plan if is_depot_hook(h))
         assert depot_earliness(plan) + depot_index_sum(plan) == k * n
+
+    def test_depot_late_quality_keeps_primary_metrics_before_earliness(self) -> None:
+        shorter_early_depot = [
+            _hook("修1库内", "存4北"),
+            _hook("存1", "调北"),
+        ]
+        longer_late_depot = [
+            _hook("存1", "调北"),
+            _hook("调北", "预修"),
+            _hook("修1库内", "存4北"),
+        ]
+        assert _plan_quality(shorter_early_depot, None, depot_late=True) < _plan_quality(
+            longer_late_depot,
+            None,
+            depot_late=True,
+        )
+
+        lower_route_cost = [
+            HookAction(
+                source_track="存1",
+                target_track="调北",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "调北"],
+                action_type="DETACH",
+            ),
+            _hook("修1库内", "存4北"),
+        ]
+        higher_route_cost_but_later_depot = [
+            HookAction(
+                source_track="存1",
+                target_track="调北",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "临1", "临2", "调北"],
+                action_type="DETACH",
+            ),
+            _hook("修1库内", "存4北"),
+        ]
+        assert _plan_quality(lower_route_cost, None, depot_late=True) < _plan_quality(
+            higher_route_cost_but_later_depot,
+            None,
+            depot_late=True,
+        )
 
 
 from fzed_shunting.io.normalize_input import (
@@ -201,12 +254,15 @@ class TestReorderDepotLate:
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
+            _attach("存1", ["V1"]),
             _hook("存1", "修1库内", ["V1"]),
+            _attach("存2", ["V2"]),
             _hook("存2", "存4北", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
-        assert reordered[0].target_track == "存4北"
-        assert reordered[1].target_track == "修1库内"
+        assert [hook.action_type for hook in reordered] == ["ATTACH", "ATTACH", "DETACH", "DETACH"]
+        assert reordered[1].target_track == "存2"
+        assert reordered[2].target_track == "修1库内"
         assert depot_earliness(reordered) < depot_earliness(plan)
 
     def test_reorder_rejects_dependent_swap(self) -> None:
@@ -215,6 +271,9 @@ class TestReorderDepotLate:
         ])
         initial = _state({"存1": ["V1"]})
         plan = [
+            _attach("存1", ["V1"]),
+            _hook("存1", "修1库外", ["V1"]),
+            _attach("修1库外", ["V1"]),
             _hook("存1", "修1库外", ["V1"]),
             _hook("修1库外", "修1库内", ["V1"]),
         ]
@@ -233,7 +292,9 @@ class TestReorderDepotLate:
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
+            _attach("存1", ["V1"]),
             _hook("存1", "存4北", ["V1"]),
+            _attach("存2", ["V2"]),
             _hook("存2", "修1库内", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
@@ -279,21 +340,27 @@ class TestReorderDepotLate:
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"], "存3": ["V3"]})
         plan = [
+            _attach("存1", ["V1"]),
             _hook("存1", "修1库内", ["V1"]),
+            _attach("存3", ["V3"]),
             _hook("存3", "存4北", ["V3"]),
+            _attach("存2", ["V2"]),
             _hook("存2", "修1库内", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
 
-        # The swap succeeded: V3 (non-depot) is now first, pushing V1's
-        # depot hook from index 1 to index 2. V2 stays at index 3.
-        assert [h.target_track for h in reordered] == [
-            "存4北",
-            "修1库内",
-            "修1库内",
+        # The swap succeeded at the atomic-hook level:
+        # ATTACH(V3) moves ahead of DETACH(V1->修1库内), delaying the first depot hook by one step.
+        assert [h.action_type for h in reordered] == [
+            "ATTACH",
+            "ATTACH",
+            "DETACH",
+            "DETACH",
+            "ATTACH",
+            "DETACH",
         ]
-        assert [h.vehicle_nos for h in reordered] == [["V3"], ["V1"], ["V2"]]
-        # Earliness strictly improved (V1 moved from index 1 to index 2).
+        assert [h.vehicle_nos for h in reordered] == [["V1"], ["V3"], ["V1"], ["V3"], ["V2"], ["V2"]]
+        # Earliness strictly improved (the first depot DETACH moved from step 2 to step 3).
         assert depot_earliness(reordered) < depot_earliness(plan)
 
     def test_reorder_semantic_topo_jumps_past_blocked_swap(self) -> None:
@@ -322,19 +389,21 @@ class TestReorderDepotLate:
         assert reordered == plan
 
     def test_reorder_topological_handles_simple_swap(self) -> None:
-        """The existing simple-swap case should still produce the same result."""
+        """The existing simple-swap case should still improve at the atomic-hook level."""
         plan_input = _plan_input([
             _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存2", ["存4北"]),
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
+            _attach("存1", ["V1"]),
             _hook("存1", "修1库内", ["V1"]),
+            _attach("存2", ["V2"]),
             _hook("存2", "存4北", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
-        assert reordered[0].vehicle_nos == ["V2"]
-        assert reordered[1].vehicle_nos == ["V1"]
+        assert reordered[1].vehicle_nos == ["V2"]
+        assert reordered[2].vehicle_nos == ["V1"]
 
 
 from fzed_shunting.solver.search import _priority
@@ -353,7 +422,8 @@ class TestSearchPriorityDepotSecondary:
         assert legacy[1] == 3
         assert legacy[2] == 0
         assert legacy[3] == 5
-        assert legacy[4] == 0
+        assert legacy[4] == (0, 0, 0)
+        assert legacy[5] == 0
 
     def test_flag_on_smaller_neg_index_sum_preferred(self) -> None:
         # Two nodes same (cost, heuristic). Node A has depot at index 3
@@ -389,14 +459,14 @@ class TestSearchPriorityDepotSecondary:
 
     def test_beam_mode_preserves_blocker_index(self) -> None:
         # Regression guard for _prune_queue: it reads priority[?] for blocker.
-        # After secondary insert, blocker_bonus lives at index 4.
+        # After purity insertion, blocker_bonus lives at index -2.
         p = _priority(
             cost=2, heuristic=3, blocker_bonus=1,
             solver_mode="beam", heuristic_weight=1.0,
             neg_depot_index_sum=0,
         )
-        # beam: (f, cost, neg_depot, adj_h, -blocker, h)
-        assert p[4] == -1
+        # beam: (f, cost, neg_depot, adj_h, purity, -blocker, h)
+        assert p[-2] == -1
 
 
 from fzed_shunting.solver.lns import _is_better_plan, _plan_quality

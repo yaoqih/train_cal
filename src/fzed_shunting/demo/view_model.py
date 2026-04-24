@@ -189,7 +189,7 @@ def build_demo_view_model(
     }
     final_state = replay.final_state
     summary = DemoSummary(
-        hook_count=sum(1 for h in hook_plan if h.action_type != "ATTACH"),
+        hook_count=len(hook_plan),
         vehicle_count=len(normalized.vehicles),
         is_valid=verify_report.is_valid,
         error_count=len(verify_report.errors),
@@ -218,7 +218,7 @@ def build_demo_view_model(
                 time_budget_ms=time_budget_ms,
             )
             if solver_plan:
-                solver_hook_count = sum(1 for a in solver_plan if a.action_type != "ATTACH")
+                solver_hook_count = len(solver_plan)
             else:
                 solver_error = "No solution found"
         except Exception as exc:  # noqa: BLE001

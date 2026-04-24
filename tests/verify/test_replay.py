@@ -8,6 +8,33 @@ from fzed_shunting.verify.replay import build_initial_state, replay_plan
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
 
 
+def _native_direct_plan(
+    *,
+    source_track: str,
+    target_track: str,
+    vehicle_nos: list[str],
+    detach_path_tracks: list[str],
+) -> list[dict]:
+    return [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": source_track,
+            "targetTrack": source_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": [source_track],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": source_track,
+            "targetTrack": target_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": detach_path_tracks,
+        },
+    ]
+
+
 def test_build_initial_state_orders_vehicles_north_to_south():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -48,7 +75,7 @@ def test_build_initial_state_orders_vehicles_north_to_south():
     assert state.track_sequences["存5北"] == ["B1", "B2"]
 
 
-def test_replay_put_action_moves_front_block():
+def test_replay_native_attach_and_detach_move_front_block():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -75,21 +102,63 @@ def test_replay_put_action_moves_front_block():
 
     result = replay_plan(
         initial,
-        [
-            {
-                "hookNo": 1,
-                "actionType": "PUT",
-                "sourceTrack": "存5北",
-                "targetTrack": "机库",
-                "vehicleNos": ["C1"],
-                "pathTracks": ["存5北", "机库"],
-            }
-        ],
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="机库",
+            vehicle_nos=["C1"],
+            detach_path_tracks=["存5北", "机库"],
+        ),
     )
 
     assert result.final_state.track_sequences["存5北"] == []
     assert result.final_state.track_sequences["机库"] == ["C1"]
-    assert len(result.snapshots) == 2
+    assert len(result.snapshots) == 3
+
+
+def test_replay_attach_releases_source_spot_assignment():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "C_ATTACH",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    assert initial.spot_assignments == {"C_ATTACH": "101"}
+
+    result = replay_plan(
+        initial,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "修1库内",
+                "targetTrack": "修1库内",
+                "vehicleNos": ["C_ATTACH"],
+                "pathTracks": ["修1库内"],
+            }
+        ],
+        plan_input=normalized,
+    )
+
+    assert result.final_state.track_sequences["修1库内"] == []
+    assert result.final_state.loco_carry == ("C_ATTACH",)
+    assert result.final_state.spot_assignments == {}
 
 
 def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
@@ -119,16 +188,12 @@ def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
 
     result = replay_plan(
         initial,
-        [
-            {
-                "hookNo": 1,
-                "actionType": "PUT",
-                "sourceTrack": "存5北",
-                "targetTrack": "修1库内",
-                "vehicleNos": ["C2"],
-                "pathTracks": ["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
-            }
-        ],
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="修1库内",
+            vehicle_nos=["C2"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+        ),
         plan_input=normalized,
     )
 
@@ -163,16 +228,12 @@ def test_replay_assigns_dispatch_work_spot_when_moving_into_work_area():
 
     result = replay_plan(
         initial,
-        [
-            {
-                "hookNo": 1,
-                "actionType": "PUT",
-                "sourceTrack": "存5北",
-                "targetTrack": "调棚",
-                "vehicleNos": ["C3"],
-                "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
-            }
-        ],
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="调棚",
+            vehicle_nos=["C3"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
+        ),
         plan_input=normalized,
     )
 
@@ -207,16 +268,12 @@ def test_replay_assigns_dispatch_pre_repair_spot():
 
     result = replay_plan(
         initial,
-        [
-            {
-                "hookNo": 1,
-                "actionType": "PUT",
-                "sourceTrack": "存5北",
-                "targetTrack": "调棚",
-                "vehicleNos": ["C4"],
-                "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
-            }
-        ],
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="调棚",
+            vehicle_nos=["C4"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
+        ),
         plan_input=normalized,
     )
 

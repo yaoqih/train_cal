@@ -42,8 +42,8 @@ def test_build_topology_graph_dot_marks_active_and_inactive_edges():
     view = build_demo_view_model(master, payload)
 
     dot = app._build_topology_graph_dot(
-        view.steps[1].topology_graph,
-        view.steps[1].track_map,
+        view.steps[2].topology_graph,
+        view.steps[2].track_map,
     )
 
     assert dot.startswith("graph shunting_topology {")
@@ -77,10 +77,10 @@ def test_build_topology_svg_contains_schematic_areas_and_motion_marker():
     view = build_demo_view_model(master, payload)
 
     svg = app._build_topology_svg(
-        view.steps[1].topology_graph,
-        view.steps[1].track_map,
-        hook=view.steps[1].hook,
-        transition_frame=view.steps[1].transition_frames[3],
+        view.steps[2].topology_graph,
+        view.steps[2].track_map,
+        hook=view.steps[2].hook,
+        transition_frame=view.steps[2].transition_frames[3],
     )
 
     assert svg.startswith("<svg")
@@ -115,9 +115,9 @@ def test_build_topology_svg_can_emit_animated_route():
     view = build_demo_view_model(master, payload)
 
     svg = app._build_topology_svg(
-        view.steps[1].topology_graph,
-        view.steps[1].track_map,
-        hook=view.steps[1].hook,
+        view.steps[2].topology_graph,
+        view.steps[2].track_map,
+        hook=view.steps[2].hook,
         animate=True,
     )
 
@@ -185,9 +185,9 @@ def test_build_topology_svg_does_not_render_all_track_labels_by_default():
     view = build_demo_view_model(master, payload)
 
     svg = app._build_topology_svg(
-        view.steps[1].topology_graph,
-        view.steps[1].track_map,
-        hook=view.steps[1].hook,
+        view.steps[2].topology_graph,
+        view.steps[2].track_map,
+        hook=view.steps[2].hook,
     )
 
     assert 'class="topology-background"' not in svg
@@ -219,12 +219,12 @@ def test_build_topology_svg_uses_schematic_points_for_current_track_and_loco_mar
         "locoTrackName": "机库",
     }
     view = build_demo_view_model(master, payload)
-    frame = view.steps[1].transition_frames[2]
+    frame = view.steps[2].transition_frames[2]
 
     svg = app._build_topology_svg(
-        view.steps[1].topology_graph,
-        view.steps[1].track_map,
-        hook=view.steps[1].hook,
+        view.steps[2].topology_graph,
+        view.steps[2].track_map,
+        hook=view.steps[2].hook,
         transition_frame=frame,
     )
 
@@ -535,7 +535,15 @@ def test_build_comparison_panel_uses_demo_view_model_summary():
     plan_payload = [
         {
             "hookNo": 1,
-            "actionType": "PUT",
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": ["APP_CMP_1"],
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
             "sourceTrack": "存5北",
             "targetTrack": "机库",
             "vehicleNos": ["APP_CMP_1"],
@@ -547,8 +555,8 @@ def test_build_comparison_panel_uses_demo_view_model_summary():
     panel = app._build_comparison_panel(view.comparison_summary)
 
     assert panel["metrics"] == [
-        {"label": "外部钩数", "value": 1},
-        {"label": "求解器钩数", "value": 1},
+        {"label": "外部钩数", "value": 2},
+        {"label": "求解器钩数", "value": 2},
         {"label": "钩数差值", "value": 0},
         {"label": "外部计划校验", "value": "PASS"},
     ]

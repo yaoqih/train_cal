@@ -9,6 +9,41 @@ from fzed_shunting.sim.generator import generate_typical_suite
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
 
 
+def _native_direct_plan(
+    *,
+    source_track: str,
+    target_track: str,
+    vehicle_nos: list[str],
+    detach_path_tracks: list[str],
+) -> list[dict]:
+    return [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": source_track,
+            "targetTrack": source_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": [source_track],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": source_track,
+            "targetTrack": target_track,
+            "vehicleNos": vehicle_nos,
+            "pathTracks": detach_path_tracks,
+        },
+    ]
+
+
+def _hook_steps(view):
+    return [step for step in view.steps if step.hook]
+
+
+def _detach_steps(view):
+    return [step for step in view.steps if step.hook and step.hook.action_type == "DETACH"]
+
+
 def test_build_demo_view_model_for_single_hook_case():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -34,20 +69,68 @@ def test_build_demo_view_model_for_single_hook_case():
 
     view = build_demo_view_model(master, payload)
 
-    assert view.summary.hook_count == 1
+    assert view.summary.hook_count == 2
     assert view.summary.vehicle_count == 1
     assert view.summary.is_valid is True
-    assert len(view.steps) == 2
-    assert set(view.steps[1].changed_tracks) == {"存5北", "机库"}
-    assert view.steps[1].hook.target_track == "机库"
-    assert view.hook_plan[0].vehicle_count == 1
-    assert view.hook_plan[0].route_length_m and view.hook_plan[0].route_length_m > 0
-    assert view.hook_plan[0].remark
+    assert len(view.steps) == 3
+    assert [step.hook.action_type for step in view.steps[1:] if step.hook] == ["ATTACH", "DETACH"]
+    assert set(view.steps[2].changed_tracks) == {"存5北", "机库"}
+    assert view.steps[2].hook.target_track == "机库"
+    assert view.hook_plan[1].vehicle_count == 1
+    assert view.hook_plan[1].route_length_m and view.hook_plan[1].route_length_m > 0
+    assert view.hook_plan[1].remark
     assert view.track_map.track_nodes["存5北"].is_occupied is True
     assert view.track_map.track_nodes["机库"].is_occupied is False
-    assert view.steps[1].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
-    assert view.steps[1].track_map.changed_tracks == ["存5北", "机库"]
-    assert view.steps[1].track_map.track_nodes["机库"].has_loco is True
+    assert view.steps[2].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert view.steps[2].track_map.changed_tracks == ["存5北", "机库"]
+    assert view.steps[2].track_map.track_nodes["机库"].has_loco is True
+
+
+def test_build_demo_view_model_counts_atomic_attach_and_detach_hooks():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "V_ATOMIC_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    plan_payload = [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": ["V_ATOMIC_1"],
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "机库",
+            "vehicleNos": ["V_ATOMIC_1"],
+            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        },
+    ]
+
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+
+    assert view.summary.hook_count == 2
+    assert [step.hook.action_type for step in view.steps[1:] if step.hook] == ["ATTACH", "DETACH"]
 
 
 def test_build_demo_view_model_keeps_verifier_errors():
@@ -77,7 +160,7 @@ def test_build_demo_view_model_keeps_verifier_errors():
     view = build_demo_view_model(master, payload)
 
     assert view.summary.is_valid is True
-    assert [step.hook.target_track for step in view.steps[1:] if step.hook] == ["机库", "存4北"]
+    assert [step.hook.target_track for step in _detach_steps(view)] == ["机库", "存4北"]
 
 
 def test_build_demo_view_model_skips_external_plan_comparison_by_default(monkeypatch):
@@ -102,16 +185,12 @@ def test_build_demo_view_model_skips_external_plan_comparison_by_default(monkeyp
         ],
         "locoTrackName": "机库",
     }
-    plan_payload = [
-        {
-            "hookNo": 1,
-            "actionType": "PUT",
-            "sourceTrack": "存5北",
-            "targetTrack": "机库",
-            "vehicleNos": ["CMP_SKIP_1"],
-            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
-        }
-    ]
+    plan_payload = _native_direct_plan(
+        source_track="存5北",
+        target_track="机库",
+        vehicle_nos=["CMP_SKIP_1"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+    )
 
     def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("solve_with_simple_astar should not run for external plan replay by default")
@@ -150,7 +229,7 @@ def test_build_demo_view_model_supports_weighted_solver_mode():
     view = build_demo_view_model(master, payload, solver="weighted", heuristic_weight=2.0)
 
     assert view.summary.is_valid is True
-    assert view.summary.hook_count == 1
+    assert view.summary.hook_count == 2
 
 
 def test_build_demo_view_model_supports_lns_solver_mode():
@@ -179,7 +258,7 @@ def test_build_demo_view_model_supports_lns_solver_mode():
     view = build_demo_view_model(master, payload, solver="lns", beam_width=8)
 
     assert view.summary.is_valid is True
-    assert view.summary.hook_count == 1
+    assert view.summary.hook_count == 2
 
 
 def test_build_demo_view_model_exposes_depot_spot_assignments():
@@ -209,8 +288,8 @@ def test_build_demo_view_model_exposes_depot_spot_assignments():
 
     assert view.summary.assigned_spot_count == 1
     assert view.final_spot_assignments == {"V3": "101"}
-    assert view.steps[1].spot_assignments == {"V3": "101"}
-    assert "L19-修1尽头" in view.hook_plan[0].reverse_branch_codes
+    assert _detach_steps(view)[0].spot_assignments == {"V3": "101"}
+    assert "L19-修1尽头" in view.hook_plan[-1].reverse_branch_codes
 
 
 def test_build_demo_view_model_exposes_dispatch_work_spot_assignments():
@@ -240,7 +319,7 @@ def test_build_demo_view_model_exposes_dispatch_work_spot_assignments():
 
     assert view.summary.assigned_spot_count == 1
     assert view.final_spot_assignments == {"V5": "调棚:1"}
-    assert view.steps[1].spot_assignments == {"V5": "调棚:1"}
+    assert _detach_steps(view)[0].spot_assignments == {"V5": "调棚:1"}
 
 
 def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
@@ -277,26 +356,22 @@ def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
         ],
         "locoTrackName": "机库",
     }
-    plan_payload = [
-        {
-            "hookNo": 1,
-            "actionType": "PUT",
-            "sourceTrack": "存5北",
-            "targetTrack": "修1库内",
-            "vehicleNos": ["V4"],
-            "pathTracks": ["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
-        }
-    ]
+    plan_payload = _native_direct_plan(
+        source_track="存5北",
+        target_track="修1库内",
+        vehicle_nos=["V4"],
+        detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+    )
 
     view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
 
     assert view.summary.is_valid is False
-    assert view.failed_hook_nos == [1]
-    assert any("interference" in error.lower() for error in view.steps[1].verifier_errors)
+    assert view.failed_hook_nos == [2]
+    assert any("interference" in error.lower() for error in view.steps[2].verifier_errors)
     assert view.comparison_summary is not None
-    assert view.comparison_summary["externalHookCount"] == 1
+    assert view.comparison_summary["externalHookCount"] == 2
     assert view.comparison_summary["externalIsValid"] is False
-    assert view.comparison_summary["failedHookNos"] == [1]
+    assert view.comparison_summary["failedHookNos"] == [2]
     assert view.comparison_summary["solverHookCount"] is None
     assert "No solution found" in view.comparison_summary["solverError"]
 
@@ -323,22 +398,18 @@ def test_build_demo_view_model_computes_external_plan_comparison_summary():
         ],
         "locoTrackName": "机库",
     }
-    plan_payload = [
-        {
-            "hookNo": 1,
-            "actionType": "PUT",
-            "sourceTrack": "存5北",
-            "targetTrack": "机库",
-            "vehicleNos": ["CMP1"],
-            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
-        }
-    ]
+    plan_payload = _native_direct_plan(
+        source_track="存5北",
+        target_track="机库",
+        vehicle_nos=["CMP1"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+    )
 
     view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
 
     assert view.comparison_summary is not None
-    assert view.comparison_summary["solverHookCount"] == 1
-    assert view.comparison_summary["externalHookCount"] == 1
+    assert view.comparison_summary["solverHookCount"] == 2
+    assert view.comparison_summary["externalHookCount"] == 2
     assert view.comparison_summary["hookCountDelta"] == 0
     assert view.comparison_summary["externalIsValid"] is True
     assert view.comparison_summary["failedHookNos"] == []
@@ -436,13 +507,14 @@ def test_build_demo_view_model_exposes_track_map_for_intermediate_step():
     }
 
     view = build_demo_view_model(master, payload)
+    detach_steps = _detach_steps(view)
 
-    assert len(view.steps) == 3
-    assert view.steps[1].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
-    assert view.steps[1].track_map.track_nodes["机库"].is_occupied is True
-    assert view.steps[1].track_map.track_nodes["机库"].has_loco is True
-    assert view.steps[2].track_map.active_path_tracks == ["机库", "渡4", "临2", "临1", "渡2", "渡1", "存4北"]
-    assert view.steps[2].track_map.track_nodes["存4北"].is_occupied is True
+    assert len(view.steps) == 5
+    assert detach_steps[0].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert detach_steps[0].track_map.track_nodes["机库"].is_occupied is True
+    assert detach_steps[0].track_map.track_nodes["机库"].has_loco is True
+    assert detach_steps[1].track_map.active_path_tracks == ["机库", "渡4", "临2", "临1", "渡2", "渡1", "存4北"]
+    assert detach_steps[1].track_map.track_nodes["存4北"].is_occupied is True
 
 
 def test_build_demo_view_model_exposes_topology_graph_edges():
@@ -474,7 +546,7 @@ def test_build_demo_view_model_exposes_topology_graph_edges():
     assert "机库" in view.topology_graph.nodes
     assert ("存5北", "渡1") in view.topology_graph.edge_keys
     assert ("渡4", "机库") in view.topology_graph.edge_keys
-    assert view.steps[1].topology_graph.active_edge_keys == [
+    assert _detach_steps(view)[0].topology_graph.active_edge_keys == [
         ("存5北", "渡1"),
         ("渡1", "渡2"),
         ("渡2", "临1"),
@@ -508,9 +580,10 @@ def test_build_demo_view_model_exposes_transition_frames_for_hook_motion():
     }
 
     view = build_demo_view_model(master, payload)
-    frames = view.steps[1].transition_frames
+    detach_step = _detach_steps(view)[0]
+    frames = detach_step.transition_frames
 
-    assert len(frames) > len(view.steps[1].hook.path_tracks)
+    assert len(frames) > len(detach_step.hook.path_tracks)
     assert frames[0].frame_index == 0
     assert frames[0].progress == 0.0
     assert frames[0].current_track == "存5北"
