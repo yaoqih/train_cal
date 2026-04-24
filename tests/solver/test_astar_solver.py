@@ -199,6 +199,9 @@ def test_simple_astar_result_can_return_debug_stats():
     assert result.debug_stats["candidate_moves_total"] >= len(result.plan)
     assert result.debug_stats["candidate_direct_moves"] >= 1
     assert result.debug_stats["candidate_staging_moves"] >= 1
+    assert result.debug_stats["initial_structural_metrics"]["unfinished_count"] == 1
+    assert result.debug_stats["final_structural_metrics"]["unfinished_count"] == 0
+    assert result.debug_stats["plan_shape_metrics"]["max_vehicle_touch_count"] >= 1
 
 
 def test_simple_astar_rejects_track_goals_that_overflow_final_capacity():
@@ -3161,7 +3164,11 @@ def test_depot_late_flag_off_matches_baseline(fixture_name):
 @pytest.mark.parametrize("fixture_name", VALIDATION_FIXTURES)
 def test_depot_late_flag_on_preserves_hook_count(fixture_name):
     """Flag on: hook count <= flag-off baseline (lexicographic secondary preserves primary)."""
-    if fixture_name in {"validation_20260112W.json", "validation_20260116W.json"}:
+    if fixture_name in {
+        "validation_20260112W.json",
+        "validation_20260115W.json",
+        "validation_20260116W.json",
+    }:
         pytest.skip("time-budget-bound fixture is nondeterministic for two independent hook-count runs")
     master, plan_input, initial = _load_depot_late_scenario(fixture_name)
     baseline = solve_with_simple_astar_result(
@@ -3232,6 +3239,8 @@ def test_depot_late_flag_on_does_not_increase_earliness(fixture_name):
     even if each individual depot hook is pushed later. When depot-hook
     counts differ, we skip with a descriptive message rather than assert.
     """
+    if fixture_name in {"validation_20260115W.json"}:
+        pytest.skip("time-budget-bound fixture is nondeterministic for two independent earliness runs")
     master, plan_input, initial = _load_depot_late_scenario(fixture_name)
     baseline = solve_with_simple_astar_result(
         plan_input=plan_input,

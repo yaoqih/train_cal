@@ -43,6 +43,10 @@ from fzed_shunting.solver.state import (
     _state_key,
     _vehicle_track_lookup,
 )
+from fzed_shunting.solver.structural_metrics import (
+    compute_structural_metrics,
+    summarize_plan_shape,
+)
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -530,6 +534,13 @@ def solve_with_simple_astar_result(
         ),
     )
 
+    result = _attach_structural_debug_stats(
+        result,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        debug_stats=debug_stats,
+    )
+
     if verify:
         _ts = perf_counter()
         result = _attach_verification(
@@ -550,6 +561,52 @@ def solve_with_simple_astar_result(
     )
     emit_telemetry(telemetry)
     return replace(result, telemetry=telemetry)
+
+
+def _attach_structural_debug_stats(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    debug_stats: dict[str, Any] | None,
+) -> SolverResult:
+    stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
+    stats["initial_structural_metrics"] = compute_structural_metrics(
+        plan_input,
+        initial_state,
+    ).to_dict()
+    active_plan = result.plan if result.is_complete else result.partial_plan
+    stats["plan_shape_metrics"] = summarize_plan_shape(active_plan)
+    final_state = _replay_solver_moves(
+        plan_input=plan_input,
+        initial_state=initial_state,
+        plan=active_plan,
+    )
+    if final_state is not None:
+        key = "final_structural_metrics" if result.is_complete else "partial_structural_metrics"
+        stats[key] = compute_structural_metrics(plan_input, final_state).to_dict()
+    return replace(result, debug_stats=stats)
+
+
+def _replay_solver_moves(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    plan: list[HookAction],
+) -> ReplayState | None:
+    state = ReplayState.model_validate(initial_state.model_dump())
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    try:
+        for move in plan:
+            state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return state
 
 
 def _build_telemetry(
