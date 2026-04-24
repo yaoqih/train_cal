@@ -1147,7 +1147,7 @@ def _candidate_targets(
                     state=state,
                     plan_input=plan_input,
                 ) or 0,
-                -sum(length_by_vehicle[vehicle_no] for vehicle_no in state.track_sequences.get(track_name, [])),
+                sum(length_by_vehicle[vehicle_no] for vehicle_no in state.track_sequences.get(track_name, [])),
                 track_name,
             )
         )

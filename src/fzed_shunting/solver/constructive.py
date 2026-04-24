@@ -40,6 +40,7 @@ from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.state import _state_key
+from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -731,6 +732,25 @@ def _score_native_move(
         )
     )
     is_staging_detach = move.action_type == "DETACH" and not is_goal_detach
+    consumes_close_door_pushers = _move_consumes_close_door_pushers(
+        move=move,
+        state=state,
+        next_state=next_state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
+    traps_close_door_behind_pushers = _move_traps_close_door_behind_pushers(
+        move=move,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
+    close_door_sequence_debt = _close_door_sequence_debt(
+        move=move,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
     preferred_violation_delta = 0
     if move.action_type == "DETACH":
         for vehicle_no in move.vehicle_nos:
@@ -762,6 +782,8 @@ def _score_native_move(
         tier = 5
     else:
         tier = 6
+    if (consumes_close_door_pushers or traps_close_door_behind_pushers) and tier < 5:
+        tier = 5
 
     burial_depth = _move_burial_depth(
         move=move,
@@ -773,6 +795,10 @@ def _score_native_move(
         plan_input,
         next_state,
     )
+    next_structure = compute_structural_metrics(
+        plan_input,
+        next_state,
+    )
     if is_regrabbing_unfinished_staging and tier < 5:
         tier = 5
 
@@ -780,10 +806,16 @@ def _score_native_move(
         tier,
         1 if repeats_recent_state else 0,
         1 if is_regrabbing_unfinished_staging else 0,
+        1 if consumes_close_door_pushers or traps_close_door_behind_pushers else 0,
+        close_door_sequence_debt,
         0 if preferred_violation_delta < 0 else 1 if preferred_violation_delta == 0 else 2,
         future_detach_groups,
         next_heuristic,
         next_purity.preferred_violation_count,
+        next_structure.goal_track_blocker_count,
+        next_structure.front_blocker_count,
+        next_structure.staging_debt_count,
+        next_structure.area_random_unfinished_count,
         next_purity.staging_pollution_count,
         next_purity.unfinished_count,
         0 if move.action_type == "DETACH" else 1,
@@ -794,6 +826,133 @@ def _score_native_move(
         move.target_track,
     )
     return score, tier
+
+
+def _close_door_sequence_debt(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    if move.action_type != "ATTACH" or state.loco_carry:
+        return 0
+    unresolved_close_door_nos = {
+        vehicle.vehicle_no
+        for vehicle in plan_input.vehicles
+        if (
+            vehicle.is_close_door
+            and "存4北" in vehicle.goal.allowed_target_tracks
+            and (
+                (track := _locate_vehicle_in_state(state, vehicle.vehicle_no)) is None
+                or not goal_is_satisfied(
+                    vehicle,
+                    track_name=track,
+                    state=state,
+                    plan_input=plan_input,
+                )
+            )
+        )
+    }
+    if not unresolved_close_door_nos:
+        return 0
+    moved_has_close_door = any(vehicle_no in unresolved_close_door_nos for vehicle_no in move.vehicle_nos)
+    moved_pushers = sum(
+        1
+        for vehicle_no in move.vehicle_nos
+        if (
+            (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+            and not vehicle.is_close_door
+            and "存4北" in vehicle.goal.allowed_target_tracks
+        )
+    )
+    if moved_has_close_door:
+        return 0
+    if moved_pushers:
+        return moved_pushers
+    return 0
+
+
+def _move_consumes_close_door_pushers(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    next_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if move.action_type != "DETACH" or move.target_track != "存4北":
+        return False
+    if any(vehicle_by_no[vno].is_close_door for vno in move.vehicle_nos if vno in vehicle_by_no):
+        return False
+    unresolved_close_door = False
+    for vehicle in plan_input.vehicles:
+        if not vehicle.is_close_door or "存4北" not in vehicle.goal.allowed_target_tracks:
+            continue
+        current_track = _locate_vehicle_in_state(state, vehicle.vehicle_no)
+        if current_track is None or not goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            unresolved_close_door = True
+            break
+    if not unresolved_close_door:
+        return False
+    remaining_pushers = 0
+    for vehicle in plan_input.vehicles:
+        if vehicle.is_close_door or "存4北" not in vehicle.goal.allowed_target_tracks:
+            continue
+        track = _locate_vehicle_in_state(next_state, vehicle.vehicle_no)
+        if track != "存4北":
+            remaining_pushers += 1
+    return remaining_pushers < 3
+
+
+def _move_traps_close_door_behind_pushers(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if move.action_type != "ATTACH" or not state.loco_carry:
+        return False
+    if not any(vehicle_by_no[vno].is_close_door for vno in move.vehicle_nos if vno in vehicle_by_no):
+        return False
+    carried_pushers = sum(
+        1
+        for vehicle_no in state.loco_carry
+        if (
+            (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+            and not vehicle.is_close_door
+            and "存4北" in vehicle.goal.allowed_target_tracks
+        )
+    )
+    if carried_pushers < 3:
+        return False
+    for vehicle in plan_input.vehicles:
+        if not vehicle.is_close_door or "存4北" not in vehicle.goal.allowed_target_tracks:
+            continue
+        current_track = _locate_vehicle_in_state(state, vehicle.vehicle_no)
+        if current_track is None or not goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            return True
+    return False
+
+
+def _locate_vehicle_in_state(state: ReplayState, vehicle_no: str) -> str | None:
+    for track, seq in state.track_sequences.items():
+        if vehicle_no in seq:
+            return track
+    if vehicle_no in state.loco_carry:
+        return state.loco_track_name
+    return None
 
 
 def _attach_has_non_staging_goal(
