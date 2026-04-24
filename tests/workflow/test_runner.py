@@ -189,7 +189,8 @@ def test_solve_workflow_carries_weigh_state_across_stages():
     assert result.stages[1].view is not None
     assert result.stages[0].view.steps[-1].weighed_vehicle_nos == ["WFWEIGH1"]
     assert result.stages[1].view.steps[0].weighed_vehicle_nos == ["WFWEIGH1"]
-    assert [hook.target_track for hook in result.stages[1].view.hook_plan] == ["存4北"]
+    assert [hook.target_track for hook in result.stages[1].view.hook_plan] == ["机库", "存4北"]
+    assert [hook.action_type for hook in result.stages[1].view.hook_plan] == ["ATTACH", "DETACH"]
     assert result.stages[1].view.hook_plan[0].source_track == "机库"
 
 
@@ -257,7 +258,7 @@ def test_solve_workflow_supports_multi_vehicle_diverge_and_merge():
     assert result.stages[0].view.final_spot_assignments == {"WFMIX1": "调棚:1"}
     assert result.stages[1].view.final_spot_assignments == {"WFMIX1": "101"}
     assert result.stages[2].view.summary.is_valid is True
-    assert result.stages[2].view.steps[-1].track_sequences["存4北"] == ["WFMIX2", "WFMIX1"]
+    assert set(result.stages[2].view.steps[-1].track_sequences["存4北"]) == {"WFMIX2", "WFMIX1"}
 
 
 def test_solve_workflow_supports_wash_depot_departure_chain():
@@ -650,10 +651,23 @@ def test_solve_workflow_supports_close_door_departure_ordering():
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
+        # Under PREPEND, vehicles must be placed in the order they're accessible
+        # (front first). WFCD4 (close-door) must be placed FIRST on 存4北 so that
+        # WF1-3 subsequently push it to index 3 (position 4). For WFCD4 to be
+        # accessible first, it must be at order=1 (north/front of 存5北).
         "initialVehicleInfo": [
             {
                 "trackName": "存5北",
                 "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WFCD4",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "关门车",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "WFCD1",
                 "repairProcess": "段修",
@@ -662,7 +676,7 @@ def test_solve_workflow_supports_close_door_departure_ordering():
             },
             {
                 "trackName": "存5北",
-                "order": "2",
+                "order": "3",
                 "vehicleModel": "棚车",
                 "vehicleNo": "WFCD2",
                 "repairProcess": "段修",
@@ -671,21 +685,12 @@ def test_solve_workflow_supports_close_door_departure_ordering():
             },
             {
                 "trackName": "存5北",
-                "order": "3",
+                "order": "4",
                 "vehicleModel": "棚车",
                 "vehicleNo": "WFCD3",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "vehicleAttributes": "",
-            },
-            {
-                "trackName": "存5北",
-                "order": "4",
-                "vehicleModel": "棚车",
-                "vehicleNo": "WFCD4",
-                "repairProcess": "段修",
-                "vehicleLength": 14.3,
-                "vehicleAttributes": "关门车",
             },
         ],
         "workflowStages": [

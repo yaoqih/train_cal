@@ -47,6 +47,40 @@ def depot_index_sum(plan: Sequence[HookAction]) -> int:
     return sum(i for i, hook in enumerate(plan, start=1) if is_depot_hook(hook))
 
 
+def is_pure_dagku_hook(hook: HookAction, vehicle_by_no: dict) -> bool:
+    """True iff every vehicle in the hook both starts AND ends in 修N库内 tracks.
+
+    Identifies hooks where all vehicles are pure depot-internal rearrangements
+    (大库-to-大库): initial track in DEPOT_INNER_TRACKS AND all goal tracks in
+    DEPOT_INNER_TRACKS. These hooks get extra late-scheduling weight since they
+    never need to happen early.
+    """
+    for vno in hook.vehicle_nos:
+        v = vehicle_by_no.get(vno)
+        if v is None:
+            return False
+        if v.current_track not in DEPOT_INNER_TRACKS:
+            return False
+        if not set(v.goal.allowed_target_tracks).issubset(DEPOT_INNER_TRACKS):
+            return False
+    return True
+
+
+def weighted_depot_index_sum(plan: Sequence[HookAction], vehicle_by_no: dict) -> int:
+    """depot_index_sum with double weight for pure 大库-to-大库 hooks.
+
+    Pure 大库-to-大库 hooks (vehicles that both start and end in 修N库内)
+    count twice, giving them stronger late-scheduling pressure during search.
+    """
+    total = 0
+    for i, hook in enumerate(plan, start=1):
+        if not is_depot_hook(hook):
+            continue
+        weight = 2 if is_pure_dagku_hook(hook, vehicle_by_no) else 1
+        total += weight * i
+    return total
+
+
 def depot_earliness(plan: Sequence[HookAction]) -> int:
     """Sum of (N - i) over depot-touching hook positions, where N = len(plan).
 
@@ -148,9 +182,6 @@ def _semantic_topo_reorder(
     def simulate(sequence: list[HookAction]) -> ReplayState | None:
         state = initial_state
         for move in sequence:
-            source_seq = state.track_sequences.get(move.source_track, [])
-            if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-                return None
             try:
                 state = _apply_move(
                     state=state,
@@ -222,9 +253,6 @@ def _adjacent_swap_polish(
     def simulate(sequence: list[HookAction]) -> ReplayState | None:
         state = initial_state
         for move in sequence:
-            source_seq = state.track_sequences.get(move.source_track, [])
-            if source_seq[: len(move.vehicle_nos)] != move.vehicle_nos:
-                return None
             try:
                 state = _apply_move(
                     state=state,

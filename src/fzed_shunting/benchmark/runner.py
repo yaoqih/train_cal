@@ -62,7 +62,7 @@ def run_benchmark(
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
             )
-            plan = solver_result.plan
+            plan = solver_result.plan if solver_result.is_complete else []
             hook_plan = [
                 {
                     "hookNo": move_idx,
@@ -75,8 +75,12 @@ def run_benchmark(
                 for move_idx, move in enumerate(plan, start=1)
             ]
             path_length_m, branch_count = _collect_plan_route_metrics(route_oracle, hook_plan)
-            verify_report = verify_plan(master, normalized, hook_plan)
-            solved = verify_report.is_valid
+            verify_report = (
+                verify_plan(master, normalized, hook_plan)
+                if solver_result.is_complete
+                else None
+            )
+            solved = bool(solver_result.is_complete and verify_report is not None and verify_report.is_valid)
             if solved:
                 solved_count += 1
                 solved_hook_counts.append(len(hook_plan))
@@ -85,14 +89,23 @@ def run_benchmark(
                 solved_expanded_nodes.append(solver_result.expanded_nodes)
                 solved_generated_nodes.append(solver_result.generated_nodes)
             else:
-                for error in verify_report.errors:
-                    error_summary[error] = error_summary.get(error, 0) + 1
+                if verify_report is not None:
+                    for error in verify_report.errors:
+                        error_summary[error] = error_summary.get(error, 0) + 1
+                elif solver_result.partial_verification_report is not None:
+                    for error in solver_result.partial_verification_report.errors:
+                        error_summary[error] = error_summary.get(error, 0) + 1
+                elif solver_result.partial_plan:
+                    error_summary["partial artifact"] = error_summary.get("partial artifact", 0) + 1
+                else:
+                    error_summary["no complete solution"] = error_summary.get("no complete solution", 0) + 1
             results.append(
                 {
                     "seed": seed,
                     "profile": profile,
                     "scenario_path": str(scenario_path),
                     "hook_count": len(hook_plan),
+                    "partial_hook_count": len(solver_result.partial_plan),
                     "path_length_m": path_length_m,
                     "branch_count": branch_count,
                     "elapsed_ms": solver_result.elapsed_ms,
@@ -101,7 +114,16 @@ def run_benchmark(
                     "closed_nodes": solver_result.closed_nodes,
                     "solver": solver,
                     "solved": solved,
-                    "errors": verify_report.errors,
+                    "is_complete": solver_result.is_complete,
+                    "errors": (
+                        verify_report.errors
+                        if verify_report is not None
+                        else (
+                            solver_result.partial_verification_report.errors
+                            if solver_result.partial_verification_report is not None
+                            else []
+                        )
+                    ),
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -414,6 +436,7 @@ def _write_results_csv(path: Path, results: list[dict]) -> None:
         "profile",
         "scenario_path",
         "hook_count",
+        "partial_hook_count",
         "path_length_m",
         "branch_count",
         "elapsed_ms",
@@ -422,6 +445,7 @@ def _write_results_csv(path: Path, results: list[dict]) -> None:
         "closed_nodes",
         "solver",
         "solved",
+        "is_complete",
         "errors",
     ]
     with path.open("w", encoding="utf-8", newline="") as fh:

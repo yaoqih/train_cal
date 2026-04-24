@@ -9,6 +9,8 @@ from fzed_shunting.domain.depot_spots import spot_candidates_for_vehicle
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.goal_logic import goal_is_satisfied
+from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.state import _is_goal, _locate_vehicle
 from fzed_shunting.solver.types import HookAction
@@ -72,6 +74,13 @@ def _solve_with_lns_result(
         generated_nodes=improved.generated_nodes,
         closed_nodes=improved.closed_nodes,
         elapsed_ms=(perf_counter() - started_at) * 1000,
+        is_complete=improved.is_complete,
+        is_proven_optimal=improved.is_proven_optimal,
+        fallback_stage=improved.fallback_stage,
+        partial_plan=list(improved.partial_plan),
+        partial_fallback_stage=improved.partial_fallback_stage,
+        verification_report=improved.verification_report,
+        partial_verification_report=improved.partial_verification_report,
         debug_stats=debug_stats,
     )
 
@@ -90,7 +99,7 @@ def _improve_incumbent_result(
     time_budget_ms: float | None = None,
     enable_depot_late_scheduling: bool = False,
 ) -> SolverResult:
-    if repair_passes <= 0 or not incumbent.plan:
+    if repair_passes <= 0 or not incumbent.is_complete or not incumbent.plan:
         return incumbent
 
     from fzed_shunting.solver.budget import SearchBudget
@@ -112,11 +121,13 @@ def _improve_incumbent_result(
         rounds += 1
         if time_budget_ms is not None and _remaining_ms() <= 0:
             break
-        snapshots = replay_plan(
+        incumbent_replay = replay_plan(
             initial_state,
             [_to_hook_dict(move) for move in incumbent_plan],
             plan_input=plan_input,
-        ).snapshots
+        )
+        snapshots = incumbent_replay.snapshots
+        incumbent_end_state = getattr(incumbent_replay, "final_state", snapshots[-1])
         improved = False
         for cut_index in _candidate_repair_cut_points(incumbent_plan, repair_passes):
             remaining = _remaining_ms()
@@ -124,6 +135,8 @@ def _improve_incumbent_result(
                 break
             prefix = incumbent_plan[:cut_index]
             start_state = snapshots[cut_index]
+            if start_state.loco_carry:
+                continue
             repair_input = _build_repair_plan_input(plan_input, start_state)
             per_call_budget = None
             if remaining is not None:
@@ -150,7 +163,7 @@ def _improve_incumbent_result(
             # returns plan=[] which, combined with the prefix, yields an
             # incomplete plan that would fool the length comparator into
             # accepting it. Only cuts that actually re-solve to goal win.
-            if not repaired.plan and not _is_goal_after_prefix(
+            if not repaired.is_complete and not _is_goal_after_prefix(
                 plan_input=plan_input,
                 start_state=start_state,
             ):
@@ -159,11 +172,19 @@ def _improve_incumbent_result(
             total_generated += repaired.generated_nodes
             total_closed += repaired.closed_nodes
             candidate_plan = prefix + repaired.plan
+            candidate_replay = replay_plan(
+                initial_state,
+                [_to_hook_dict(move) for move in candidate_plan],
+                plan_input=plan_input,
+            )
+            candidate_end_state = getattr(candidate_replay, "final_state", candidate_replay.snapshots[-1])
             if _is_better_plan(
                 candidate_plan,
                 incumbent_plan,
                 route_oracle,
                 depot_late=enable_depot_late_scheduling,
+                candidate_purity=tuple(compute_state_purity(plan_input, candidate_end_state).__dict__.values()),
+                incumbent_purity=tuple(compute_state_purity(plan_input, incumbent_end_state).__dict__.values()),
             ):
                 incumbent_plan = candidate_plan
                 improved = True
@@ -177,6 +198,7 @@ def _improve_incumbent_result(
         generated_nodes=total_generated,
         closed_nodes=total_closed,
         elapsed_ms=incumbent.elapsed_ms + (perf_counter() - started_at) * 1000,
+        is_complete=True,
         is_proven_optimal=incumbent.is_proven_optimal,
         fallback_stage=incumbent.fallback_stage,
         debug_stats=incumbent.debug_stats,
@@ -293,9 +315,21 @@ def _is_better_plan(
     route_oracle: RouteOracle | None,
     *,
     depot_late: bool = False,
+    candidate_purity: tuple[int, int, int] = (0, 0, 0),
+    incumbent_purity: tuple[int, int, int] = (0, 0, 0),
 ) -> bool:
-    candidate_metrics = _plan_quality(candidate_plan, route_oracle, depot_late=depot_late)
-    incumbent_metrics = _plan_quality(incumbent_plan, route_oracle, depot_late=depot_late)
+    candidate_metrics = _plan_quality(
+        candidate_plan,
+        route_oracle,
+        depot_late=depot_late,
+        purity_metrics=candidate_purity,
+    )
+    incumbent_metrics = _plan_quality(
+        incumbent_plan,
+        route_oracle,
+        depot_late=depot_late,
+        purity_metrics=incumbent_purity,
+    )
     return candidate_metrics < incumbent_metrics
 
 
@@ -304,6 +338,7 @@ def _plan_quality(
     route_oracle: RouteOracle | None,
     *,
     depot_late: bool = False,
+    purity_metrics: tuple[int, int, int] = (0, 0, 0),
 ) -> tuple:
     total_length_m = 0.0
     total_branch_count = 0
@@ -321,28 +356,54 @@ def _plan_quality(
                 total_length_m += float(len(move.path_tracks))
     if depot_late:
         from fzed_shunting.solver.depot_late import depot_earliness
-        return (len(plan), depot_earliness(plan), total_branch_count, total_length_m)
-    return (len(plan), total_branch_count, total_length_m)
+        return (len(plan), *purity_metrics, total_branch_count, total_length_m, depot_earliness(plan))
+    return (len(plan), *purity_metrics, total_branch_count, total_length_m)
 
 
 def _build_repair_plan_input(
     plan_input: NormalizedPlanInput,
     snapshot: ReplayState,
 ) -> NormalizedPlanInput:
+    reverse_spot_assignments = {
+        spot_code: vehicle_no
+        for vehicle_no, spot_code in snapshot.spot_assignments.items()
+    }
+    movable_exact_spot_blockers: set[str] = set()
+    for vehicle in plan_input.vehicles:
+        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
+        if goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=snapshot,
+            plan_input=plan_input,
+        ):
+            continue
+        if vehicle.goal.target_mode != "SPOT":
+            continue
+        target_spot = vehicle.goal.target_spot_code
+        if not target_spot:
+            continue
+        occupant_vehicle_no = reverse_spot_assignments.get(target_spot)
+        if occupant_vehicle_no is None or occupant_vehicle_no == vehicle.vehicle_no:
+            continue
+        movable_exact_spot_blockers.add(occupant_vehicle_no)
+
     localized_vehicles: list[NormalizedVehicle] = []
     for vehicle in plan_input.vehicles:
         current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
         frozen_goal = vehicle.goal
-        goal_satisfied = (
-            current_track in vehicle.goal.allowed_target_tracks
-            and (not vehicle.need_weigh or vehicle.vehicle_no in snapshot.weighed_vehicle_nos)
-            and _spot_goal_satisfied(vehicle, snapshot)
+        goal_satisfied = goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=snapshot,
+            plan_input=plan_input,
         )
-        if goal_satisfied:
+        if goal_satisfied and vehicle.vehicle_no not in movable_exact_spot_blockers:
             frozen_goal = GoalSpec(
                 target_mode="TRACK",
                 target_track=current_track,
                 allowed_target_tracks=[current_track],
+                preferred_target_tracks=[current_track],
                 target_area_code=vehicle.goal.target_area_code,
                 target_spot_code=snapshot.spot_assignments.get(vehicle.vehicle_no),
             )

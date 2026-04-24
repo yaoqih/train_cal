@@ -60,7 +60,7 @@ def test_anytime_with_constructive_seed_never_returns_empty_plan_on_solvable_inp
 
 
 def test_constructive_seed_salvages_when_exact_and_fallback_all_fail():
-    """When every search stage returns no plan, constructive seed still provides one."""
+    """When every search stage returns no complete plan, a complete constructive seed still wins."""
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_simple_payload(), master)
     initial = build_initial_state(normalized)
@@ -88,8 +88,9 @@ def test_constructive_seed_salvages_when_exact_and_fallback_all_fail():
             enable_constructive_seed=True,
         )
 
+    assert result.is_complete is True
     assert len(result.plan) > 0
-    assert result.fallback_stage in {"constructive", "constructive_partial"}
+    assert result.fallback_stage == "constructive"
 
 
 def test_constructive_seed_disabled_preserves_legacy_no_solution_error():
@@ -138,8 +139,8 @@ def test_constructive_seed_disabled_preserves_legacy_no_solution_error():
         )
 
 
-def test_constructive_partial_skips_verify_raise_for_best_effort_plans():
-    """Partial plans flagged best-effort surface verifier report without raising."""
+def test_constructive_partial_attaches_partial_verification_report_without_raising():
+    """Partial artifacts surface verifier report without becoming a solved plan."""
     from fzed_shunting.solver.astar_solver import _attach_verification
     from fzed_shunting.solver.types import HookAction
 
@@ -153,15 +154,17 @@ def test_constructive_partial_skips_verify_raise_for_best_effort_plans():
         target_track="机库",
         vehicle_nos=["E1"],
         path_tracks=["存5北", "机库"],
+        action_type="DETACH",
     )
     partial = SolverResult(
-        plan=[partial_move],
+        plan=[],
         expanded_nodes=0,
         generated_nodes=0,
         closed_nodes=0,
         elapsed_ms=0.0,
         is_proven_optimal=False,
-        fallback_stage="constructive_partial",
+        partial_plan=[partial_move],
+        partial_fallback_stage="constructive_partial",
     )
     attached = _attach_verification(
         partial,
@@ -169,7 +172,7 @@ def test_constructive_partial_skips_verify_raise_for_best_effort_plans():
         master=master,
         initial_state=initial,
     )
-    assert attached.verification_report is not None
+    assert attached.verification_report is None
+    assert attached.partial_verification_report is not None
     # The partial places E1 on 机库 but goal is 存4北, so verifier must flag it.
-    assert attached.verification_report.is_valid is False
-
+    assert attached.partial_verification_report.is_valid is False

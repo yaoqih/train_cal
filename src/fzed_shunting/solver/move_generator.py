@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block
+from fzed_shunting.domain.depot_spots import (
+    WORK_AREA_SPOTS,
+    allocate_spots_for_block,
+    spot_candidates_for_vehicle,
+)
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
-from fzed_shunting.io.normalize_input import NormalizedPlanInput
+from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.goal_logic import (
+    goal_effective_allowed_tracks,
+    goal_is_satisfied,
+    goal_track_preference_level,
+)
+from fzed_shunting.solver.state import _vehicle_track_lookup
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -19,6 +29,236 @@ AREA_CAPACITY_LIMITS = {
 PRIMARY_STAGING_TRACK_TYPES = {"TEMPORARY"}
 FALLBACK_STAGING_TRACK_TYPES = {"STORAGE"}
 MAX_STAGING_TARGETS = 2
+
+
+def _effective_target_tracks_for_detach(
+    vehicle_no: str,
+    *,
+    vehicle_by_no: dict,
+    weighed_vehicle_nos: set[str],
+) -> set[str]:
+    vehicle = vehicle_by_no.get(vehicle_no)
+    if vehicle is None:
+        return set()
+    if vehicle.need_weigh and vehicle_no not in weighed_vehicle_nos:
+        return {"机库"}
+    return set(vehicle.goal.allowed_target_tracks)
+
+
+def _min_detach_groups(
+    vehicle_nos: tuple[str, ...] | list[str],
+    *,
+    vehicle_by_no: dict,
+    weighed_vehicle_nos: set[str],
+) -> int:
+    if not vehicle_nos:
+        return 0
+    groups = 0
+    shared_targets: set[str] = set()
+    for vehicle_no in vehicle_nos:
+        effective_targets = _effective_target_tracks_for_detach(
+            vehicle_no,
+            vehicle_by_no=vehicle_by_no,
+            weighed_vehicle_nos=weighed_vehicle_nos,
+        )
+        if not effective_targets:
+            return len(vehicle_nos)
+        if not shared_targets:
+            groups += 1
+            shared_targets = effective_targets.copy()
+            continue
+        next_shared_targets = shared_targets & effective_targets
+        if next_shared_targets:
+            shared_targets = next_shared_targets
+            continue
+        groups += 1
+        shared_targets = effective_targets.copy()
+    return groups
+
+
+def _vehicle_goal_satisfied_on_track(
+    vehicle: NormalizedVehicle,
+    *,
+    track_name: str,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> bool:
+    return goal_is_satisfied(
+        vehicle,
+        track_name=track_name,
+        state=state,
+        plan_input=plan_input,
+    )
+
+
+def _collect_real_hook_identity_attach_requests(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    goal_by_vehicle: dict,
+    vehicle_by_no: dict,
+    length_by_vehicle: dict[str, float],
+    effective_capacity_by_track: dict[str, float],
+    master: MasterData | None,
+    route_oracle: RouteOracle | None,
+) -> dict[str, set[int]]:
+    requests_by_source: dict[str, set[int]] = {}
+    blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
+        plan_input=plan_input,
+        state=state,
+        goal_by_vehicle=goal_by_vehicle,
+        vehicle_by_no=vehicle_by_no,
+        route_oracle=route_oracle,
+    )
+
+    for source_track, seq in state.track_sequences.items():
+        if not seq:
+            continue
+        front_prefix_size = _front_blocker_prefix_size(
+            source_track,
+            seq,
+            goal_by_vehicle,
+            state=state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        if front_prefix_size is not None:
+            requests_by_source.setdefault(source_track, set()).add(front_prefix_size)
+        if source_track in blocking_goal_targets_by_source:
+            requests_by_source.setdefault(source_track, set()).update(
+                _descending_valid_staging_prefix_sizes(seq, vehicle_by_no)
+            )
+
+    pending_arrival_by_track: dict[str, float] = {}
+    current_track_by_vehicle = _vehicle_track_lookup(state)
+    for vehicle in plan_input.vehicles:
+        allowed = vehicle.goal.allowed_target_tracks
+        if len(allowed) != 1:
+            continue
+        target = allowed[0]
+        if current_track_by_vehicle.get(vehicle.vehicle_no) == target:
+            continue
+        pending_arrival_by_track[target] = (
+            pending_arrival_by_track.get(target, 0.0)
+            + length_by_vehicle.get(vehicle.vehicle_no, vehicle.vehicle_length)
+        )
+
+    for track, seq in state.track_sequences.items():
+        if not seq:
+            continue
+        pending = pending_arrival_by_track.get(track, 0.0)
+        if pending <= 1e-9:
+            continue
+        effective_cap = effective_capacity_by_track.get(track)
+        if effective_cap is None:
+            continue
+        current_mass = sum(length_by_vehicle.get(vno, 0.0) for vno in seq)
+        available_slack = effective_cap - current_mass
+        non_identity_mass = sum(
+            length_by_vehicle.get(vno, 0.0)
+            for vno in seq
+            if not (
+                len(goal_by_vehicle[vno].allowed_target_tracks) == 1
+                and goal_by_vehicle[vno].allowed_target_tracks[0] == track
+            )
+        )
+        effective_slack = available_slack + non_identity_mass
+        if effective_slack >= pending - 1e-9:
+            continue
+        eviction_sizes: list[int] = []
+        for prefix_size in range(1, len(seq) + 1):
+            vno = seq[prefix_size - 1]
+            allowed = goal_by_vehicle[vno].allowed_target_tracks
+            if len(allowed) != 1 or allowed[0] != track:
+                break
+            block_vehicles = [vehicle_by_no[bvno] for bvno in seq[:prefix_size]]
+            if validate_hook_vehicle_group(block_vehicles):
+                continue
+            if any(
+                vehicle_by_no[bvno].need_weigh and bvno not in state.weighed_vehicle_nos
+                for bvno in seq[:prefix_size]
+            ):
+                continue
+            eviction_sizes.append(prefix_size)
+        if eviction_sizes:
+            requests_by_source.setdefault(track, set()).add(eviction_sizes[0])
+
+    reverse_assignments: dict[str, str] = {
+        spot: vno for vno, spot in state.spot_assignments.items()
+    }
+    evict_requests: dict[str, int] = {}
+    for vehicle in plan_input.vehicles:
+        goal = vehicle.goal
+        if goal.target_mode != "SPOT":
+            continue
+        target_spot = goal.target_spot_code
+        if target_spot is None or state.spot_assignments.get(vehicle.vehicle_no) == target_spot:
+            continue
+        occupant_vno = reverse_assignments.get(target_spot)
+        if occupant_vno is None or occupant_vno == vehicle.vehicle_no:
+            continue
+        occupant_track = current_track_by_vehicle.get(occupant_vno)
+        if occupant_track is None:
+            continue
+        seq = state.track_sequences.get(occupant_track, [])
+        try:
+            occ_pos = seq.index(occupant_vno)
+        except ValueError:
+            continue
+        evict_requests[occupant_track] = max(evict_requests.get(occupant_track, 0), occ_pos + 1)
+
+    for vehicle in plan_input.vehicles:
+        current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
+        if (
+            current_track is not None
+            and goal_is_satisfied(
+                vehicle,
+                track_name=current_track,
+                state=state,
+                plan_input=plan_input,
+            )
+        ):
+            continue
+        allowed = vehicle.goal.allowed_target_tracks
+        if not allowed:
+            continue
+        any_feasible = False
+        for target in allowed:
+            result = allocate_spots_for_block(
+                vehicles=[vehicle],
+                target_track=target,
+                yard_mode=plan_input.yard_mode,
+                occupied_spot_assignments=state.spot_assignments,
+            )
+            if result is not None:
+                any_feasible = True
+                break
+        if any_feasible:
+            continue
+        for target in allowed:
+            seq = state.track_sequences.get(target, [])
+            if not seq:
+                continue
+            front_vno = seq[0]
+            front_vehicle = vehicle_by_no.get(front_vno)
+            if front_vehicle is None:
+                continue
+            if goal_is_satisfied(
+                front_vehicle,
+                track_name=target,
+                state=state,
+                plan_input=plan_input,
+            ):
+                continue
+            evict_requests[target] = max(evict_requests.get(target, 0), 1)
+            break
+
+    for track, prefix_size in evict_requests.items():
+        seq = state.track_sequences.get(track, [])
+        if seq and prefix_size <= len(seq):
+            requests_by_source.setdefault(track, set()).add(prefix_size)
+
+    return requests_by_source
 
 
 def generate_goal_moves(
@@ -83,6 +323,7 @@ def generate_goal_moves(
                     seq=seq,
                     block=block,
                     state=state,
+                    plan_input=plan_input,
                     goal_by_vehicle=goal_by_vehicle,
                     vehicle_by_no=vehicle_by_no,
                     blocking_goal_targets_by_source=blocking_goal_targets_by_source,
@@ -216,6 +457,296 @@ def generate_goal_moves(
         )
     )
     return _dedup_moves(moves)
+
+
+def generate_real_hook_moves(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData | None = None,
+    route_oracle: RouteOracle | None = None,
+    debug_stats: dict[str, Any] | None = None,
+) -> list[HookAction]:
+    """Generate ATTACH and DETACH moves for the real-hook cost model.
+
+    Phase-separated: when loco_carry is empty, generate ATTACH moves (pick up
+    vehicles from source tracks). When loco_carry is non-empty, generate DETACH
+    moves (drop vehicles to goal/staging tracks) and allow additional ATTACHes
+    only for vehicles going to the same set of destinations as the current carry
+    (multi-pickup optimisation).
+
+    Each action costs 1 hook.
+    """
+    goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0) + vehicle.vehicle_length
+        )
+    effective_capacity_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
+    if route_oracle is None and master is not None:
+        route_oracle = RouteOracle(master)
+
+    current_carry_detach_groups = (
+        _min_detach_groups(
+            state.loco_carry,
+            vehicle_by_no=vehicle_by_no,
+            weighed_vehicle_nos=state.weighed_vehicle_nos,
+        )
+        if state.loco_carry
+        else 0
+    )
+    identity_attach_requests = (
+        _collect_real_hook_identity_attach_requests(
+            plan_input=plan_input,
+            state=state,
+            goal_by_vehicle=goal_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            length_by_vehicle=length_by_vehicle,
+            effective_capacity_by_track=effective_capacity_by_track,
+            master=master,
+            route_oracle=route_oracle,
+        )
+        if not state.loco_carry
+        else {}
+    )
+
+    moves: list[HookAction] = []
+    if debug_stats is not None:
+        debug_stats.clear()
+        debug_stats.update(
+            {
+                "total_moves": 0,
+                "direct_moves": 0,
+                "staging_moves": 0,
+                "moves_by_target": {},
+                "moves_by_source": {},
+                "moves_by_block_size": {},
+            }
+        )
+
+    # --- ATTACH moves ---
+    # When loco_carry is non-empty, only keep extra ATTACHes that can reduce
+    # the remaining DETACH-group count versus solving the new block separately.
+    for source_track, seq in state.track_sequences.items():
+        if not seq:
+            continue
+        requested_prefix_sizes = identity_attach_requests.get(source_track, set())
+        frontier_attach_prefix_sizes = (
+            _real_hook_attach_frontier_prefix_sizes(
+                seq=seq,
+                requested_prefix_sizes=requested_prefix_sizes,
+                state=state,
+                vehicle_by_no=vehicle_by_no,
+                plan_input=plan_input,
+            )
+            if not state.loco_carry
+            else None
+        )
+        for prefix_size in range(len(seq), 0, -1):
+            if frontier_attach_prefix_sizes is not None and prefix_size not in frontier_attach_prefix_sizes:
+                continue
+            block = seq[:prefix_size]
+            block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
+            if validate_hook_vehicle_group(block_vehicles):
+                continue
+            if _violates_non_cun4bei_attach_close_door_rule(block, vehicle_by_no):
+                continue
+            block_goal_satisfied = all(
+                _vehicle_goal_satisfied_on_track(
+                    vehicle_by_no[vno],
+                    track_name=source_track,
+                    state=state,
+                    plan_input=plan_input,
+                )
+                for vno in block
+            )
+            if block_goal_satisfied and prefix_size not in requested_prefix_sizes:
+                continue
+            if state.loco_carry:
+                block_detach_groups = _min_detach_groups(
+                    block,
+                    vehicle_by_no=vehicle_by_no,
+                    weighed_vehicle_nos=state.weighed_vehicle_nos,
+                )
+                combined_detach_groups = _min_detach_groups(
+                    (*state.loco_carry, *block),
+                    vehicle_by_no=vehicle_by_no,
+                    weighed_vehicle_nos=state.weighed_vehicle_nos,
+                )
+                if combined_detach_groups >= current_carry_detach_groups + block_detach_groups:
+                    continue
+                # Weighing-last constraint: if carry already has an unweighed
+                # need_weigh vehicle, only ATTACH more need_weigh vehicles so
+                # the weigh group stays at the tail (DETACHed last to 机库).
+                carry_has_unweighed_needweigh = any(
+                    (cv := vehicle_by_no.get(cv_no)) is not None
+                    and cv.need_weigh
+                    and cv_no not in state.weighed_vehicle_nos
+                    for cv_no in state.loco_carry
+                )
+                if carry_has_unweighed_needweigh:
+                    block_all_needweigh = all(
+                        (bv := vehicle_by_no.get(bv_no)) is not None
+                        and bv.need_weigh
+                        and bv_no not in state.weighed_vehicle_nos
+                        for bv_no in block
+                    )
+                    if not block_all_needweigh:
+                        continue
+            path_tracks = [source_track]
+            move = HookAction(
+                source_track=source_track,
+                target_track=source_track,
+                vehicle_nos=list(block),
+                path_tracks=path_tracks,
+                action_type="ATTACH",
+            )
+            moves.append(move)
+            _record_move_debug_stats(
+                debug_stats,
+                move=move,
+                is_staging=block_goal_satisfied and prefix_size in requested_prefix_sizes,
+            )
+
+    # --- DETACH moves ---
+    if state.loco_carry:
+        carry = list(state.loco_carry)
+        for prefix_size in range(1, len(carry) + 1):
+            drop_block = carry[:prefix_size]
+            drop_vehicles = [vehicle_by_no[vno] for vno in drop_block if vno in vehicle_by_no]
+            if not drop_vehicles:
+                continue
+            if validate_hook_vehicle_group(drop_vehicles):
+                continue
+            block_length = sum(length_by_vehicle.get(vno, 0.0) for vno in drop_block)
+            goal_targets: set[str] = set()
+            for vno in drop_block:
+                v = vehicle_by_no.get(vno)
+                if v is None:
+                    continue
+                if v.need_weigh and vno not in state.weighed_vehicle_nos:
+                    goal_targets.add("机库")
+                else:
+                    goal_targets.update(v.goal.allowed_target_tracks)
+            detach_targets: list[str] = sorted(goal_targets)
+            for target_track in detach_targets:
+                move = _build_candidate_move(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    block=drop_block,
+                    block_vehicles=drop_vehicles,
+                    block_length=block_length,
+                    state=state,
+                    capacity_by_track=effective_capacity_by_track,
+                    length_by_vehicle=length_by_vehicle,
+                    vehicle_by_no=vehicle_by_no,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                    allow_same_track=True,
+                )
+                if move is None:
+                    continue
+                detach_move = HookAction(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    vehicle_nos=list(drop_block),
+                    path_tracks=move.path_tracks,
+                    action_type="DETACH",
+                )
+                moves.append(detach_move)
+                _record_move_debug_stats(
+                    debug_stats,
+                    move=detach_move,
+                    is_staging=False,
+                )
+            staging_targets = _candidate_staging_targets(
+                source_track=state.loco_track_name,
+                block=drop_block,
+                state=state,
+                plan_input=plan_input,
+                master=master,
+                vehicle_by_no=vehicle_by_no,
+                goal_target_hints=tuple(sorted(goal_targets)),
+                route_oracle=route_oracle,
+            )
+            staged_count = 0
+            for target_track in staging_targets:
+                if target_track in goal_targets:
+                    continue
+                if staged_count > 0 and _is_fallback_staging_track(master, target_track):
+                    break
+                move = _build_candidate_move(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    block=drop_block,
+                    block_vehicles=drop_vehicles,
+                    block_length=block_length,
+                    state=state,
+                    capacity_by_track=effective_capacity_by_track,
+                    length_by_vehicle=length_by_vehicle,
+                    vehicle_by_no=vehicle_by_no,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                    allow_same_track=True,
+                )
+                if move is None:
+                    continue
+                detach_move = HookAction(
+                    source_track=state.loco_track_name,
+                    target_track=target_track,
+                    vehicle_nos=list(drop_block),
+                    path_tracks=move.path_tracks,
+                    action_type="DETACH",
+                )
+                moves.append(detach_move)
+                _record_move_debug_stats(
+                    debug_stats,
+                    move=detach_move,
+                    is_staging=True,
+                )
+                staged_count += 1
+                if staged_count >= MAX_STAGING_TARGETS:
+                    break
+
+    return _dedup_moves(moves)
+
+
+def _real_hook_attach_frontier_prefix_sizes(
+    *,
+    seq: list[str],
+    requested_prefix_sizes: set[int],
+    state: ReplayState,
+    vehicle_by_no: dict,
+    plan_input: NormalizedPlanInput,
+) -> set[int]:
+    if not seq:
+        return set()
+    frontier: dict[int, int] = {}
+    for prefix_size in range(1, len(seq) + 1):
+        block = seq[:prefix_size]
+        block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
+        if validate_hook_vehicle_group(block_vehicles):
+            continue
+        if _violates_non_cun4bei_attach_close_door_rule(block, vehicle_by_no):
+            continue
+        if prefix_size in requested_prefix_sizes:
+            frontier[prefix_size] = prefix_size
+            continue
+        detach_groups = _min_detach_groups(
+            block,
+            vehicle_by_no=vehicle_by_no,
+            weighed_vehicle_nos=state.weighed_vehicle_nos,
+        )
+        best_prefix_for_group = frontier.get(detach_groups)
+        if best_prefix_for_group is None or prefix_size > best_prefix_for_group:
+            frontier[detach_groups] = prefix_size
+    return set(frontier.values()) | set(requested_prefix_sizes)
 
 
 def _generate_capacity_eviction_moves(
@@ -389,7 +920,15 @@ def _generate_spot_eviction_moves(
     # Case 2: AREA-mode overflow — vehicle can't be allocated to any allowed target
     for vehicle in plan_input.vehicles:
         current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
-        if current_track in vehicle.goal.allowed_target_tracks:
+        if (
+            current_track is not None
+            and goal_is_satisfied(
+                vehicle,
+                track_name=current_track,
+                state=state,
+                plan_input=plan_input,
+            )
+        ):
             continue
         allowed = vehicle.goal.allowed_target_tracks
         if len(allowed) == 0:
@@ -413,11 +952,15 @@ def _generate_spot_eviction_moves(
             if not seq:
                 continue
             front_vno = seq[0]
-            front_goal = goal_by_vehicle.get(front_vno)
-            if front_goal is None:
+            front_vehicle = vehicle_by_no.get(front_vno)
+            if front_vehicle is None:
                 continue
-            # Don't evict identity-goal vehicles with single target — they have nowhere else to go
-            if len(front_goal.allowed_target_tracks) == 1 and front_goal.allowed_target_tracks[0] == target:
+            if goal_is_satisfied(
+                front_vehicle,
+                track_name=target,
+                state=state,
+                plan_input=plan_input,
+            ):
                 continue
             evict_requests[target] = max(evict_requests.get(target, 0), 1)
             break
@@ -586,16 +1129,25 @@ def _candidate_targets(
         vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
         for vehicle_no in block
     ):
-        return ["机库"]
+        # 机库 weighing is 单钩 — only single-vehicle blocks may be sent there.
+        return ["机库"] if len(block) == 1 else []
     goal = vehicle_by_no[block[0]].goal
-    targets = list(goal.allowed_target_tracks)
+    lead_vehicle = vehicle_by_no[block[0]]
+    targets = goal_effective_allowed_tracks(
+        lead_vehicle,
+        state=state,
+        plan_input=plan_input,
+    )
     if goal.target_area_code == "大库:RANDOM":
         targets.sort(
             key=lambda track_name: (
-                -sum(
-                    length_by_vehicle[vehicle_no]
-                    for vehicle_no in state.track_sequences.get(track_name, [])
-                ),
+                goal_track_preference_level(
+                    lead_vehicle,
+                    track_name,
+                    state=state,
+                    plan_input=plan_input,
+                ) or 0,
+                -sum(length_by_vehicle[vehicle_no] for vehicle_no in state.track_sequences.get(track_name, [])),
                 track_name,
             )
         )
@@ -638,7 +1190,8 @@ def _candidate_staging_targets(
             ]
             if follow_distances:
                 combined_distance = source_distance + min(follow_distances)
-        targets.append(((type_priority, combined_distance, source_distance, info.track_name), info.track_name))
+        occupancy = len(state.track_sequences.get(info.track_name, []))
+        targets.append(((type_priority, occupancy, combined_distance, source_distance, info.track_name), info.track_name))
     targets.sort(key=lambda item: item[0])
     return [track_name for _, track_name in targets]
 
@@ -677,7 +1230,14 @@ def _collect_staging_requests_for_source(
     blocking_goal_targets_by_source: dict[str, set[str]],
 ) -> list[tuple[tuple[int, ...], tuple[str, ...]]]:
     requests: list[tuple[tuple[int, ...], tuple[str, ...]]] = []
-    front_prefix_size = _front_blocker_prefix_size(source_track, seq, goal_by_vehicle)
+    front_prefix_size = _front_blocker_prefix_size(
+        source_track,
+        seq,
+        goal_by_vehicle,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
     if front_prefix_size is not None:
         next_vehicle_no = seq[front_prefix_size]
         target_hints = _candidate_targets(
@@ -703,6 +1263,7 @@ def _should_skip_pure_random_depot_rebalancing(
     seq: list[str],
     block: list[str],
     state: ReplayState,
+    plan_input: NormalizedPlanInput,
     goal_by_vehicle: dict,
     vehicle_by_no: dict,
     blocking_goal_targets_by_source: dict[str, set[str]],
@@ -710,7 +1271,15 @@ def _should_skip_pure_random_depot_rebalancing(
     goal = goal_by_vehicle[block[0]]
     if goal.target_area_code != "大库:RANDOM":
         return False
-    if source_track not in goal.allowed_target_tracks:
+    if not all(
+        goal_is_satisfied(
+            vehicle_by_no[vehicle_no],
+            track_name=source_track,
+            state=state,
+            plan_input=plan_input,
+        )
+        for vehicle_no in block
+    ):
         return False
     if any(
         goal_by_vehicle[vehicle_no].allowed_target_tracks != goal.allowed_target_tracks
@@ -729,21 +1298,55 @@ def _should_skip_pure_random_depot_rebalancing(
         return False
     if source_track in blocking_goal_targets_by_source:
         return False
-    return _front_blocker_prefix_size(source_track, seq, goal_by_vehicle) != len(block)
+    return (
+        _front_blocker_prefix_size(
+            source_track,
+            seq,
+            goal_by_vehicle,
+            state=state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        != len(block)
+    )
 
 
 def _front_blocker_prefix_size(
     source_track: str,
     seq: list[str],
     goal_by_vehicle: dict,
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict,
 ) -> int | None:
     if len(seq) <= 1:
         return None
     first_goal = goal_by_vehicle[seq[0]]
-    if source_track not in first_goal.allowed_target_tracks:
+    first_vehicle = vehicle_by_no.get(seq[0])
+    if first_vehicle is None:
+        return None
+    if not goal_is_satisfied(
+        first_vehicle,
+        track_name=source_track,
+        state=state,
+        plan_input=plan_input,
+    ):
         return None
     prefix_size = 1
-    while prefix_size < len(seq) and _goal_key(goal_by_vehicle[seq[prefix_size]]) == _goal_key(first_goal):
+    while (
+        prefix_size < len(seq)
+        and _goal_key(goal_by_vehicle[seq[prefix_size]]) == _goal_key(first_goal)
+        and (
+            vehicle := vehicle_by_no.get(seq[prefix_size])
+        ) is not None
+        and goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=state,
+            plan_input=plan_input,
+        )
+    ):
         prefix_size += 1
     if prefix_size >= len(seq):
         return None
@@ -828,8 +1431,9 @@ def _build_candidate_move(
     vehicle_by_no: dict,
     plan_input: NormalizedPlanInput,
     route_oracle: RouteOracle | None,
+    allow_same_track: bool = False,
 ) -> HookAction | None:
-    if target_track == source_track:
+    if target_track == source_track and not allow_same_track:
         return None
     if _violates_close_door_hook_rule(block, target_track, vehicle_by_no, state):
         return None
@@ -875,6 +1479,7 @@ def _build_candidate_move(
         target_track=target_track,
         vehicle_nos=list(block),
         path_tracks=path_tracks,
+        action_type="PUT",
     )
 
 
@@ -885,27 +1490,42 @@ def _violates_close_door_hook_rule(
     state: ReplayState,
 ) -> bool:
     if target_track == "存4北":
-        existing_seq = state.track_sequences.get("存4北", [])
-        projected_seq = list(existing_seq) + list(block)
-        for position_index in range(min(3, len(projected_seq))):
-            vehicle_no = projected_seq[position_index]
-            vehicle = vehicle_by_no.get(vehicle_no)
-            if vehicle is None:
-                continue
-            if not vehicle.is_close_door:
-                continue
-            goal = vehicle.goal
-            if (
-                goal.target_mode == "TRACK"
-                and goal.target_track == "存4北"
-                and list(goal.allowed_target_tracks) == ["存4北"]
-            ):
-                return True
+        # PREPEND model: a close-door vehicle in block lands at index 0 and only
+        # reaches position ≥ 4 (required by goal) if ≥ 3 OTHER vehicles are
+        # placed on 存4北 AFTER it.  "Pending" = not in this block, not currently
+        # on 存4北, goal includes 存4北.
+        cd_in_block = any(
+            (v := vehicle_by_no.get(vno)) is not None and v.is_close_door
+            for vno in block
+        )
+        if cd_in_block:
+            block_set = set(block)
+            current_4bei = set(state.track_sequences.get("存4北", []))
+            pending = sum(
+                1
+                for vno, v in vehicle_by_no.items()
+                if vno not in block_set
+                and vno not in current_4bei
+                and v is not None
+                and "存4北" in getattr(v.goal, "allowed_target_tracks", [])
+            )
+            if pending < 3:
+                return True  # not enough vehicles to push CD to position ≥ 4
         return False
     if len(block) <= 10:
         return False
     first_vehicle = vehicle_by_no[block[0]]
     return bool(first_vehicle.is_close_door)
+
+
+def _violates_non_cun4bei_attach_close_door_rule(
+    block: list[str],
+    vehicle_by_no: dict,
+) -> bool:
+    if len(block) <= 10:
+        return False
+    first_vehicle = vehicle_by_no.get(block[0])
+    return bool(first_vehicle is not None and first_vehicle.is_close_door)
 
 
 def _fits_area_capacity(

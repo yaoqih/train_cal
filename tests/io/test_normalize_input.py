@@ -312,6 +312,70 @@ def test_inspection_promotes_plan_mode_and_random_depot_area():
     }
 
 
+def test_random_depot_short_vehicle_prefers_inner_tracks_1_2_with_3_4_as_fallback():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "SHORT_DEPOT",
+            "repairProcess": "厂修",
+            "vehicleLength": 14.3,
+            "targetTrack": "大库",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_area_code == "大库:RANDOM"
+    assert vehicle.goal.preferred_target_tracks == ["修1库内", "修2库内"]
+    assert vehicle.goal.fallback_target_tracks == ["修3库内", "修4库内"]
+
+
+def test_random_depot_long_vehicle_prefers_only_inner_tracks_3_4():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "LONG_DEPOT",
+            "repairProcess": "厂修",
+            "vehicleLength": 17.6,
+            "targetTrack": "大库",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_area_code == "大库:RANDOM"
+    assert vehicle.goal.preferred_target_tracks == ["修3库内", "修4库内"]
+    assert vehicle.goal.fallback_target_tracks == []
+
+
 def test_numeric_spotting_maps_to_spot_goal():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
@@ -422,3 +486,47 @@ def test_running_track_cannot_be_final_target():
 
     with pytest.raises(InputValidationError):
         normalize_plan_input(payload, master)
+
+
+def test_mixed_mode_allows_inspection_with_normal_depot_spot():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "INSPECT_A",
+            "repairProcess": "厂修",
+            "vehicleLength": 14.3,
+            "targetTrack": "大库",
+            "isSpotting": "迎检",
+            "vehicleAttributes": "",
+        },
+        {
+            "trackName": "存5北",
+            "order": "2",
+            "vehicleModel": "棚车",
+            "vehicleNo": "NORMAL_ONLY_205",
+            "repairProcess": "厂修",
+            "vehicleLength": 14.3,
+            "targetTrack": "大库",
+            "isSpotting": "205",
+            "vehicleAttributes": "",
+        },
+    ]
+
+    result = normalize_plan_input(payload, master)
+
+    assert result.yard_mode == "INSPECTION"
+    goals_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in result.vehicles}
+    assert goals_by_vehicle["INSPECT_A"].target_mode == "AREA"
+    assert goals_by_vehicle["NORMAL_ONLY_205"].target_mode == "SPOT"
+    assert goals_by_vehicle["NORMAL_ONLY_205"].target_spot_code == "205"

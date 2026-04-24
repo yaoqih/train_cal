@@ -2,8 +2,11 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from shutil import copy2
 import json
+from unittest.mock import patch
 
 from fzed_shunting.tools.convert_external_validation_inputs import convert_external_validation_inputs
+from fzed_shunting.solver.result import SolverResult
+from fzed_shunting.solver.types import HookAction
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_external_validation_parallel.py"
@@ -48,6 +51,117 @@ def test_solve_one_external_validation_returns_debug_stats(tmp_path: Path):
         assert result["generated_nodes"] >= 1
     else:
         assert "error" in result
+
+
+def test_solve_one_reports_partial_artifact_as_unsolved(tmp_path: Path):
+    scenario_path = tmp_path / "validation_partial.json"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "trackInfo": [
+                    {"trackName": "存5北", "trackDistance": 367},
+                    {"trackName": "存4北", "trackDistance": 317.8},
+                    {"trackName": "机库", "trackDistance": 71.6},
+                ],
+                "vehicleInfo": [
+                    {
+                        "trackName": "存5北",
+                        "order": "1",
+                        "vehicleModel": "棚车",
+                        "vehicleNo": "PX1",
+                        "repairProcess": "段修",
+                        "vehicleLength": 14.3,
+                        "targetTrack": "存4北",
+                        "isSpotting": "",
+                        "vehicleAttributes": "",
+                    }
+                ],
+                "locoTrackName": "机库",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    partial_result = SolverResult(
+        plan=[],
+        expanded_nodes=2,
+        generated_nodes=3,
+        closed_nodes=1,
+        elapsed_ms=5.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="机库",
+                vehicle_nos=["PX1"],
+                path_tracks=["存5北", "机库"],
+                action_type="DETACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+    )
+
+    with patch.object(module, "solve_with_simple_astar_result", return_value=partial_result):
+        result = solve_one(
+            master_dir=DATA_DIR,
+            scenario_path=scenario_path,
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+        )
+
+    assert result["scenario"] == "validation_partial.json"
+    assert result["solved"] is False
+    assert result["error"] == "no solution within budget"
+    assert result["is_complete"] is False
+    assert result["partial_hook_count"] == 1
+    assert result["partial_fallback_stage"] == "constructive_partial"
+
+
+def test_solve_one_classifies_final_capacity_infeasible(tmp_path: Path):
+    scenario_path = tmp_path / "validation_capacity.json"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "trackInfo": [
+                    {"trackName": "存5北", "trackDistance": 367},
+                    {"trackName": "存5南", "trackDistance": 20},
+                    {"trackName": "机库", "trackDistance": 71.6},
+                ],
+                "vehicleInfo": [
+                    {
+                        "trackName": "存5北",
+                        "order": str(idx),
+                        "vehicleModel": "棚车",
+                        "vehicleNo": f"CAP{idx}",
+                        "repairProcess": "段修",
+                        "vehicleLength": 14.3,
+                        "targetTrack": "存5南",
+                        "isSpotting": "",
+                        "vehicleAttributes": "",
+                    }
+                    for idx in range(1, 3)
+                ],
+                "locoTrackName": "机库",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = solve_one(
+        master_dir=DATA_DIR,
+        scenario_path=scenario_path,
+        solver="beam",
+        beam_width=8,
+        heuristic_weight=1.0,
+    )
+
+    assert result["scenario"] == "validation_capacity.json"
+    assert result["solved"] is False
+    assert result["error_category"] == "capacity_infeasible"
+    assert result["retryable"] is False
+    assert "final arrangement exceeds track capacity" in result["error"]
 
 
 def test_parse_args_defaults_to_baseline_settings():
@@ -166,16 +280,62 @@ def test_run_parallel_scenarios_marks_timeout_and_cleans_worker_process_group(tm
     assert ("wait", None) in calls
 
 
+def test_run_parallel_scenarios_expands_worker_timeout_from_solver_budget(tmp_path: Path):
+    scenario = tmp_path / "validation_timeout_budget.json"
+    scenario.write_text("{}", encoding="utf-8")
+    calls: list[tuple] = []
+
+    class FakeProcess:
+        pid = 9877
+        returncode = None
+
+        def communicate(self, timeout):  # noqa: ANN001
+            calls.append(("communicate", timeout))
+            raise module.subprocess.TimeoutExpired(cmd=["worker"], timeout=timeout)
+
+        def wait(self, timeout=None):  # noqa: ANN001
+            calls.append(("wait", timeout))
+            self.returncode = -9
+            return self.returncode
+
+    def fake_popen(cmd, stdout, stderr, text, start_new_session):  # noqa: ANN001, ARG001
+        return FakeProcess()
+
+    def fake_killpg(pgid, sig):  # noqa: ANN001
+        calls.append(("killpg", pgid, sig))
+
+    original_popen = module.subprocess.Popen
+    original_killpg = module.os.killpg
+    module.subprocess.Popen = fake_popen
+    module.os.killpg = fake_killpg
+    try:
+        module.run_parallel_scenarios(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=10,
+            max_workers=1,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.subprocess.Popen = original_popen
+        module.os.killpg = original_killpg
+
+    assert ("communicate", 150) in calls
+
+
 def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: Path):
     scenario_a = tmp_path / "validation_a.json"
     scenario_b = tmp_path / "validation_b.json"
     scenario_a.write_text("{}", encoding="utf-8")
     scenario_b.write_text("{}", encoding="utf-8")
     initial_results = [
-        {"scenario": "validation_a.json", "solved": False, "error": "No solution found", "debug_stats": {}},
+        {"scenario": "validation_a.json", "solved": False, "error": "no solution within budget", "debug_stats": {}},
         {"scenario": "validation_b.json", "solved": False, "error": "timeout", "debug_stats": {}},
     ]
-    calls: list[tuple[list[str], int | None]] = []
+    calls: list[tuple[list[str], int | None, int, float | None]] = []
 
     def fake_run_parallel_scenarios(
         *,
@@ -186,9 +346,10 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
         heuristic_weight,  # noqa: ANN001, ARG001
         timeout_seconds,  # noqa: ANN001, ARG001
         max_workers,  # noqa: ANN001, ARG001
+        time_budget_ms=None,  # noqa: ANN001
         **_kwargs,  # noqa: ANN003
     ):
-        calls.append(([path.name for path in scenario_paths], beam_width))
+        calls.append(([path.name for path in scenario_paths], beam_width, max_workers, time_budget_ms))
         return [
             {
                 "scenario": "validation_a.json",
@@ -217,14 +378,16 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
             max_workers=2,
             retry_no_solution_beam_width=12,
             initial_results=initial_results,
+            time_budget_ms=30_000,
         )
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == [(["validation_a.json"], 12)]
+    assert calls == [(["validation_a.json"], 8, 1, 90_000.0)]
     assert results[0]["scenario"] == "validation_a.json"
     assert results[0]["solved"] is True
-    assert results[0]["recovery_beam_width"] == 12
+    assert results[0]["recovery_beam_width"] == 8
+    assert results[0]["recovery_time_budget_ms"] == 90_000.0
     assert results[1] == initial_results[1]
 
 
@@ -248,12 +411,12 @@ def test_recover_no_solution_results_retries_progressively_until_success(tmp_pat
         **_kwargs,  # noqa: ANN003
     ):
         calls.append(beam_width)
-        if beam_width == 16:
+        if beam_width in {8, 16}:
             return [
                 {
                     "scenario": "validation_a.json",
                     "solved": False,
-                    "error": "No solution found",
+                    "error": "no solution within budget",
                     "debug_stats": {},
                 }
             ]
@@ -289,7 +452,7 @@ def test_recover_no_solution_results_retries_progressively_until_success(tmp_pat
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == [16, 24]
+    assert calls == [8, 16, 24]
     assert results[0]["solved"] is True
     assert results[0]["recovery_beam_width"] == 24
 

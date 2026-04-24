@@ -114,7 +114,7 @@ def main():
         beam_width = 32
         time_budget_ms: float | None = float(timeout_seconds) * 1000.0
     else:
-        solver = st.selectbox("Solver", options=["exact", "weighted", "beam", "lns"], index=0)
+        solver = st.selectbox("Solver", options=["real_hook", "exact", "weighted", "beam", "lns"], index=0)
         heuristic_weight = st.number_input("Heuristic Weight", min_value=1.0, value=1.0, step=0.5)
         beam_width = st.number_input("Beam Width", min_value=1, value=16, step=1)
         time_budget_ms = None
@@ -509,7 +509,7 @@ def _render_step(view, step_index: int, *, vehicle_display_metadata: dict[str, d
     if step.hook is None:
         st.info("Step 0 为初始状态。")
     else:
-        st.write(f"第 {step.hook.hook_no} 钩: {step.hook.source_track} -> {step.hook.target_track}")
+        st.write(f"第 {step.hook.hook_no} 钩: {_hook_title(step.hook)}")
         st.caption(
             f"车辆: {_format_hook_vehicle_text(step.hook.vehicle_nos, vehicle_meta)} | "
             f"路径: {' -> '.join(step.hook.path_tracks)}"
@@ -882,6 +882,14 @@ def _schematic_endpoint_svg(layout, track_code: str, *, label: str, css_class: s
     )
 
 
+def _hook_title(hook) -> str:
+    if hook.action_type == "ATTACH":
+        return f"挂车 ← {hook.source_track}"
+    if hook.action_type == "DETACH":
+        return f"摘车 → {hook.target_track}"
+    return f"{hook.source_track} → {hook.target_track}"
+
+
 def _build_hook_sidebar_rows(step) -> list[dict[str, str]]:
     if step.hook is None:
         return [
@@ -891,11 +899,21 @@ def _build_hook_sidebar_rows(step) -> list[dict[str, str]]:
         ]
 
     route_length = f"{step.hook.route_length_m:.1f}m" if step.hook.route_length_m is not None else "未知"
+    action_type = step.hook.action_type
+    track_rows: list[dict[str, str]]
+    if action_type == "ATTACH":
+        track_rows = [{"label": "挂车股道", "value": step.hook.source_track}]
+    elif action_type == "DETACH":
+        track_rows = [{"label": "摘车股道", "value": step.hook.target_track}]
+    else:
+        track_rows = [
+            {"label": "起点", "value": step.hook.source_track},
+            {"label": "终点", "value": step.hook.target_track},
+        ]
     return [
         {"label": "当前钩", "value": f"第 {step.hook.hook_no} 钩"},
-        {"label": "动作", "value": step.hook.action_type},
-        {"label": "起点", "value": step.hook.source_track},
-        {"label": "终点", "value": step.hook.target_track},
+        {"label": "动作", "value": action_type},
+        *track_rows,
         {"label": "车辆数", "value": str(step.hook.vehicle_count)},
         {"label": "机车位置", "value": step.loco_track_name},
         {"label": "路径长度", "value": route_length},
@@ -1201,12 +1219,13 @@ def _format_hook_vehicle_text(
 def _render_vehicle_detail_panel(step, view, vehicle_display_metadata: dict[str, dict[str, str]] | None = None) -> None:
     vehicle_meta = vehicle_display_metadata or {}
     if step.hook is not None and step.hook.vehicle_nos:
+        action_type = step.hook.action_type
         st.dataframe(
             [
                 {
                     "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
-                    "sourceTrack": step.hook.source_track,
-                    "targetTrack": step.hook.target_track,
+                    **({} if action_type == "DETACH" else {"sourceTrack": step.hook.source_track}),
+                    **({} if action_type == "ATTACH" else {"targetTrack": step.hook.target_track}),
                 }
                 for vehicle_no in step.hook.vehicle_nos
             ],

@@ -4,8 +4,8 @@ from unittest.mock import patch
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import normalize_plan_input
-from fzed_shunting.solver.move_generator import generate_goal_moves
-from fzed_shunting.verify.replay import build_initial_state
+from fzed_shunting.solver.move_generator import generate_goal_moves, generate_real_hook_moves
+from fzed_shunting.verify.replay import ReplayState, build_initial_state
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -402,7 +402,7 @@ def test_generate_goal_moves_respects_allowed_target_tracks():
     assert targets == {"修1库外", "修2库外", "修3库外", "修4库外"}
 
 
-def test_generate_goal_moves_keeps_all_random_depot_targets_for_direct_rebalancing():
+def test_generate_goal_moves_prefers_1_2_for_short_random_depot_vehicle():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -432,10 +432,10 @@ def test_generate_goal_moves_keeps_all_random_depot_targets_for_direct_rebalanci
 
     moves = generate_goal_moves(normalized, state, master=master)
 
-    assert {move.target_track for move in moves} == {"修1库内", "修2库内", "修3库内", "修4库内"}
+    assert [move.target_track for move in moves] == ["修1库内", "修2库内"]
 
 
-def test_generate_goal_moves_orders_random_depot_targets_by_current_occupancy_desc():
+def test_generate_goal_moves_allows_3_4_fallback_only_when_1_2_are_full_for_short_random_depot_vehicle():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -461,7 +461,7 @@ def test_generate_goal_moves_orders_random_depot_targets_by_current_occupancy_de
                 "trackName": "修1库内",
                 "order": "1",
                 "vehicleModel": "棚车",
-                "vehicleNo": "OCC_A",
+                "vehicleNo": "OCC_101",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
                 "targetTrack": "修1库内",
@@ -469,25 +469,102 @@ def test_generate_goal_moves_orders_random_depot_targets_by_current_occupancy_de
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修3库内",
-                "order": "1",
+                "trackName": "修1库内",
+                "order": "2",
                 "vehicleModel": "棚车",
-                "vehicleNo": "OCC_B",
+                "vehicleNo": "OCC_102",
                 "repairProcess": "厂修",
-                "vehicleLength": 19.0,
-                "targetTrack": "修3库内",
-                "isSpotting": "301",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "102",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修4库内",
+                "trackName": "修1库内",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_103",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "103",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "4",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_104",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "104",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "5",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_105",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "105",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修2库内",
                 "order": "1",
                 "vehicleModel": "棚车",
-                "vehicleNo": "OCC_C",
+                "vehicleNo": "OCC_201",
                 "repairProcess": "厂修",
-                "vehicleLength": 24.0,
-                "targetTrack": "修4库内",
-                "isSpotting": "401",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "201",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修2库内",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_202",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "202",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修2库内",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_203",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "203",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修2库内",
+                "order": "4",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_204",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "204",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修2库内",
+                "order": "5",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OCC_205",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "205",
                 "vehicleAttributes": "",
             },
         ],
@@ -502,7 +579,74 @@ def test_generate_goal_moves_orders_random_depot_targets_by_current_occupancy_de
         if move.source_track == "存5北"
     ]
 
-    assert [move.target_track for move in moves] == ["修4库内", "修3库内", "修1库内", "修2库内"]
+    assert [move.target_track for move in moves] == ["修3库内", "修4库内"]
+
+
+def test_generate_goal_moves_counts_track_mode_depot_occupants_against_random_depot_capacity():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEPOT_TRACK_FULL",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            *[
+                {
+                    "trackName": "修1库内",
+                    "order": str(idx),
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"TRACK1_{idx}",
+                    "repairProcess": "厂修",
+                    "vehicleLength": 14.3,
+                    "targetMode": "TRACK",
+                    "targetTrack": "修1库内",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for idx in range(1, 6)
+            ],
+            *[
+                {
+                    "trackName": "修2库内",
+                    "order": str(idx),
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"TRACK2_{idx}",
+                    "repairProcess": "厂修",
+                    "vehicleLength": 14.3,
+                    "targetMode": "TRACK",
+                    "targetTrack": "修2库内",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for idx in range(1, 6)
+            ],
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = [
+        move
+        for move in generate_goal_moves(normalized, state, master=master)
+        if move.source_track == "存5北"
+    ]
+
+    assert [move.target_track for move in moves] == ["修3库内", "修4库内"]
 
 
 def test_generate_goal_moves_supports_oil_and_shot_targets_when_missing_segment_is_40m_placeholder():
@@ -693,7 +837,7 @@ def test_generate_goal_moves_skips_pure_random_depot_rebalancing_when_block_is_a
         ],
         "vehicleInfo": [
             {
-                "trackName": "修3库内",
+                "trackName": "修1库内",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "RANDOM_OK",
@@ -1205,3 +1349,555 @@ def test_generate_goal_moves_reuses_injected_route_oracle():
         )
 
     assert any(move.target_track == "临1" for move in moves)
+
+
+def test_generate_real_hook_moves_keeps_interfering_identity_track_attachable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 156},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "PATH_NEED_NATIVE",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "101",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "PATH_BLOCK_NATIVE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH"
+        and move.source_track == "存5南"
+        and move.vehicle_nos == ["PATH_BLOCK_NATIVE"]
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_keeps_capacity_eviction_attachable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 28.6},
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEPOT_OK_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "机库",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEPOT_OK_2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEPOT_NEED_NATIVE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH"
+        and move.source_track == "机库"
+        and move.vehicle_nos == ["DEPOT_OK_1"]
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_keeps_spot_eviction_attachable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "临1", "trackDistance": 81.4},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SPOT_OCC_NATIVE",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "101",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SPOT_NEED_NATIVE",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "101",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH"
+        and move.source_track == "修1库内"
+        and move.vehicle_nos == ["SPOT_OCC_NATIVE"]
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_skips_extra_attach_without_detach_group_synergy():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存4北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CARRY_A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CARRY_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "BLOCK_A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": ["BLOCK_A"]},
+        loco_track_name="机库",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("CARRY_A", "CARRY_B"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    attach_moves = [move for move in moves if move.action_type == "ATTACH"]
+    assert ("BLOCK_A",) not in [tuple(move.vehicle_nos) for move in attach_moves]
+
+
+def test_generate_real_hook_moves_keeps_extra_attach_when_it_reduces_detach_groups():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存4北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CARRY_C",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CARRY_D",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "BLOCK_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": ["BLOCK_B"]},
+        loco_track_name="机库",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("CARRY_C", "CARRY_D"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    attach_moves = [move for move in moves if move.action_type == "ATTACH"]
+    assert ("BLOCK_B",) in [tuple(move.vehicle_nos) for move in attach_moves]
+
+
+def test_generate_real_hook_moves_keeps_attach_even_when_combined_carry_exceeds_equivalent_limit():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": str(index),
+                "vehicleModel": "C70",
+                "vehicleNo": f"EQC{index:02d}",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "重车" if index <= 2 else "",
+            }
+            for index in range(1, 15)
+        ]
+        + [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "C70",
+                "vehicleNo": "EQ_OVER",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": ["EQ_OVER"]},
+        loco_track_name="修1库内",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=tuple(f"EQC{index:02d}" for index in range(1, 15)),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH" and tuple(move.vehicle_nos) == ("EQ_OVER",)
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_keeps_attach_even_when_combined_carry_has_three_heavy_cars():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "C70E",
+                "vehicleNo": "HC1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "重车",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "2",
+                "vehicleModel": "C70E",
+                "vehicleNo": "HC2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "重车",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "C70E",
+                "vehicleNo": "HC3",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "重车",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": ["HC3"]},
+        loco_track_name="修1库内",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("HC1", "HC2"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH" and tuple(move.vehicle_nos) == ("HC3",)
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_keeps_extra_attach_with_multiple_unweighed_needweigh_when_detach_remains_feasible():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "GQ70",
+                "vehicleNo": "WC1",
+                "repairProcess": "段修",
+                "vehicleLength": 13.0,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "称重",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "GQ70",
+                "vehicleNo": "WC2",
+                "repairProcess": "段修",
+                "vehicleLength": 13.0,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "称重",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": ["WC2"]},
+        loco_track_name="机库",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("WC1",),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH" and tuple(move.vehicle_nos) == ("WC2",)
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_compresses_empty_carry_attach_prefixes_to_detach_group_frontier():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "预修", "trackDistance": 208.5},
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "存1", "trackDistance": 113},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "预修",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "预修",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "S1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "调棚",
+                "targetMode": "SPOT",
+                "targetSpotCode": "1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "4",
+                "vehicleModel": "棚车",
+                "vehicleNo": "Y1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+    attach_prefixes = sorted(
+        [
+            tuple(move.vehicle_nos)
+            for move in moves
+            if move.action_type == "ATTACH" and move.source_track == "存5北"
+        ],
+        key=len,
+    )
+
+    assert attach_prefixes == [
+        ("P1", "P2"),
+        ("P1", "P2", "S1"),
+        ("P1", "P2", "S1", "Y1"),
+    ]
+
+
+def test_generate_real_hook_moves_keeps_short_random_depot_vehicle_attachable_from_fallback_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修4库内",
+                "order": "1",
+                "vehicleModel": "C70",
+                "vehicleNo": "SHORT_FALLBACK",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "ATTACH"
+        and move.source_track == "修4库内"
+        and tuple(move.vehicle_nos) == ("SHORT_FALLBACK",)
+        for move in moves
+    )

@@ -155,6 +155,7 @@ def generate_typical_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "临1", "trackDistance": master.tracks["临1"].effective_length_m},
+                    {"trackName": "临3", "trackDistance": master.tracks["临3"].effective_length_m},
                     {"trackName": "机库", "trackDistance": master.tracks["机库"].effective_length_m},
                 ],
                 "vehicleInfo": [

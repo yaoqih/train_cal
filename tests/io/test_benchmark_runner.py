@@ -1,9 +1,11 @@
 from pathlib import Path
 import json
+from unittest.mock import patch
 
 from fzed_shunting.benchmark.runner import run_benchmark, run_solver_comparison_suite
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.sim.generator import generate_typical_suite
+from fzed_shunting.solver.result import SolverResult
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -91,6 +93,31 @@ def test_run_benchmark_exports_csv_results(tmp_path: Path):
     lines = csv_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     assert lines[0].startswith("seed,profile,scenario_path")
+
+
+def test_run_benchmark_does_not_count_partial_artifact_as_solved(tmp_path: Path):
+    partial_result = SolverResult(
+        plan=[],
+        expanded_nodes=3,
+        generated_nodes=5,
+        closed_nodes=2,
+        elapsed_ms=10.0,
+        is_complete=False,
+        partial_plan=[],
+    )
+
+    with patch("fzed_shunting.benchmark.runner.solve_with_simple_astar_result", return_value=partial_result):
+        report = run_benchmark(
+            output_dir=tmp_path,
+            scenario_count=1,
+            vehicle_count=1,
+            seed_start=999,
+        )
+
+    assert report["solved_count"] == 0
+    assert report["unsolved_count"] == 1
+    assert report["results"][0]["solved"] is False
+    assert report["results"][0]["is_complete"] is False
 
 
 def test_run_solver_comparison_suite_exports_per_solver_summary(tmp_path: Path):

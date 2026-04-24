@@ -6,6 +6,11 @@ from typing import Callable
 
 from fzed_shunting.domain.depot_spots import WORK_AREA_SPOTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
+from fzed_shunting.solver.goal_logic import (
+    goal_can_use_fallback_now,
+    goal_effective_allowed_tracks,
+    goal_is_satisfied,
+)
 from fzed_shunting.verify.replay import ReplayState
 
 
@@ -38,6 +43,134 @@ def compute_admissible_heuristic(
     return compute_heuristic_breakdown(plan_input, state).value
 
 
+def compute_admissible_heuristic_real_hook(
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+) -> int:
+    """Admissible heuristic for the real-hook (ATTACH/DETACH) model.
+
+    Each old PUT = 2 real hooks (1 ATTACH + 1 DETACH), so scale all existing
+    lower bounds by 2.  Vehicles already in loco_carry only need DETACHes, so
+    their contribution is cheaper: count the number of distinct goal target
+    tracks among the carried vehicles that are not yet at their goal.
+    """
+    bd = compute_heuristic_breakdown(plan_input, state)
+    h_on_tracks = max(
+        2 * (bd.h_distinct_transfer_pairs + bd.h_tight_capacity),
+        2 * bd.h_blocking,
+        2 * bd.h_weigh,
+        2 * bd.h_spot_evict,
+    )
+    h_carry = _h_carry_detach(plan_input, state)
+    return h_on_tracks + h_carry
+
+
+def _h_carry_detach(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
+    """Admissible lower bound on remaining DETACHes for vehicles in loco_carry.
+
+    Greedy forward scan: maintain the intersection of allowed target tracks
+    across the current DETACH prefix. When the intersection hits empty, a
+    new DETACH group must start (increment count). Handles need_weigh vehicles
+    by treating their effective goal as {"机库"} until weighed.
+
+    Example: carry=[v1(T1), v2(T2), v3(T1)] → 3 groups (T1∩T2=∅, T2∩T1=∅).
+    Previous distinct-targets count gave 2, which underestimated.
+    """
+    if not state.loco_carry:
+        return 0
+    vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
+    groups = 0
+    shared: set[str] = set()
+    for vehicle_no in state.loco_carry:
+        v = vehicle_by_no.get(vehicle_no)
+        if v is None:
+            groups += 1
+            shared = set()
+            continue
+        if v.need_weigh and vehicle_no not in state.weighed_vehicle_nos:
+            effective: set[str] = {"机库"}
+        else:
+            effective = set(v.goal.allowed_target_tracks)
+        if not shared:
+            groups += 1
+            shared = effective.copy()
+        else:
+            new_shared = shared & effective
+            if not new_shared:
+                groups += 1
+                shared = effective.copy()
+            else:
+                shared = new_shared
+    return groups
+
+
+def make_state_heuristic_real_hook(
+    plan_input: NormalizedPlanInput,
+) -> Callable[[ReplayState], int]:
+    """Closure-style heuristic factory for the real-hook search mode.
+
+    Atomic-hook cost model:
+    - vehicles still on yard tracks need both ATTACH and DETACH work
+    - vehicles already in loco_carry only need DETACH groups
+    """
+    vehicles = tuple(plan_input.vehicles)
+    vehicle_by_no = {v.vehicle_no: v for v in vehicles}
+    length_by_vno = {v.vehicle_no: v.vehicle_length for v in vehicles}
+    weigh_vehicle_nos = frozenset(v.vehicle_no for v in vehicles if v.need_weigh)
+
+    capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
+    initial_occupation_by_track: dict[str, float] = {}
+    for v in vehicles:
+        initial_occupation_by_track[v.current_track] = (
+            initial_occupation_by_track.get(v.current_track, 0.0) + v.vehicle_length
+        )
+    effective_cap_by_track = {
+        name: max(cap, initial_occupation_by_track.get(name, 0.0))
+        for name, cap in capacity_by_track.items()
+    }
+
+    def _heuristic(state: ReplayState) -> int:
+        current_track_by_vehicle = _vehicle_track_lookup(state)
+        h_pairs = _h_distinct_transfer_pairs(
+            plan_input=plan_input,
+            state=state,
+            current_track_by_vehicle=current_track_by_vehicle,
+        )
+        h_block = _h_blocking(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            current_track_by_vehicle=current_track_by_vehicle,
+        )
+        h_weigh = _h_weigh_remaining_precomputed(
+            weigh_vehicle_nos=weigh_vehicle_nos,
+            weighed_vehicle_nos=state.weighed_vehicle_nos,
+        )
+        h_spot = _h_spot_evict(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+        )
+        h_tight = _h_tight_capacity_eviction(
+            plan_input=plan_input,
+            state=state,
+            length_by_vno=length_by_vno,
+            current_track_by_vehicle=current_track_by_vehicle,
+            vehicle_by_no=vehicle_by_no,
+            effective_cap_by_track=effective_cap_by_track,
+        )
+        h_on_tracks = max(
+            2 * (h_pairs + h_tight),
+            2 * h_block,
+            2 * h_weigh,
+            2 * h_spot,
+        )
+        h_carry = _h_carry_detach(plan_input, state)
+        return h_on_tracks + h_carry
+
+    return _heuristic
+
+
 def compute_heuristic_breakdown(
     plan_input: NormalizedPlanInput,
     state: ReplayState,
@@ -59,10 +192,12 @@ def compute_heuristic_breakdown(
     return HeuristicBreakdown(
         h_misplaced=_h_misplaced_vehicles(
             plan_input=plan_input,
+            state=state,
             current_track_by_vehicle=current_track_by_vehicle,
         ),
         h_distinct_transfer_pairs=_h_distinct_transfer_pairs(
             plan_input=plan_input,
+            state=state,
             current_track_by_vehicle=current_track_by_vehicle,
         ),
         h_blocking=_h_blocking(
@@ -116,6 +251,7 @@ def make_state_heuristic(
         current_track_by_vehicle = _vehicle_track_lookup(state)
         h_pairs = _h_distinct_transfer_pairs(
             plan_input=plan_input,
+            state=state,
             current_track_by_vehicle=current_track_by_vehicle,
         )
         h_block = _h_blocking(
@@ -158,6 +294,7 @@ def _vehicle_track_lookup(state: ReplayState) -> dict[str, str]:
 def _h_misplaced_vehicles(
     *,
     plan_input: NormalizedPlanInput,
+    state: ReplayState,
     current_track_by_vehicle: dict[str, str],
 ) -> int:
     count = 0
@@ -166,7 +303,20 @@ def _h_misplaced_vehicles(
         if current_track is None:
             count += 1
             continue
-        if current_track not in vehicle.goal.allowed_target_tracks:
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            count += 1
+            continue
+        if _is_fallback_while_preferred_still_feasible(
+            vehicle,
+            current_track=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
             count += 1
     return count
 
@@ -174,6 +324,7 @@ def _h_misplaced_vehicles(
 def _h_distinct_transfer_pairs(
     *,
     plan_input: NormalizedPlanInput,
+    state: ReplayState,
     current_track_by_vehicle: dict[str, str],
 ) -> int:
     """Admissible lower bound on remaining hooks.
@@ -200,8 +351,18 @@ def _h_distinct_transfer_pairs(
         current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
         if current_track is None:
             continue
-        allowed = vehicle.goal.allowed_target_tracks
-        if current_track in allowed:
+        effective_allowed = goal_effective_allowed_tracks(
+            vehicle,
+            state=state,
+            plan_input=plan_input,
+        )
+        allowed = effective_allowed or vehicle.goal.allowed_target_tracks
+        if current_track in allowed and not _is_fallback_while_preferred_still_feasible(
+            vehicle,
+            current_track=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
             continue
         if len(allowed) == 0:
             continue
@@ -225,6 +386,24 @@ def _h_distinct_transfer_pairs(
     return len(forced_pairs) + extra_hooks
 
 
+def _is_fallback_while_preferred_still_feasible(
+    vehicle: NormalizedVehicle,
+    *,
+    current_track: str,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> bool:
+    if current_track not in vehicle.goal.fallback_target_tracks:
+        return False
+    if not vehicle.goal.preferred_target_tracks:
+        return False
+    return not goal_can_use_fallback_now(
+        vehicle,
+        state=state,
+        plan_input=plan_input,
+    )
+
+
 def _h_blocking(
     *,
     plan_input: NormalizedPlanInput,
@@ -246,9 +425,28 @@ def _h_blocking(
     goal_tracks_needed: set[str] = set()
     for vehicle in plan_input.vehicles:
         current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
-        if current_track in vehicle.goal.allowed_target_tracks:
+        if current_track is None:
             continue
-        for candidate in vehicle.goal.allowed_target_tracks:
+        if goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ) and not _is_fallback_while_preferred_still_feasible(
+            vehicle,
+            current_track=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            continue
+        for candidate in (
+            goal_effective_allowed_tracks(
+                vehicle,
+                state=state,
+                plan_input=plan_input,
+            )
+            or vehicle.goal.allowed_target_tracks
+        ):
             goal_tracks_needed.add(candidate)
 
     blocker_count = 0
@@ -264,10 +462,22 @@ def _h_blocking(
             blocker = vehicle_by_no.get(vehicle_no)
             if blocker is None:
                 continue
-            if target_track in blocker.goal.allowed_target_tracks:
+            if goal_is_satisfied(
+                blocker,
+                track_name=target_track,
+                state=state,
+                plan_input=plan_input,
+            ):
                 break
             cluster_blockers += 1
-            dests.update(blocker.goal.allowed_target_tracks)
+            dests.update(
+                goal_effective_allowed_tracks(
+                    blocker,
+                    state=state,
+                    plan_input=plan_input,
+                )
+                or blocker.goal.allowed_target_tracks
+            )
         if cluster_blockers > 0:
             blocker_count += 1
             blocker_dests[target_track] = dests
