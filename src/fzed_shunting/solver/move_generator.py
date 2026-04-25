@@ -1179,6 +1179,7 @@ def _candidate_staging_targets(
         if source_distance is None:
             continue
         combined_distance = source_distance
+        follow_distances: list[float] = []
         if goal_target_hints:
             follow_distances = [
                 distance
@@ -1188,8 +1189,8 @@ def _candidate_staging_targets(
                 )
                 if distance is not None
             ]
-            if follow_distances:
-                combined_distance = source_distance + min(follow_distances)
+        if follow_distances:
+            combined_distance = source_distance + min(follow_distances)
         occupancy = len(state.track_sequences.get(info.track_name, []))
         targets.append(((type_priority, occupancy, combined_distance, source_distance, info.track_name), info.track_name))
     targets.sort(key=lambda item: item[0])

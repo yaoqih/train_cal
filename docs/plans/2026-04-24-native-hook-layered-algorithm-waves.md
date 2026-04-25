@@ -242,3 +242,38 @@ PYTHONPATH=src .venv/bin/python scripts/run_external_validation_parallel.py \
     - `validation_20260310W.json`: `433` hooks, only `4` accepted rewrites, `staging_hook_count=296`, `staging_to_staging_hook_count=209`, `max_vehicle_touch_count=94`.
     - `validation_20260127W.json`: `388` hooks, `24` accepted rewrites, `staging_hook_count=48`, `staging_to_staging_hook_count=21`, `max_vehicle_touch_count=154`.
   - Next algorithm layer should act before plan construction commits to poor temporary tracks: add route/contention-aware staging target ordering as a soft tiebreaker, not a hard prune, then compare against Wave 4C.
+
+### 2026-04-25 Route-Contention Experiments
+
+- Wave 6 tested route-contention-aware staging target ordering globally:
+  - Mechanism: deprioritize temporary tracks that lie on the pending source-to-goal corridor, while keeping them as fallback candidates.
+  - Positive artifact: `artifacts/validation_inputs_positive_route_contention_wave6/summary.json`.
+  - Positive result: `64/64` solved, but distribution regressed from Wave 4C `min=2, p50=13, p75=26, p90=85, p95=86, max=129` to `min=2, p50=13, p75=24, p90=116, p95=123, max=154`.
+  - Truth artifact: `artifacts/validation_inputs_truth_route_contention_wave6/summary.json`.
+  - Truth result: solved count regressed from `117/127` to `115/127`; distribution regressed to `min=5, p50=60, p75=104, p90=160, p95=252, max=813`.
+  - Positive signal: `validation_20260310W.json` improved from `433` to `252` hooks and `validation_20260127W.json` improved from `388` to `278`.
+  - Rejection reason: the same global ordering created new extreme tails (`validation_20260212W.json` at `813`, `validation_2025_09_08_noon.json` at `663`) and reduced solvability. The signal is real but too blunt as a default candidate order.
+- Wave 7 tested a narrower front-blocker-only variant:
+  - Mechanism: only when detaching an already-satisfied front blocker to expose the next unfinished vehicle, use the next vehicle's route as an avoid-corridor hint.
+  - Positive artifact: `artifacts/validation_inputs_positive_front_blocker_route_wave7/summary.json`.
+  - Positive result: `64/64` solved, but distribution still regressed to `min=2, p50=13, p75=26, p90=86, p95=96, max=129`.
+  - Truth artifact: `artifacts/validation_inputs_truth_front_blocker_route_wave7/summary.json`.
+  - Truth result: solved count recovered to `117/127`, but distribution regressed to `min=5, p50=63, p75=101, p90=144, p95=162, max=1263`.
+  - Positive signal: `validation_20260127W.json` improved from `388` to `117`.
+  - Rejection reason: `validation_20260317Z.json` exploded from `78` to `1263` hooks. Even a narrow ordering change can create unstable constructive paths because early staging choices alter later block formation and compression opportunities.
+- Decision:
+  - Do not adopt route-contention ordering as a default move-generator rule.
+  - Keep the artifacts as evidence that future-route awareness is useful but must be applied through a safer mechanism.
+  - Next safer direction: candidate diversity or two-stage local selection. Instead of changing the single default order, preserve the existing distance/occupancy order and add limited alternative branches for low-contention temporary tracks, then let beam/score choose with structural metrics. This avoids forcing every scenario through the same route-avoidance bias.
+- Wave 8 tested route-clear candidate diversity:
+  - Mechanism: keep the existing default staging order, but when detaching a satisfied front blocker, add one extra route-clear temporary-track candidate instead of replacing the first two default candidates.
+  - Positive artifact: `artifacts/validation_inputs_positive_route_diversity_wave8/summary.json`.
+  - Positive result: `64/64` solved; distribution `min=2, p50=13, p75=26, p90=86, p95=86, max=144`.
+  - Truth artifact: `artifacts/validation_inputs_truth_route_diversity_wave8/summary.json`.
+  - Truth result: `117/127` solved; distribution `min=5, p50=63, p75=101, p90=140, p95=149, max=433`.
+  - Positive signal: `case_3_2_shed_pre_repair_from_cun5bei.json` improved from `85` to `64`; `validation_20260127W.json` improved from `388` to `291`.
+  - Rejection reason: despite no solvability loss and no new extreme max, net hooks increased on both positive and truth, positive max worsened from `129` to `144`, and truth p50/p75/p90 worsened. This remains a seesaw improvement, not a robust default.
+- Updated decision:
+  - Route-aware staging is not ready as a move-generation default, even as diversity.
+  - The robust next layer should move route awareness into a score/selection layer that can compare complete partial states, not into candidate generation. Candidate generation should remain conservative and stable.
+  - If revisited, route-clear alternatives should be behind a measurable state-quality selector: only accept the alternative when the next state improves structural metrics enough to offset extra search width and does not increase staging-to-staging debt.
