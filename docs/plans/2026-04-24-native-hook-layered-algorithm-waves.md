@@ -277,3 +277,20 @@ PYTHONPATH=src .venv/bin/python scripts/run_external_validation_parallel.py \
   - Route-aware staging is not ready as a move-generation default, even as diversity.
   - The robust next layer should move route awareness into a score/selection layer that can compare complete partial states, not into candidate generation. Candidate generation should remain conservative and stable.
   - If revisited, route-clear alternatives should be behind a measurable state-quality selector: only accept the alternative when the next state improves structural metrics enough to offset extra search width and does not increase staging-to-staging debt.
+
+### 2026-04-25 Lifecycle Scoring Experiment
+
+- Wave 9 tested repeated-touch and fresh-staging-debt tie-breakers in constructive scoring:
+  - Mechanism: keep move generation unchanged; when constructive scores same-tier moves, prefer lower repeated vehicle touch counts and fewer newly introduced unfinished vehicles on staging tracks.
+  - Plan: `docs/plans/2026-04-25-native-hook-lifecycle-scoring.md`.
+  - Positive artifact: `artifacts/validation_inputs_positive_lifecycle_wave9/summary.json`.
+  - Positive result: `64/64` solved; distribution `min=2, p50=13, p75=26, p90=86, p95=86, max=129`.
+  - Truth artifact: `artifacts/validation_inputs_truth_lifecycle_wave9/summary.json`.
+  - Truth result: `117/127` solved; distribution `min=5, p50=63, p75=101, p90=135, p95=160, max=433`.
+  - Positive signal: small positive net movement (`-3` hooks total) and `case_3_2_shed_work_*` improved from `105` to `101`.
+  - Truth signal: some large improvements (`validation_20260318W.json` `199 -> 114`, `validation_20260304W.json` `142 -> 91`).
+  - Rejection reason: truth p50/p75/p90/p95 all regressed, truth net hooks worsened by `505`, and `validation_2025_09_09_noon.json` regressed from `147` to `366`.
+- Decision:
+  - Do not adopt lifecycle tie-breakers as unconditional constructive ordering rules.
+  - The same pattern as Wave 6-8 repeats: local signals are valid, but unconditional global insertion causes seesaw regressions.
+  - Next implementation should use a bounded accept/reject layer: generate the default greedy choice and one lifecycle-favored alternative, simulate both one or more steps, and only switch when a composite state-quality predicate improves without increasing known risk metrics.
