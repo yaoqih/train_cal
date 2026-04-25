@@ -294,3 +294,28 @@ PYTHONPATH=src .venv/bin/python scripts/run_external_validation_parallel.py \
   - Do not adopt lifecycle tie-breakers as unconditional constructive ordering rules.
   - The same pattern as Wave 6-8 repeats: local signals are valid, but unconditional global insertion causes seesaw regressions.
   - Next implementation should use a bounded accept/reject layer: generate the default greedy choice and one lifecycle-favored alternative, simulate both one or more steps, and only switch when a composite state-quality predicate improves without increasing known risk metrics.
+
+### 2026-04-25 Wave 10 Capacity Release Facts
+
+- Wave 10 implemented a facts-only `CapacityReleasePlan`:
+  - Module: `src/fzed_shunting/solver/capacity_release.py`.
+  - Tests: `tests/solver/test_capacity_release.py`.
+  - Solver debug stats now include `initial_capacity_release_plan`.
+  - No move generation, scoring, verification, or solver behavior is changed.
+- Added truth tail report:
+  - Script: `scripts/analyze_capacity_release_truth_tails.py`.
+  - JSON artifact: `artifacts/analysis/truth_p75_capacity_release_wave10.json`.
+  - Markdown artifact: `artifacts/analysis/truth_p75_capacity_release_wave10.md`.
+- Report result on Wave 5 truth baseline:
+  - Solved cases: `117/127`.
+  - p75 hook count: `97`.
+  - Tail cases (`hook_count > p75`): `29`.
+  - Mean top release pressure length: `82.428m`.
+  - Top release pressure tracks among p75+ cases: `调棚` appears in `29/29`; `预修` appears in `23/29`; secondary pressure appears on `洗南`, `存1`, `机棚`, `存3`, `存5南`, and `油`.
+- Interpretation:
+  - Capacity release pressure strongly explains the p75+ truth tail. The long tails are not only route or staging-order problems; they repeatedly need large front releases on business target tracks, especially `调棚` and `预修`.
+  - This gives a more stable basis for Wave 11/12 than route-aware staging order or unconditional lifecycle tie-breakers.
+- Verification:
+  - `PYTHONPATH=src .venv/bin/pytest -q tests/solver/test_capacity_release.py tests/solver/test_astar_solver.py tests/solver/test_structural_metrics.py tests/solver/test_move_generator.py` passed with `114 passed, 6 skipped`.
+- Next gate:
+  - Wave 11 should build soft target templates from capacity release facts, especially for `大库:RANDOM` and `存4北`, but must remain facts/scoring-only until full validation proves no distribution regression.

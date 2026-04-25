@@ -12,6 +12,7 @@ from fzed_shunting.solver.anytime import (
     _run_anytime_fallback_chain as _anytime_run_fallback_chain,
 )
 from fzed_shunting.solver.budget import SearchBudget
+from fzed_shunting.solver.capacity_release import compute_capacity_release_plan
 from fzed_shunting.solver.lns import (
     _build_repair_plan_input,
     _improve_incumbent_result,
@@ -615,6 +616,10 @@ def _attach_structural_debug_stats(
 ) -> SolverResult:
     stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
     stats["initial_structural_metrics"] = compute_structural_metrics(
+        plan_input,
+        initial_state,
+    ).to_dict()
+    stats["initial_capacity_release_plan"] = compute_capacity_release_plan(
         plan_input,
         initial_state,
     ).to_dict()

@@ -203,6 +203,8 @@ def test_simple_astar_result_can_return_debug_stats():
     assert result.debug_stats["final_structural_metrics"]["unfinished_count"] == 0
     assert result.debug_stats["plan_shape_metrics"]["max_vehicle_touch_count"] >= 1
     assert result.debug_stats["plan_compression"]["accepted_rewrite_count"] >= 0
+    assert "initial_capacity_release_plan" in result.debug_stats
+    assert "facts_by_track" in result.debug_stats["initial_capacity_release_plan"]
 
 
 def test_simple_astar_rejects_track_goals_that_overflow_final_capacity():
