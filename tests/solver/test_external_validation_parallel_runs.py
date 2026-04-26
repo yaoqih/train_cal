@@ -5,6 +5,15 @@ import json
 from unittest.mock import patch
 
 from fzed_shunting.tools.convert_external_validation_inputs import convert_external_validation_inputs
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_time_budget_ms,
+)
+from fzed_shunting.solver.astar_solver import (
+    RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+)
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.types import HookAction
 
@@ -173,9 +182,48 @@ def test_parse_args_defaults_to_baseline_settings():
         module.sys.argv = original_argv
 
     assert args.beam_width == 8
+    assert args.solver == VALIDATION_DEFAULT_SOLVER
+    assert args.beam_width == VALIDATION_DEFAULT_BEAM_WIDTH
     assert args.max_workers == 8
-    assert args.timeout_seconds == 60
+    assert args.timeout_seconds == int(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
     assert args.retry_no_solution_beam_width is None
+
+
+def test_validation_runner_uses_shared_solver_time_budget_default(monkeypatch, tmp_path: Path):
+    scenario = tmp_path / "validation_budget.json"
+    scenario.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    captured = {}
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        captured["first"] = kwargs
+        return [{"scenario": scenario.name, "solved": True}]
+
+    def fake_recover_no_solution_results(**kwargs):  # noqa: ANN003
+        captured["recover"] = kwargs
+        return kwargs["initial_results"]
+
+    monkeypatch.setattr(module, "run_parallel_scenarios", fake_run_parallel_scenarios)
+    monkeypatch.setattr(module, "recover_no_solution_results", fake_recover_no_solution_results)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "run_external_validation_parallel.py",
+            "--scenario",
+            str(scenario),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    module.main()
+
+    expected_budget = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    assert captured["first"]["time_budget_ms"] == expected_budget
+    assert captured["recover"]["time_budget_ms"] == expected_budget
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["solver_time_budget_ms"] == expected_budget
 
 
 def test_run_parallel_scenarios_uses_subprocesses_and_collects_results(tmp_path: Path):
@@ -383,7 +431,7 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == [(["validation_a.json"], 8, 1, 90_000.0)]
+    assert calls == [(["validation_a.json"], 8, 2, 90_000.0)]
     assert results[0]["scenario"] == "validation_a.json"
     assert results[0]["solved"] is True
     assert results[0]["recovery_beam_width"] == 8
@@ -455,6 +503,297 @@ def test_recover_no_solution_results_retries_progressively_until_success(tmp_pat
     assert calls == [8, 16, 24]
     assert results[0]["solved"] is True
     assert results[0]["recovery_beam_width"] == 24
+
+
+def test_recover_no_solution_results_continues_after_pathological_success(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": "validation_a.json", "solved": False, "error": "no solution within budget", "debug_stats": {}},
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(beam_width)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 807 if beam_width == 8 else 102,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 336 if beam_width == 8 else 28,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8, 16]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 102
+    assert results[0]["recovery_beam_width"] == 16
+
+
+def test_recover_no_solution_results_retries_pathological_initial_success(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": True,
+            "hook_count": 1009,
+            "is_valid": True,
+            "debug_stats": {
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 210,
+                }
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(beam_width)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 102,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {"plan_shape_metrics": {"max_vehicle_touch_count": 24}},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8]
+    assert results[0]["hook_count"] == 102
+    assert results[0]["recovery_beam_width"] == 8
+
+
+def test_recover_no_solution_results_does_not_retry_high_hook_low_churn_success(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": True,
+            "hook_count": 269,
+            "is_valid": True,
+            "debug_stats": {
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 56,
+                }
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        calls.append(kwargs["beam_width"])
+        return []
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == []
+    assert results[0] == initial_results[0]
+
+
+def test_recover_no_solution_results_stops_after_healthy_success(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": "validation_a.json", "solved": False, "error": "no solution within budget", "debug_stats": {}},
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(beam_width)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 95,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {"plan_shape_metrics": {"max_vehicle_touch_count": 36}},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=24,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 95
+    assert results[0]["recovery_beam_width"] == 8
+
+
+def test_recover_no_solution_results_enables_recovery_partial_resume_profile(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": "validation_a.json", "solved": False, "error": "no solution within budget", "debug_stats": {}},
+    ]
+    captured: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001, ARG001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        near_goal_partial_resume_max_final_heuristic=None,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        captured.append(near_goal_partial_resume_max_final_heuristic)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 88,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {"plan_shape_metrics": {"max_vehicle_touch_count": 20}},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=8,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert captured == [RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC]
 
 
 def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):

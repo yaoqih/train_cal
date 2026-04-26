@@ -3,10 +3,32 @@ from pathlib import Path
 from fzed_shunting.demo import view_model as view_model_module
 from fzed_shunting.demo.view_model import build_demo_view_model, select_demo_payload
 from fzed_shunting.domain.master_data import load_master_data
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_retry_time_budget_ms,
+    validation_time_budget_ms,
+)
+from fzed_shunting.solver.astar_solver import (
+    RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+)
+from fzed_shunting.solver.result import SolverResult
+from fzed_shunting.solver.types import HookAction
 from fzed_shunting.sim.generator import generate_typical_suite
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
+
+
+def _mock_hook(source_track: str, target_track: str, vehicle_nos: list[str]) -> HookAction:
+    return HookAction(
+        source_track=source_track,
+        target_track=target_track,
+        vehicle_nos=vehicle_nos,
+        path_tracks=[source_track, target_track],
+        action_type="DETACH",
+    )
 
 
 def _native_direct_plan(
@@ -84,6 +106,183 @@ def test_build_demo_view_model_for_single_hook_case():
     assert view.steps[2].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
     assert view.steps[2].track_map.changed_tracks == ["存5北", "机库"]
     assert view.steps[2].track_map.track_nodes["机库"].has_loco is True
+
+
+def test_build_demo_view_model_defaults_match_validation_runner_profile(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "VIEW_PROFILE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    captured = {}
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+        )
+
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar_result", fake_solve)
+
+    view = build_demo_view_model(master, payload)
+
+    assert view.summary.hook_count == 0
+    assert captured["solver_mode"] == VALIDATION_DEFAULT_SOLVER
+    assert captured["beam_width"] == VALIDATION_DEFAULT_BEAM_WIDTH
+    assert captured["time_budget_ms"] == validation_time_budget_ms(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS
+    )
+    assert captured["enable_depot_late_scheduling"] is False
+
+
+def test_build_demo_view_model_retries_beam_like_validation_runner(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "VIEW_RETRY",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    calls = []
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) < 3:
+            return SolverResult(
+                plan=[],
+                partial_plan=[],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=0.0,
+                is_complete=False,
+                fallback_stage=kwargs.get("solver_mode"),
+            )
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+        )
+
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar_result", fake_solve)
+
+    view = build_demo_view_model(master, payload)
+
+    assert view.summary.is_valid is True
+    assert [call["beam_width"] for call in calls] == [8, 8, 16]
+    assert calls[1]["time_budget_ms"] == validation_retry_time_budget_ms(
+        validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    )
+    assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
+        RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+    )
+
+
+def test_build_demo_view_model_retries_pathological_complete_result(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "VIEW_PATHO",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    calls = []
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SolverResult(
+                plan=[
+                    _mock_hook("存5北", "存5北", ["VIEW_PATHO"])
+                    for _ in range(130)
+                ],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=0.0,
+                is_complete=True,
+                fallback_stage=kwargs.get("solver_mode"),
+                debug_stats={
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 90,
+                    }
+                },
+            )
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+            debug_stats={"plan_shape_metrics": {"max_vehicle_touch_count": 20}},
+        )
+
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar_result", fake_solve)
+
+    view = build_demo_view_model(master, payload)
+
+    assert view.summary.is_valid is True
+    assert view.summary.hook_count == 0
+    assert [call["beam_width"] for call in calls] == [8, 8]
+    assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
+        RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+    )
 
 
 def test_build_demo_view_model_counts_atomic_attach_and_detach_hooks():
@@ -193,9 +392,9 @@ def test_build_demo_view_model_skips_external_plan_comparison_by_default(monkeyp
     )
 
     def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("solve_with_simple_astar should not run for external plan replay by default")
+        raise AssertionError("solve_with_simple_astar_result should not run for external plan replay by default")
 
-    monkeypatch.setattr(view_model_module, "solve_with_simple_astar", fail_if_called)
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar_result", fail_if_called)
 
     view = build_demo_view_model(master, payload, plan_payload=plan_payload)
 

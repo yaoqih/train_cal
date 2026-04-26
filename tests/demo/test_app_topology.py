@@ -236,6 +236,18 @@ def test_app_module_exposes_workflow_renderer():
     assert hasattr(app, "_render_workflow_demo")
 
 
+def test_app_defaults_match_validation_runner_solver_profile():
+    assert app.VALIDATION_DEFAULT_SOLVER == "beam"
+    assert app.VALIDATION_DEFAULT_BEAM_WIDTH == 8
+    assert app.VALIDATION_DEFAULT_TIMEOUT_SECONDS == 60.0
+    assert app._validation_time_budget_ms(60.0) == 55_000.0
+
+
+def test_app_labels_external_plan_validation_source():
+    assert "外部 Plan JSON" in app._plan_validation_source_label([{}])
+    assert "当前 Solver" in app._plan_validation_source_label(None)
+
+
 def test_app_module_exposes_hook_sidebar_and_distance_helpers():
     assert hasattr(app, "_build_hook_sidebar_rows")
     assert hasattr(app, "_build_distance_breakdown_rows")

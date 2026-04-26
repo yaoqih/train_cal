@@ -5,10 +5,33 @@ import sys
 
 from typer.testing import CliRunner
 
-from fzed_shunting.cli import app
+from fzed_shunting.cli import app, _solve_payload
+from fzed_shunting.domain.master_data import load_master_data
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_retry_time_budget_ms,
+    validation_time_budget_ms,
+)
+from fzed_shunting.solver.astar_solver import (
+    RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+)
+from fzed_shunting.solver.result import SolverResult
+from fzed_shunting.solver.types import HookAction
 
 
 runner = CliRunner()
+
+
+def _mock_hook(source_track: str, target_track: str, vehicle_nos: list[str]) -> HookAction:
+    return HookAction(
+        source_track=source_track,
+        target_track=target_track,
+        vehicle_nos=vehicle_nos,
+        path_tracks=[source_track, target_track],
+        action_type="DETACH",
+    )
 
 
 def _native_direct_plan(
@@ -64,6 +87,206 @@ def test_generate_and_solve_cli_flow(tmp_path: Path):
         first_hook = payload["hook_plan"][0]
         assert first_hook["vehicleCount"] == len(first_hook["vehicleNos"])
         assert "remark" in first_hook
+
+
+def test_solve_cli_defaults_match_validation_runner_profile(monkeypatch):
+    master = load_master_data(Path(__file__).resolve().parents[2] / "data" / "master")
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CLI_PROFILE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    captured = {}
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+        )
+
+    monkeypatch.setattr("fzed_shunting.cli.solve_with_simple_astar_result", fake_solve)
+
+    result = _solve_payload(
+        master=master,
+        payload=payload,
+        solver=None,
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+    )
+
+    assert result["solver"] == VALIDATION_DEFAULT_SOLVER
+    assert result["hook_count"] == 0
+    assert captured["solver_mode"] == VALIDATION_DEFAULT_SOLVER
+    assert captured["beam_width"] == VALIDATION_DEFAULT_BEAM_WIDTH
+    assert captured["time_budget_ms"] == validation_time_budget_ms(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS
+    )
+    assert captured["enable_depot_late_scheduling"] is False
+
+
+def test_solve_cli_retries_beam_like_validation_runner(monkeypatch):
+    master = load_master_data(Path(__file__).resolve().parents[2] / "data" / "master")
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CLI_RETRY",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    calls = []
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) < 3:
+            return SolverResult(
+                plan=[],
+                partial_plan=[],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=0.0,
+                is_complete=False,
+                fallback_stage=kwargs.get("solver_mode"),
+            )
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+        )
+
+    monkeypatch.setattr("fzed_shunting.cli.solve_with_simple_astar_result", fake_solve)
+
+    result = _solve_payload(
+        master=master,
+        payload=payload,
+        solver=None,
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+    )
+
+    assert result["is_valid"] is True
+    assert result["solver_errors"] == []
+    assert [call["beam_width"] for call in calls] == [8, 8, 16]
+    assert calls[1]["time_budget_ms"] == validation_retry_time_budget_ms(
+        validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    )
+    assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
+        RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+    )
+
+
+def test_solve_cli_retries_pathological_complete_result(monkeypatch):
+    master = load_master_data(Path(__file__).resolve().parents[2] / "data" / "master")
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CLI_PATHO",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    calls = []
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SolverResult(
+                plan=[
+                    _mock_hook("存5北", "存5北", ["CLI_PATHO"])
+                    for _ in range(130)
+                ],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=0.0,
+                is_complete=True,
+                fallback_stage=kwargs.get("solver_mode"),
+                debug_stats={
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 90,
+                    }
+                },
+            )
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+            debug_stats={"plan_shape_metrics": {"max_vehicle_touch_count": 20}},
+        )
+
+    monkeypatch.setattr("fzed_shunting.cli.solve_with_simple_astar_result", fake_solve)
+
+    result = _solve_payload(
+        master=master,
+        payload=payload,
+        solver=None,
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+    )
+
+    assert result["is_valid"] is True
+    assert result["hook_count"] == 0
+    assert [call["beam_width"] for call in calls] == [8, 8]
+    assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
+        RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+    )
 
 
 def test_solve_cli_supports_weighted_solver(tmp_path: Path):

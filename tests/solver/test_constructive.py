@@ -1373,3 +1373,284 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
     )
 
     assert work_score < staging_score
+
+
+def test_score_native_move_prioritizes_stale_staging_debt_recovery_over_new_work():
+    from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedTrackInfo, NormalizedVehicle
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    normalized = NormalizedPlanInput(
+        track_info=[
+            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="存5北", track_distance=367),
+            NormalizedTrackInfo(track_name="存4北", track_distance=317.8),
+            NormalizedTrackInfo(track_name="机库", track_distance=71.6),
+        ],
+        vehicles=[
+            NormalizedVehicle(
+                current_track="临1",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="STAGED_DEBT",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存4北",
+                    allowed_target_tracks=["存4北"],
+                ),
+            ),
+            NormalizedVehicle(
+                current_track="存5北",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="NEW_WORK",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存4北",
+                    allowed_target_tracks=["存4北"],
+                ),
+            ),
+        ],
+        loco_track_name="机库",
+        yard_mode="NORMAL",
+    )
+    state = ReplayState(
+        track_sequences={"临1": ["STAGED_DEBT"], "存5北": ["NEW_WORK"]},
+        loco_track_name="机库",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    heuristic = make_state_heuristic_real_hook(normalized)
+    current_h = heuristic(state)
+    staging_attach = HookAction(
+        source_track="临1",
+        target_track="临1",
+        vehicle_nos=["STAGED_DEBT"],
+        path_tracks=["临1"],
+        action_type="ATTACH",
+    )
+    work_attach = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["NEW_WORK"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    staging_state = _apply_move(
+        state=state,
+        move=staging_attach,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    work_state = _apply_move(
+        state=state,
+        move=work_attach,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    staging_score, _ = _score_native_move(
+        move=staging_attach,
+        state=state,
+        next_state=staging_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(staging_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+        recent_moves=deque(),
+    )
+    work_score, _ = _score_native_move(
+        move=work_attach,
+        state=state,
+        next_state=work_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(work_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+        recent_moves=deque(),
+    )
+
+    assert staging_score < work_score
+
+
+def test_score_native_move_penalizes_staging_detach_with_blocked_goal_corridor():
+    from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedTrackInfo, NormalizedVehicle
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    normalized = NormalizedPlanInput(
+        track_info=[
+            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
+            NormalizedTrackInfo(track_name="存4南", track_distance=154.5),
+            NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
+            NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
+            NormalizedTrackInfo(track_name="机库", track_distance=71.6),
+        ],
+        vehicles=[
+            NormalizedVehicle(
+                current_track="临4",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="CARRY",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存5北",
+                    allowed_target_tracks=["存5北"],
+                ),
+            ),
+            NormalizedVehicle(
+                current_track="存5南",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="ROUTE_BLOCK",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存5南",
+                    allowed_target_tracks=["存5南"],
+                ),
+            ),
+        ],
+        loco_track_name="临4",
+        yard_mode="NORMAL",
+    )
+    state = ReplayState(
+        track_sequences={"存5南": ["ROUTE_BLOCK"]},
+        loco_track_name="临4",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("CARRY",),
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    heuristic = make_state_heuristic_real_hook(normalized)
+    current_h = heuristic(state)
+    blocked_staging_move = HookAction(
+        source_track="临4",
+        target_track="存4南",
+        vehicle_nos=["CARRY"],
+        path_tracks=["临4", "渡9", "渡8", "存4南"],
+        action_type="DETACH",
+    )
+    clear_staging_move = HookAction(
+        source_track="临4",
+        target_track="临4",
+        vehicle_nos=["CARRY"],
+        path_tracks=["临4"],
+        action_type="DETACH",
+    )
+    blocked_state = _apply_move(
+        state=state,
+        move=blocked_staging_move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    clear_state = _apply_move(
+        state=state,
+        move=clear_staging_move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    blocked_score, _ = _score_native_move(
+        move=blocked_staging_move,
+        state=state,
+        next_state=blocked_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(blocked_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+    )
+    clear_score, _ = _score_native_move(
+        move=clear_staging_move,
+        state=state,
+        next_state=clear_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(clear_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+    )
+
+    assert clear_score < blocked_score
+
+
+def test_score_native_move_allows_pushers_to_complete_close_door_cun4bei_sequence():
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    payload = _simple_payload(
+        [
+            {
+                "trackName": "存1",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": attrs,
+            }
+            for index, (vehicle_no, attrs) in enumerate(
+                [("N1", ""), ("N2", ""), ("N3", ""), ("CD", "关门车")],
+                start=1,
+            )
+        ]
+    )
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(payload, master)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    state = ReplayState(
+        track_sequences={"存1": [], "存4北": ["CD"]},
+        loco_track_name="存1",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("N1", "N2", "N3"),
+    )
+    move = HookAction(
+        source_track="存1",
+        target_track="存4北",
+        vehicle_nos=["N1", "N2", "N3"],
+        path_tracks=["存1", "存4北"],
+        action_type="DETACH",
+    )
+    next_state = _apply_move(
+        state=state,
+        move=move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    heuristic = make_state_heuristic_real_hook(normalized)
+
+    score, tier = _score_native_move(
+        move=move,
+        state=state,
+        next_state=next_state,
+        plan_input=normalized,
+        current_heuristic=heuristic(state),
+        next_heuristic=heuristic(next_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+    )
+
+    assert tier == 1
+    assert score[3] == 0

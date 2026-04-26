@@ -38,6 +38,7 @@ def verify_plan(
     plan_input: NormalizedPlanInput,
     hook_plan: list[dict],
     initial_state_override=None,
+    require_complete_goals: bool = True,
 ) -> PlanVerificationReport:
     global_errors: list[str] = []
     hook_reports: list[HookVerificationReport] = []
@@ -55,40 +56,41 @@ def verify_plan(
         )
 
     final_state = replay.final_state
-    for vehicle in plan_input.vehicles:
-        final_track = _locate_vehicle(final_state.track_sequences, vehicle.vehicle_no)
-        if not goal_is_satisfied(
-            vehicle,
-            track_name=final_track,
-            state=final_state,
-            plan_input=plan_input,
-        ):
-            if vehicle.is_close_door and final_track == "存4北":
-                final_seq = final_state.track_sequences.get("存4北", [])
-                if vehicle.vehicle_no in final_seq:
-                    global_errors.append(
-                        f"Close-door vehicle {vehicle.vehicle_no} must be at position >= 4 on 存4北"
-                    )
-                    continue
-            preference_level = goal_track_preference_level(
+    if require_complete_goals:
+        for vehicle in plan_input.vehicles:
+            final_track = _locate_vehicle(final_state.track_sequences, vehicle.vehicle_no)
+            if not goal_is_satisfied(
                 vehicle,
-                final_track,
+                track_name=final_track,
                 state=final_state,
                 plan_input=plan_input,
-            )
-            if preference_level is None and vehicle.goal.fallback_target_tracks:
-                global_errors.append(
-                    f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
+            ):
+                if vehicle.is_close_door and final_track == "存4北":
+                    final_seq = final_state.track_sequences.get("存4北", [])
+                    if vehicle.vehicle_no in final_seq:
+                        global_errors.append(
+                            f"Close-door vehicle {vehicle.vehicle_no} must be at position >= 4 on 存4北"
+                        )
+                        continue
+                preference_level = goal_track_preference_level(
+                    vehicle,
+                    final_track,
+                    state=final_state,
+                    plan_input=plan_input,
                 )
-            else:
-                global_errors.append(
-                    f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
-                )
-            continue
-        if final_track in master.tracks:
-            track = master.tracks[final_track]
-            if not track.allow_parking:
-                global_errors.append(f"Vehicle {vehicle.vehicle_no} parked on running track {final_track}")
+                if preference_level is None and vehicle.goal.fallback_target_tracks:
+                    global_errors.append(
+                        f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
+                    )
+                else:
+                    global_errors.append(
+                        f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
+                    )
+                continue
+            if final_track in master.tracks:
+                track = master.tracks[final_track]
+                if not track.allow_parking:
+                    global_errors.append(f"Vehicle {vehicle.vehicle_no} parked on running track {final_track}")
 
     initial_occupation_by_track: dict[str, float] = {}
     for vehicle in plan_input.vehicles:
@@ -111,6 +113,7 @@ def verify_plan(
         pre_state = replay.snapshots[hook_no - 1] if isinstance(hook_no, int) and hook_no > 0 else initial
         hook_errors: list[str] = []
         route_result = None
+        access_result = None
         path_tracks = hook.get("pathTracks", [])
         if not path_tracks:
             hook_errors.append("must include pathTracks")
@@ -137,12 +140,28 @@ def verify_plan(
                         if vehicle.vehicle_no in set(hook["vehicleNos"])
                     ]
                     hook_errors.extend(validate_hook_vehicle_group(hook_vehicles))
+                    if hook.get("actionType") == "ATTACH":
+                        access_result = route_oracle.validate_loco_access(
+                            loco_track=pre_state.loco_track_name,
+                            target_track=hook["sourceTrack"],
+                            occupied_track_sequences=pre_state.track_sequences,
+                            carried_train_length_m=sum(
+                                length_by_vehicle[vehicle_no]
+                                for vehicle_no in pre_state.loco_carry
+                            ),
+                        )
+                        hook_errors.extend(
+                            f"Locomotive access before ATTACH: {error}"
+                            for error in access_result.errors
+                        )
                     route_result = route_oracle.validate_path(
                         source_track=hook["sourceTrack"],
                         target_track=hook["targetTrack"],
                         path_tracks=path_tracks,
-                        train_length_m=sum(
-                            length_by_vehicle[vehicle_no] for vehicle_no in hook["vehicleNos"]
+                        train_length_m=_hook_route_train_length_m(
+                            hook=hook,
+                            pre_state=pre_state,
+                            length_by_vehicle=length_by_vehicle,
                         ),
                         occupied_track_sequences=pre_state.track_sequences,
                     )
@@ -166,7 +185,12 @@ def verify_plan(
                 target_track=hook["targetTrack"],
                 vehicle_nos=list(hook["vehicleNos"]),
                 path_tracks=list(hook.get("pathTracks", [])),
-                blocking_tracks=list(route_result.blocking_tracks) if route_result else [],
+                blocking_tracks=(
+                    list(dict.fromkeys(
+                        (access_result.blocking_tracks if access_result else [])
+                        + (route_result.blocking_tracks if route_result else [])
+                    ))
+                ),
                 route_length_m=route_result.total_length_m if route_result else None,
                 branch_codes=list(route_result.branch_codes) if route_result else [],
                 reverse_branch_codes=list(route_result.reverse_branch_codes) if route_result else [],
@@ -193,3 +217,14 @@ def _locate_vehicle(track_sequences: dict[str, list[str]], vehicle_no: str) -> s
         if vehicle_no in seq:
             return track
     raise ValueError(f"Vehicle not found in final state: {vehicle_no}")
+
+
+def _hook_route_train_length_m(
+    *,
+    hook: dict,
+    pre_state,
+    length_by_vehicle: dict[str, float],
+) -> float:
+    if hook.get("actionType") == "DETACH" and pre_state.loco_carry:
+        return sum(length_by_vehicle[vehicle_no] for vehicle_no in pre_state.loco_carry)
+    return sum(length_by_vehicle[vehicle_no] for vehicle_no in hook["vehicleNos"])

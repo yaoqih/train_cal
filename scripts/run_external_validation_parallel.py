@@ -12,7 +12,19 @@ from typing import Any
 
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
-from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
+from fzed_shunting.solver.astar_solver import (
+    RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+    solve_with_simple_astar_result,
+)
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_recovery_should_continue_after_success,
+    validation_retry_beam_widths,
+    validation_retry_time_budget_ms,
+    validation_time_budget_ms,
+)
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state
 
@@ -23,8 +35,6 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "extern
 DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = None
 WORKER_TIMEOUT_BUDGET_MULTIPLIER = 4.0
 WORKER_TIMEOUT_GRACE_SECONDS = 30
-RETRY_TIME_BUDGET_MULTIPLIER = 2.0
-RETRY_MIN_TIME_BUDGET_MS = 90_000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,11 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--master-dir", type=Path, default=DEFAULT_MASTER_DIR)
-    parser.add_argument("--solver", default="beam")
-    parser.add_argument("--beam-width", type=int, default=8)
+    parser.add_argument("--solver", default=VALIDATION_DEFAULT_SOLVER)
+    parser.add_argument("--beam-width", type=int, default=VALIDATION_DEFAULT_BEAM_WIDTH)
     parser.add_argument("--heuristic-weight", type=float, default=1.0)
     parser.add_argument("--max-workers", type=int, default=8)
-    parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument("--timeout-seconds", type=int, default=int(VALIDATION_DEFAULT_TIMEOUT_SECONDS))
     parser.add_argument(
         "--solver-time-budget-ms",
         type=float,
@@ -59,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
+    parser.add_argument(
+        "--near-goal-partial-resume-max-final-heuristic",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--worker", action="store_true")
     return parser.parse_args()
 
@@ -73,6 +89,7 @@ def solve_one(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
+    near_goal_partial_resume_max_final_heuristic: int | None = None,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -91,6 +108,15 @@ def solve_one(
             time_budget_ms=time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
+            **(
+                {
+                    "near_goal_partial_resume_max_final_heuristic": (
+                        near_goal_partial_resume_max_final_heuristic
+                    )
+                }
+                if near_goal_partial_resume_max_final_heuristic is not None
+                else {}
+            ),
         )
         if not result.is_complete:
             error = "no solution within budget"
@@ -174,6 +200,7 @@ def _build_worker_command(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
+    near_goal_partial_resume_max_final_heuristic: int | None = None,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -196,6 +223,11 @@ def _build_worker_command(
         cmd.append("--no-anytime-fallback")
     if enable_depot_late_scheduling:
         cmd.append("--enable-depot-late-scheduling")
+    if near_goal_partial_resume_max_final_heuristic is not None:
+        cmd.extend([
+            "--near-goal-partial-resume-max-final-heuristic",
+            str(near_goal_partial_resume_max_final_heuristic),
+        ])
     return cmd
 
 
@@ -210,6 +242,7 @@ def _run_scenario_subprocess(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
+    near_goal_partial_resume_max_final_heuristic: int | None = None,
 ) -> dict[str, Any]:
     effective_timeout_seconds = _effective_worker_timeout_seconds(
         timeout_seconds=timeout_seconds,
@@ -224,6 +257,9 @@ def _run_scenario_subprocess(
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        near_goal_partial_resume_max_final_heuristic=(
+            near_goal_partial_resume_max_final_heuristic
+        ),
     )
     process = subprocess.Popen(
         cmd,
@@ -281,9 +317,7 @@ def _effective_worker_timeout_seconds(
 
 
 def _retry_time_budget_ms(time_budget_ms: float | None) -> float | None:
-    if time_budget_ms is None:
-        return None
-    return max(time_budget_ms * RETRY_TIME_BUDGET_MULTIPLIER, RETRY_MIN_TIME_BUDGET_MS)
+    return validation_retry_time_budget_ms(time_budget_ms)
 
 
 def run_parallel_scenarios(
@@ -298,6 +332,7 @@ def run_parallel_scenarios(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
+    near_goal_partial_resume_max_final_heuristic: int | None = None,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -313,6 +348,9 @@ def run_parallel_scenarios(
                 time_budget_ms=time_budget_ms,
                 enable_anytime_fallback=enable_anytime_fallback,
                 enable_depot_late_scheduling=enable_depot_late_scheduling,
+                near_goal_partial_resume_max_final_heuristic=(
+                    near_goal_partial_resume_max_final_heuristic
+                ),
             )
             for scenario_path in scenario_paths
         ]
@@ -352,6 +390,20 @@ def recover_no_solution_results(
 
     scenario_path_by_name = {scenario_path.name: scenario_path for scenario_path in scenario_paths}
     ordered_scenarios = [result["scenario"] for result in initial_results]
+    retryable_scenario_names = {
+        result["scenario"]
+        for result in initial_results
+        if (
+            (
+                not result.get("solved")
+                and _is_retryable_no_solution_error(result.get("error", ""))
+            )
+            or (
+                result.get("solved")
+                and _should_continue_recovery_after_success(result)
+            )
+        )
+    }
     merged_results = {
         result["scenario"]: dict(result)
         for result in initial_results
@@ -363,8 +415,7 @@ def recover_no_solution_results(
             for scenario_name in ordered_scenarios
             if (
                 scenario_name in scenario_path_by_name
-                and not merged_results[scenario_name].get("solved")
-                and _is_retryable_no_solution_error(merged_results[scenario_name].get("error", ""))
+                and scenario_name in retryable_scenario_names
             )
         ]
         if not retry_scenarios:
@@ -377,10 +428,13 @@ def recover_no_solution_results(
             beam_width=retry_beam_width,
             heuristic_weight=heuristic_weight,
             timeout_seconds=timeout_seconds,
-            max_workers=1,
+            max_workers=max_workers,
             time_budget_ms=retry_time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
+            near_goal_partial_resume_max_final_heuristic=(
+                RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+            ),
         )
         for retry_result in retry_results:
             if not retry_result.get("solved"):
@@ -388,8 +442,33 @@ def recover_no_solution_results(
             recovered = dict(retry_result)
             recovered["recovery_beam_width"] = retry_beam_width
             recovered["recovery_time_budget_ms"] = retry_time_budget_ms
-            merged_results[retry_result["scenario"]] = recovered
+            current = merged_results[retry_result["scenario"]]
+            if (
+                not current.get("solved")
+                or int(recovered.get("hook_count", 10**9))
+                < int(current.get("hook_count", 10**9))
+            ):
+                merged_results[retry_result["scenario"]] = recovered
+            if not _should_continue_recovery_after_success(recovered):
+                retryable_scenario_names.discard(retry_result["scenario"])
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
+
+
+def _should_continue_recovery_after_success(result: dict[str, Any]) -> bool:
+    shape = (result.get("debug_stats") or {}).get("plan_shape_metrics") or {}
+    return validation_recovery_should_continue_after_success(
+        hook_count=_as_int(result.get("hook_count")),
+        max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
+    )
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_retryable_no_solution_error(error: str) -> bool:
@@ -431,16 +510,10 @@ def _build_retry_beam_widths(
     beam_width: int,
     retry_no_solution_beam_width: int,
 ) -> list[int]:
-    if retry_no_solution_beam_width <= beam_width:
-        return [beam_width]
-    retry_beam_widths: list[int] = [beam_width]
-    multiplier = 2
-    while multiplier * beam_width < retry_no_solution_beam_width:
-        retry_beam_widths.append(multiplier * beam_width)
-        multiplier += 1
-    if not retry_beam_widths or retry_beam_widths[-1] != retry_no_solution_beam_width:
-        retry_beam_widths.append(retry_no_solution_beam_width)
-    return retry_beam_widths
+    return validation_retry_beam_widths(
+        beam_width=beam_width,
+        retry_no_solution_beam_width=retry_no_solution_beam_width,
+    )
 
 
 def _run_worker(args: argparse.Namespace) -> None:
@@ -455,6 +528,11 @@ def _run_worker(args: argparse.Namespace) -> None:
         time_budget_ms=getattr(args, "solver_time_budget_ms", None),
         enable_anytime_fallback=getattr(args, "enable_anytime_fallback", True),
         enable_depot_late_scheduling=getattr(args, "enable_depot_late_scheduling", False),
+        near_goal_partial_resume_max_final_heuristic=getattr(
+            args,
+            "near_goal_partial_resume_max_final_heuristic",
+            None,
+        ),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -480,7 +558,7 @@ def main() -> None:
     enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
     enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", False)
     if time_budget_ms is None:
-        time_budget_ms = max(1000.0, args.timeout_seconds * 1000 - 5000)
+        time_budget_ms = validation_time_budget_ms(args.timeout_seconds)
     results = run_parallel_scenarios(
         master_dir=args.master_dir,
         scenario_paths=scenario_paths,

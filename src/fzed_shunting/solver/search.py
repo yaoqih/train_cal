@@ -30,10 +30,15 @@ from fzed_shunting.solver.state import (
     _is_goal,
     _state_key,
 )
+from fzed_shunting.solver.purity import STAGING_TRACKS
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
 BEAM_SHALLOW_RESERVE = 1
+BEAM_LOW_STRUCTURAL_DEBT_RESERVE = 1
+BEAM_STRUCTURAL_DIVERSITY_FRONTIER_MULTIPLIER = 3
+BEAM_STRUCTURAL_DIVERSITY_MIN_STAGING_TO_STAGING = 80
+BEAM_STRUCTURAL_DIVERSITY_MIN_REPEATED_STAGING_TOUCHES = 80
 
 
 @dataclass(order=True)
@@ -44,6 +49,10 @@ class QueueItem:
     state: ReplayState
     plan: list[HookAction]
     cost: int = field(default=0, compare=False)
+    structural_key: tuple[int, int, int, int, int, int] = field(
+        default=(0, 0, 0, 0, 0, 0),
+        compare=False,
+    )
 
 
 def _solve_search_result(
@@ -56,6 +65,7 @@ def _solve_search_result(
     debug_stats: dict[str, Any] | None = None,
     budget: SearchBudget | None = None,
     enable_depot_late_scheduling: bool = False,
+    enable_structural_diversity: bool = False,
 ) -> SolverResult:
     if budget is None:
         budget = SearchBudget()
@@ -102,6 +112,8 @@ def _solve_search_result(
     route_oracle = RouteOracle(master) if master is not None else None
     _initialize_debug_stats(debug_stats, generated_nodes=generated_nodes)
     best_goal_plan: list[HookAction] | None = None
+    best_partial_plan: list[HookAction] = []
+    best_partial_score: tuple[int, int, int] | None = None
     budget_exhausted = False
     while queue:
         if budget.exhausted():
@@ -114,6 +126,16 @@ def _solve_search_result(
         expanded_nodes += 1
         budget.tick_expand()
         closed_state_keys.add(current.state_key)
+        if current.plan:
+            partial_purity = compute_state_purity(plan_input, current.state)
+            partial_score = (
+                state_heuristic(current.state),
+                partial_purity.unfinished_count,
+                -len(current.plan),
+            )
+            if best_partial_score is None or partial_score < best_partial_score:
+                best_partial_score = partial_score
+                best_partial_plan = list(current.plan)
         if debug_stats is not None:
             debug_stats["expanded_states"] = expanded_nodes
             debug_stats["closed_states"] = len(closed_state_keys)
@@ -216,13 +238,19 @@ def _solve_search_result(
                     state=next_state,
                     plan=next_plan,
                     cost=cost,
+                    structural_key=_beam_structural_key(next_plan, next_state),
                 ),
             )
             generated_nodes += 1
             if debug_stats is not None:
                 debug_stats["generated_nodes"] = generated_nodes
         if solver_mode == "beam" and beam_width is not None:
-            _prune_queue(queue, best_cost, beam_width)
+            _prune_queue(
+                queue,
+                best_cost,
+                beam_width,
+                enable_structural_diversity=enable_structural_diversity,
+            )
     if best_goal_plan is None:
         if budget_exhausted:
             return SolverResult(
@@ -234,6 +262,8 @@ def _solve_search_result(
                 is_complete=False,
                 is_proven_optimal=False,
                 fallback_stage=solver_mode,
+                partial_plan=best_partial_plan,
+                partial_fallback_stage=solver_mode if best_partial_plan else None,
                 debug_stats=debug_stats,
             )
         raise ValueError("No solution found")
@@ -359,6 +389,8 @@ def _prune_queue(
     queue: list[QueueItem],
     best_cost: dict[tuple, int],
     beam_width: int,
+    *,
+    enable_structural_diversity: bool = False,
 ) -> None:
     if len(queue) <= beam_width:
         return
@@ -386,6 +418,22 @@ def _prune_queue(
             blocker_item = blocker_candidates[0]
             kept.append(blocker_item)
             kept_ids.add(id(blocker_item))
+        if enable_structural_diversity and _has_structural_churn_pressure(ranked[:beam_width]):
+            frontier_limit = max(
+                beam_width,
+                beam_width * BEAM_STRUCTURAL_DIVERSITY_FRONTIER_MULTIPLIER,
+            )
+            low_debt_candidates = [
+                item
+                for item in ranked[:frontier_limit]
+                if id(item) not in kept_ids
+            ]
+            low_debt_candidates.sort(key=lambda item: (item.structural_key, item.priority))
+            for item in low_debt_candidates[:BEAM_LOW_STRUCTURAL_DEBT_RESERVE]:
+                if len(kept) >= beam_width:
+                    break
+                kept.append(item)
+                kept_ids.add(id(item))
         for item in ranked:
             if len(kept) >= beam_width:
                 break
@@ -401,6 +449,49 @@ def _prune_queue(
     for item in pruned:
         if best_cost.get(item.state_key) == len(item.plan):
             del best_cost[item.state_key]
+
+
+def _has_structural_churn_pressure(queue: list[QueueItem]) -> bool:
+    return any(
+        item.structural_key[1] >= BEAM_STRUCTURAL_DIVERSITY_MIN_STAGING_TO_STAGING
+        or item.structural_key[2] >= BEAM_STRUCTURAL_DIVERSITY_MIN_REPEATED_STAGING_TOUCHES
+        for item in queue
+    )
+
+
+def _beam_structural_key(
+    plan: list[HookAction],
+    state: ReplayState,
+) -> tuple[int, int, int, int, int, int]:
+    staging_hooks = 0
+    staging_to_staging_hooks = 0
+    repeated_staging_touches = 0
+    touched: dict[str, int] = {}
+    for move in plan:
+        source_is_staging = move.source_track in STAGING_TRACKS
+        target_is_staging = move.target_track in STAGING_TRACKS
+        if source_is_staging or target_is_staging:
+            staging_hooks += 1
+        if source_is_staging and target_is_staging:
+            staging_to_staging_hooks += 1
+        for vehicle_no in move.vehicle_nos:
+            touched[vehicle_no] = touched.get(vehicle_no, 0) + 1
+            if (source_is_staging or target_is_staging) and touched[vehicle_no] > 2:
+                repeated_staging_touches += 1
+    staging_debt = sum(
+        len(seq)
+        for track, seq in state.track_sequences.items()
+        if track in STAGING_TRACKS
+    )
+    max_touch = max(touched.values(), default=0)
+    return (
+        staging_debt,
+        staging_to_staging_hooks,
+        repeated_staging_touches,
+        staging_hooks,
+        max_touch,
+        len(plan),
+    )
 
 
 def _initialize_debug_stats(

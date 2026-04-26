@@ -54,6 +54,27 @@ def compress_plan(
             accepted += 1
             changed = True
             continue
+        current, accepted_same_source_merge = _try_merge_adjacent_same_source_same_target_pairs(
+            master=master,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            current=current,
+        )
+        if accepted_same_source_merge:
+            accepted += 1
+            changed = True
+            continue
+        current, accepted_merge = _try_merge_adjacent_same_target_pairs(
+            master=master,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            current=current,
+            baseline_key=baseline_key,
+        )
+        if accepted_merge:
+            accepted += 1
+            changed = True
+            continue
         for window_size in range(2, min(max_window_size, len(current)) + 1):
             index = 0
             while index + window_size <= len(current):
@@ -65,12 +86,17 @@ def compress_plan(
                 if candidate_state is None:
                     index += 1
                     continue
-                if _state_equivalence_key(candidate_state) != baseline_key:
-                    index += 1
-                    continue
                 if not _verify_candidate(master, plan_input, initial_state, candidate):
                     index += 1
                     continue
+                if _state_equivalence_key(candidate_state) != baseline_key:
+                    if not _is_order_only_goal_state_change(
+                        plan_input=plan_input,
+                        baseline_state=baseline_state,
+                        candidate_state=candidate_state,
+                    ):
+                        index += 1
+                        continue
                 current = candidate
                 accepted += 1
                 changed = True
@@ -81,6 +107,195 @@ def compress_plan(
         if not changed:
             break
     return CompressionResult(compressed_plan=current, accepted_rewrite_count=accepted)
+
+
+def _is_order_only_goal_state_change(
+    *,
+    plan_input: NormalizedPlanInput,
+    baseline_state: ReplayState,
+    candidate_state: ReplayState,
+) -> bool:
+    if baseline_state.loco_carry != candidate_state.loco_carry:
+        return False
+    if baseline_state.loco_track_name != candidate_state.loco_track_name:
+        return False
+    if baseline_state.weighed_vehicle_nos != candidate_state.weighed_vehicle_nos:
+        return False
+    if baseline_state.spot_assignments != candidate_state.spot_assignments:
+        return False
+    baseline_tracks = {
+        track: sorted(seq)
+        for track, seq in baseline_state.track_sequences.items()
+        if seq
+    }
+    candidate_tracks = {
+        track: sorted(seq)
+        for track, seq in candidate_state.track_sequences.items()
+        if seq
+    }
+    if baseline_tracks != candidate_tracks:
+        return False
+    spot_vehicle_nos = {
+        vehicle.vehicle_no
+        for vehicle in plan_input.vehicles
+        if vehicle.goal.target_mode == "SPOT" or vehicle.goal.target_spot_code
+    }
+    changed_tracks = set(baseline_state.track_sequences) | set(candidate_state.track_sequences)
+    for track in changed_tracks:
+        baseline_seq = baseline_state.track_sequences.get(track, [])
+        candidate_seq = candidate_state.track_sequences.get(track, [])
+        if baseline_seq == candidate_seq:
+            continue
+        if any(vehicle_no in spot_vehicle_nos for vehicle_no in baseline_seq + candidate_seq):
+            return False
+    return True
+
+
+def _try_merge_adjacent_same_source_same_target_pairs(
+    *,
+    master: MasterData,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    current: list[HookAction],
+) -> tuple[list[HookAction], bool]:
+    route_oracle = RouteOracle(master)
+    for index in range(0, len(current) - 3):
+        replacement = _adjacent_same_source_same_target_pair_replacement(
+            current=current,
+            index=index,
+            route_oracle=route_oracle,
+        )
+        if replacement is None:
+            continue
+        candidate = current[:index] + replacement + current[index + 4:]
+        candidate_state = _simulate(plan_input, initial_state, candidate)
+        if candidate_state is None:
+            continue
+        if not _verify_candidate(master, plan_input, initial_state, candidate):
+            continue
+        return candidate, True
+    return current, False
+
+
+def _adjacent_same_source_same_target_pair_replacement(
+    *,
+    current: list[HookAction],
+    index: int,
+    route_oracle: RouteOracle,
+) -> list[HookAction] | None:
+    first_attach, first_detach, second_attach, second_detach = current[index : index + 4]
+    if first_attach.action_type != "ATTACH" or second_attach.action_type != "ATTACH":
+        return None
+    if first_detach.action_type != "DETACH" or second_detach.action_type != "DETACH":
+        return None
+    if first_attach.source_track != first_detach.source_track:
+        return None
+    if second_attach.source_track != second_detach.source_track:
+        return None
+    if first_attach.source_track != second_attach.source_track:
+        return None
+    if first_detach.target_track != second_detach.target_track:
+        return None
+    if not first_attach.vehicle_nos or not second_attach.vehicle_nos:
+        return None
+    if first_attach.vehicle_nos != first_detach.vehicle_nos:
+        return None
+    if second_attach.vehicle_nos != second_detach.vehicle_nos:
+        return None
+
+    source_track = first_attach.source_track
+    target_track = first_detach.target_track
+    combined = list(first_attach.vehicle_nos) + list(second_attach.vehicle_nos)
+    path_tracks = route_oracle.resolve_path_tracks(source_track, target_track)
+    if path_tracks is None:
+        return None
+    return [
+        HookAction(
+            source_track=source_track,
+            target_track=source_track,
+            vehicle_nos=combined,
+            path_tracks=[source_track],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track=source_track,
+            target_track=target_track,
+            vehicle_nos=combined,
+            path_tracks=path_tracks,
+            action_type="DETACH",
+        ),
+    ]
+
+
+def _try_merge_adjacent_same_target_pairs(
+    *,
+    master: MasterData,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    current: list[HookAction],
+    baseline_key: tuple,
+) -> tuple[list[HookAction], bool]:
+    route_oracle = RouteOracle(master)
+    for index in range(0, len(current) - 3):
+        replacement = _adjacent_same_target_pair_replacement(
+            current=current,
+            index=index,
+            route_oracle=route_oracle,
+        )
+        if replacement is None:
+            continue
+        candidate = current[:index] + replacement + current[index + 4:]
+        candidate_state = _simulate(plan_input, initial_state, candidate)
+        if candidate_state is None:
+            continue
+        if _state_equivalence_key(candidate_state) != baseline_key:
+            continue
+        if not _verify_candidate(master, plan_input, initial_state, candidate):
+            continue
+        return candidate, True
+    return current, False
+
+
+def _adjacent_same_target_pair_replacement(
+    *,
+    current: list[HookAction],
+    index: int,
+    route_oracle: RouteOracle,
+) -> list[HookAction] | None:
+    first_attach, first_detach, second_attach, second_detach = current[index : index + 4]
+    if first_attach.action_type != "ATTACH" or second_attach.action_type != "ATTACH":
+        return None
+    if first_detach.action_type != "DETACH" or second_detach.action_type != "DETACH":
+        return None
+    if first_attach.source_track != first_detach.source_track:
+        return None
+    if second_attach.source_track != second_detach.source_track:
+        return None
+    if first_detach.target_track != second_detach.target_track:
+        return None
+    if not first_attach.vehicle_nos or not second_attach.vehicle_nos:
+        return None
+    if first_attach.vehicle_nos != first_detach.vehicle_nos:
+        return None
+    if second_attach.vehicle_nos != second_detach.vehicle_nos:
+        return None
+
+    target_track = first_detach.target_track
+    combined = list(second_attach.vehicle_nos) + list(first_attach.vehicle_nos)
+    path_tracks = route_oracle.resolve_path_tracks(first_attach.source_track, target_track)
+    if path_tracks is None:
+        return None
+    return [
+        second_attach,
+        first_attach,
+        HookAction(
+            source_track=first_attach.source_track,
+            target_track=target_track,
+            vehicle_nos=combined,
+            path_tracks=path_tracks,
+            action_type="DETACH",
+        ),
+    ]
 
 
 def _try_rebuild_single_source_window(
