@@ -2462,6 +2462,69 @@ def test_real_hook_solver_keeps_constructive_partial_only_as_artifact():
     assert result.partial_verification_report.is_valid is False
 
 
+def test_real_hook_solver_partial_verification_accepts_legal_incomplete_prefix_with_carry():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "P1",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["P1"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    partial_seed = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[partial_move],
+        partial_fallback_stage="constructive_partial",
+    )
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
+        with patch("fzed_shunting.solver.astar_solver._solve_search_result", side_effect=ValueError("No solution found")):
+            result = solve_with_simple_astar_result(
+                normalized,
+                initial,
+                master=master,
+                solver_mode="exact",
+                time_budget_ms=1000.0,
+                verify=True,
+            )
+
+    assert result.is_complete is False
+    assert result.verification_report is None
+    assert result.partial_plan == [partial_move]
+    assert result.partial_verification_report is not None
+    assert result.partial_verification_report.is_valid is True
+
+
 def test_beam_mode_keeps_primary_search_budget_when_anytime_fallback_enabled():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -2786,6 +2849,89 @@ def test_solver_prefers_shorter_complete_constructive_seed_over_longer_beam_resu
     assert result.fallback_stage == "constructive_partial_resume"
 
 
+def test_default_solver_does_not_run_route_release_constructive_portfolio():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "NO_ROUTE_PORTFOLIO",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    seed = SolverResult(
+        plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["NO_ROUTE_PORTFOLIO"],
+                path_tracks=["存5北"],
+                action_type="ATTACH" if index % 2 == 0 else "DETACH",
+            )
+            for index in range(50)
+        ],
+        expanded_nodes=50,
+        generated_nodes=50,
+        closed_nodes=1,
+        elapsed_ms=1.0,
+        is_complete=True,
+        fallback_stage="constructive",
+    )
+    route_release_calls: list[bool] = []
+
+    def fake_constructive_stage(*, route_release_bias=False, **_kwargs):
+        route_release_calls.append(route_release_bias)
+        return seed
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", side_effect=fake_constructive_stage):
+        with patch(
+            "fzed_shunting.solver.astar_solver._solve_search_result",
+            return_value=SolverResult(
+                plan=[],
+                expanded_nodes=1,
+                generated_nodes=1,
+                closed_nodes=0,
+                elapsed_ms=1.0,
+                is_complete=False,
+                fallback_stage="beam",
+            ),
+        ):
+            with patch(
+                "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                side_effect=lambda **kwargs: kwargs["incumbent"],
+            ):
+                result = solve_with_simple_astar_result(
+                    normalized,
+                    initial,
+                    master=master,
+                    solver_mode="beam",
+                    beam_width=8,
+                    time_budget_ms=30_000.0,
+                    enable_anytime_fallback=True,
+                    verify=False,
+                )
+
+    assert route_release_calls == [False]
+    assert result.fallback_stage == "constructive"
+
+
 def test_solver_resumes_relaxed_constructive_partial_when_primary_paths_fail():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -2928,6 +3074,325 @@ def test_solver_resumes_relaxed_constructive_partial_when_primary_paths_fail():
     assert result.plan == resumed.plan
 
 
+def test_beam_mode_gives_near_goal_constructive_partial_enough_resume_budget():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "NRP1",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_seed = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["NRP1"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={"final_heuristic": 2},
+    )
+    resumed = SolverResult(
+        plan=[
+            *partial_seed.partial_plan,
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["NRP1"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="constructive_partial_resume",
+    )
+    resume_budgets: list[float] = []
+
+    def fake_resume(*, time_budget_ms, **_kwargs):
+        resume_budgets.append(time_budget_ms)
+        return resumed if time_budget_ms >= 60_000.0 else None
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", side_effect=fake_resume):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._solve_search_result",
+                    return_value=SolverResult(
+                        plan=[*resumed.plan, *resumed.plan],
+                        expanded_nodes=4,
+                        generated_nodes=4,
+                        closed_nodes=2,
+                        elapsed_ms=4.0,
+                        is_complete=True,
+                        fallback_stage="beam",
+                    ),
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                    ):
+                        result = solve_with_simple_astar_result(
+                            normalized,
+                            initial,
+                            master=master,
+                            solver_mode="beam",
+                            beam_width=8,
+                            time_budget_ms=90_000.0,
+                            enable_anytime_fallback=True,
+                            verify=False,
+                        )
+
+    assert 59_000.0 <= resume_budgets[0] <= 60_000.0
+    assert result.is_complete is True
+    assert result.plan == resumed.plan
+    assert result.fallback_stage == "constructive_partial_resume"
+
+
+def test_beam_mode_keeps_low_double_digit_partial_on_default_resume_budget():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "NRP10",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_seed = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["NRP10"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={"final_heuristic": 10},
+    )
+    resumed = SolverResult(
+        plan=[
+            *partial_seed.partial_plan,
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["NRP10"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="constructive_partial_resume",
+    )
+    resume_budgets: list[float] = []
+
+    def fake_resume(*, time_budget_ms, **_kwargs):
+        resume_budgets.append(time_budget_ms)
+        return resumed if time_budget_ms >= 45_000.0 else None
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", side_effect=fake_resume):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._solve_search_result",
+                    return_value=SolverResult(
+                        plan=[*resumed.plan, *resumed.plan],
+                        expanded_nodes=4,
+                        generated_nodes=4,
+                        closed_nodes=2,
+                        elapsed_ms=4.0,
+                        is_complete=True,
+                        fallback_stage="beam",
+                    ),
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                    ):
+                        result = solve_with_simple_astar_result(
+                            normalized,
+                            initial,
+                            master=master,
+                            solver_mode="beam",
+                            beam_width=8,
+                            time_budget_ms=90_000.0,
+                            enable_anytime_fallback=True,
+                            verify=False,
+                        )
+
+    assert resume_budgets[0] == 5_000.0
+    assert result.is_complete is True
+    assert result.fallback_stage == "beam"
+    assert result.plan != resumed.plan
+
+
+def test_beam_mode_can_opt_into_low_double_digit_partial_resume_budget():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "NRP10B",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_seed = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["NRP10B"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={"final_heuristic": 10},
+    )
+    resumed = SolverResult(
+        plan=[
+            *partial_seed.partial_plan,
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["NRP10B"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="constructive_partial_resume",
+    )
+    resume_budgets: list[float] = []
+
+    def fake_resume(*, time_budget_ms, **_kwargs):
+        resume_budgets.append(time_budget_ms)
+        return resumed if time_budget_ms >= 45_000.0 else None
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", side_effect=fake_resume):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._solve_search_result",
+                    return_value=SolverResult(
+                        plan=[*resumed.plan, *resumed.plan],
+                        expanded_nodes=4,
+                        generated_nodes=4,
+                        closed_nodes=2,
+                        elapsed_ms=4.0,
+                        is_complete=True,
+                        fallback_stage="beam",
+                    ),
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                    ):
+                        result = solve_with_simple_astar_result(
+                            normalized,
+                            initial,
+                            master=master,
+                            solver_mode="beam",
+                            beam_width=8,
+                            time_budget_ms=90_000.0,
+                            enable_anytime_fallback=True,
+                            verify=False,
+                            near_goal_partial_resume_max_final_heuristic=10,
+                        )
+
+    assert resume_budgets[0] >= 45_000.0
+    assert result.is_complete is True
+    assert result.plan == resumed.plan
+    assert result.fallback_stage == "constructive_partial_resume"
+
+
 def test_real_hook_solver_resumes_constructive_partial_from_empty_carry_state():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -3066,6 +3531,123 @@ def test_search_priority_prefers_lower_purity_metrics_at_same_primary_score():
     assert cleaner < dirtier
 
 
+def test_prune_queue_does_not_reserve_low_structural_debt_state_without_churn_pressure():
+    def build_item(
+        seq: int,
+        priority: tuple[float, int, int, int, tuple[int, int, int], int, int],
+        state_key: tuple[str],
+        structural_key: tuple[int, int, int, int, int, int],
+    ) -> QueueItem:
+        return QueueItem(
+            priority=priority,
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"存5北": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[],
+            structural_key=structural_key,
+        )
+
+    clean = (0, 0, 0)
+    best = build_item(1, (10, 0, 0, 10, clean, 0, 10), ("best",), (5, 8, 8, 2, 2, 0))
+    second = build_item(2, (11, 0, 0, 11, clean, 0, 11), ("second",), (6, 9, 9, 2, 2, 0))
+    churn = build_item(3, (12, 0, 0, 12, clean, 0, 12), ("churn",), (9, 20, 20, 4, 3, 0))
+    low_debt = build_item(4, (13, 0, 0, 13, clean, 0, 13), ("low_debt",), (0, 0, 0, 1, 1, 0))
+    queue = [churn, low_debt, second, best]
+    best_cost = {item.state_key: 0 for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=3)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("best",) in kept_keys
+    assert ("second",) in kept_keys
+    assert ("churn",) in kept_keys
+    assert ("low_debt",) not in best_cost
+
+
+def test_prune_queue_reserves_low_structural_debt_state_when_churn_pressure_is_high():
+    def build_item(
+        seq: int,
+        priority: tuple[float, int, int, int, tuple[int, int, int], int, int],
+        state_key: tuple[str],
+        structural_key: tuple[int, int, int, int, int, int],
+    ) -> QueueItem:
+        return QueueItem(
+            priority=priority,
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"存5北": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[],
+            structural_key=structural_key,
+        )
+
+    clean = (0, 0, 0)
+    best = build_item(1, (10, 0, 0, 10, clean, 0, 10), ("best",), (12, 83, 90, 96, 60, 153))
+    second = build_item(2, (11, 0, 0, 11, clean, 0, 11), ("second",), (11, 84, 91, 97, 61, 154))
+    churn = build_item(3, (12, 0, 0, 12, clean, 0, 12), ("churn",), (10, 85, 92, 98, 62, 155))
+    low_debt = build_item(4, (13, 0, 0, 13, clean, 0, 13), ("low_debt",), (3, 10, 12, 20, 20, 150))
+    queue = [churn, low_debt, second, best]
+    best_cost = {item.state_key: 0 for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=3, enable_structural_diversity=True)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("best",) in kept_keys
+    assert ("second",) in kept_keys
+    assert ("low_debt",) in kept_keys
+    assert ("churn",) not in best_cost
+
+
+def test_prune_queue_does_not_reserve_structural_outlier_far_from_frontier():
+    def build_item(
+        seq: int,
+        priority_value: int,
+        state_key: tuple[str],
+        structural_key: tuple[int, int, int, int, int, int],
+    ) -> QueueItem:
+        return QueueItem(
+            priority=(priority_value, 0, 0, priority_value, (0, 0, 0), 0, priority_value),
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"存5北": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[],
+            structural_key=structural_key,
+        )
+
+    queue = [
+        build_item(idx, idx, (f"rank{idx}",), (12, 90, 90, 100, 60, 150))
+        for idx in range(1, 13)
+    ]
+    far_low_debt = build_item(99, 99, ("far_low_debt",), (0, 0, 0, 1, 1, 0))
+    queue.append(far_low_debt)
+    best_cost = {item.state_key: 0 for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=3, enable_structural_diversity=True)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("rank1",) in kept_keys
+    assert ("rank2",) in kept_keys
+    assert ("rank3",) in kept_keys
+    assert ("far_low_debt",) not in best_cost
+
+
 def test_real_hook_solver_does_not_invoke_put_compiler(monkeypatch):
     master = load_master_data(DATA_DIR)
     payload = {
@@ -3168,6 +3750,7 @@ def test_depot_late_flag_off_matches_baseline(fixture_name):
 def test_depot_late_flag_on_preserves_hook_count(fixture_name):
     """Flag on: hook count <= flag-off baseline (lexicographic secondary preserves primary)."""
     if fixture_name in {
+        "validation_20260110W.json",
         "validation_20260112W.json",
         "validation_20260115W.json",
         "validation_20260116W.json",

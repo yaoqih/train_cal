@@ -39,6 +39,11 @@ from fzed_shunting.solver.depot_late import DEPOT_INNER_TRACKS
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import compute_state_purity
+from fzed_shunting.solver.route_blockage import (
+    RouteBlockagePlan,
+    compute_route_blockage_plan,
+    route_blockage_release_score,
+)
 from fzed_shunting.solver.state import _state_key
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.types import HookAction
@@ -81,6 +86,7 @@ def solve_constructive(
     time_budget_ms: float | None = None,
     debug_stats: dict[str, Any] | None = None,
     strict_staging_regrab: bool = True,
+    route_release_bias: bool = False,
 ) -> ConstructiveResult:
     """Priority-rule dispatcher with bounded backtracking.
 
@@ -120,6 +126,7 @@ def solve_constructive(
             stuck_threshold=stuck_threshold,
             time_budget_ms=remaining_budget,
             strict_staging_regrab=strict_staging_regrab,
+            route_release_bias=route_release_bias,
         )
 
         if best_attempt is None or _is_better_attempt(result, best_attempt):
@@ -218,6 +225,7 @@ def _greedy_forward(
     stuck_threshold: int,
     time_budget_ms: float | None,
     strict_staging_regrab: bool,
+    route_release_bias: bool,
 ) -> ConstructiveResult:
     """Single greedy forward sweep, optionally biased by ``alternatives``.
 
@@ -338,6 +346,16 @@ def _greedy_forward(
         }
         scored: list[tuple[tuple, int, HookAction, bool]] = []
         current_heuristic = state_heuristic(state)
+        route_blockage_plan = (
+            compute_route_blockage_plan(
+                plan_input,
+                state,
+                route_oracle,
+                blocked_source_tracks=_route_blockage_focus_source_tracks(state),
+            )
+            if route_release_bias
+            else None
+        )
         for move in moves:
             next_state = _apply_move(
                 state=state,
@@ -359,6 +377,7 @@ def _greedy_forward(
                 recent_moves=recent_moves,
                 repeats_recent_state=_state_key(next_state, plan_input) in recent_state_key_set,
                 strict_staging_regrab=strict_staging_regrab,
+                route_blockage_plan=route_blockage_plan,
             )
             is_inverse = _is_inverse_of_recent(move, recent_moves)
             scored.append((score, tier, move, is_inverse))
@@ -667,6 +686,7 @@ def _score_native_move(
     recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
     repeats_recent_state: bool = False,
     strict_staging_regrab: bool = True,
+    route_blockage_plan: RouteBlockagePlan | None = None,
 ) -> tuple[tuple, int]:
     improves_heuristic = next_heuristic < current_heuristic
     future_detach_groups = (
@@ -751,6 +771,11 @@ def _score_native_move(
         plan_input=plan_input,
         vehicle_by_no=vehicle_by_no,
     )
+    route_blockage_release = _route_blockage_release_score(
+        move=move,
+        route_blockage_plan=route_blockage_plan,
+    )
+    clears_route_blocker = route_blockage_release > 0 and move.action_type == "ATTACH"
     preferred_violation_delta = 0
     if move.action_type == "DETACH":
         for vehicle_no in move.vehicle_nos:
@@ -761,12 +786,13 @@ def _score_native_move(
                 preferred_violation_delta -= 1
             elif move.target_track in vehicle.goal.fallback_target_tracks:
                 preferred_violation_delta += 1
-
     if move.action_type == "DETACH" and is_goal_detach and preferred_violation_delta < 0:
         tier = 0
     elif move.action_type == "DETACH" and is_goal_detach:
         tier = 1
     elif exposes_committed_carry:
+        tier = 2
+    elif clears_route_blocker:
         tier = 2
     elif (
         move.action_type == "ATTACH"
@@ -809,6 +835,7 @@ def _score_native_move(
         1 if consumes_close_door_pushers or traps_close_door_behind_pushers else 0,
         close_door_sequence_debt,
         0 if preferred_violation_delta < 0 else 1 if preferred_violation_delta == 0 else 2,
+        0 if route_blockage_plan is None else -route_blockage_release,
         future_detach_groups,
         next_heuristic,
         next_purity.preferred_violation_count,
@@ -826,6 +853,25 @@ def _score_native_move(
         move.target_track,
     )
     return score, tier
+
+
+def _route_blockage_focus_source_tracks(state: ReplayState) -> set[str]:
+    tracks = set(STAGING_TRACKS)
+    if state.loco_carry:
+        tracks.add(state.loco_track_name)
+    return tracks
+
+
+def _route_blockage_release_score(
+    *,
+    move: HookAction,
+    route_blockage_plan: RouteBlockagePlan | None,
+) -> int:
+    return route_blockage_release_score(
+        source_track=move.source_track,
+        vehicle_nos=move.vehicle_nos,
+        route_blockage_plan=route_blockage_plan,
+    )
 
 
 def _close_door_sequence_debt(
@@ -899,6 +945,21 @@ def _move_consumes_close_door_pushers(
             unresolved_close_door = True
             break
     if not unresolved_close_door:
+        return False
+    if any(
+        vehicle.is_close_door
+        and "存4北" in vehicle.goal.allowed_target_tracks
+        and (
+            (track := _locate_vehicle_in_state(next_state, vehicle.vehicle_no)) == "存4北"
+            and goal_is_satisfied(
+                vehicle,
+                track_name=track,
+                state=next_state,
+                plan_input=plan_input,
+            )
+        )
+        for vehicle in plan_input.vehicles
+    ):
         return False
     remaining_pushers = 0
     for vehicle in plan_input.vehicles:

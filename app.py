@@ -25,6 +25,12 @@ from fzed_shunting.demo.view_model import (
     select_demo_payload,
 )
 from fzed_shunting.domain.master_data import load_master_data
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_time_budget_ms,
+)
 from fzed_shunting.tools.segmented_routes_svg import load_segmented_physical_routes
 
 
@@ -43,6 +49,16 @@ def _get_master_data():
 
 def _payload_cache_key(payload) -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _validation_time_budget_ms(timeout_seconds: float) -> float:
+    return validation_time_budget_ms(timeout_seconds)
+
+
+def _plan_validation_source_label(plan_payload: object | None) -> str:
+    if plan_payload is not None:
+        return "当前 PASS/FAIL 验证的是外部 Plan JSON，不是重新求解结果。"
+    return "当前 PASS/FAIL 验证的是当前 Solver 生成的钩计划。"
 
 
 @st.cache_data(show_spinner=False, max_entries=32)
@@ -96,27 +112,27 @@ def main():
     scenario_path = st.text_input("Scenario JSON 路径", value="")
     plan_path = st.text_input("可选 Plan JSON 路径", value="")
     auto_solver = st.checkbox(
-        "自动选择算法（只设超时）",
+        "使用全量验证同款求解参数（推荐）",
         value=True,
-        help="开启后自动从 exact 起步、失败或超时自动回退到 weighted/beam/LNS；关闭则手动指定 Solver。",
+        help="开启后使用 full validation 默认口径：beam、beam_width=8、60s 外层超时约 55s solver 预算。关闭则手动指定 Solver。",
     )
     if auto_solver:
         timeout_seconds = st.number_input(
             "超时（秒）",
             min_value=1.0,
             max_value=600.0,
-            value=20.0,
+            value=VALIDATION_DEFAULT_TIMEOUT_SECONDS,
             step=1.0,
-            help="总时间预算。超过预算求解器按 anytime 链条返回最好已知解。",
+            help="对齐 scripts/run_external_validation_parallel.py 的 60s 口径；内部 solver 预算会预留约 5s 页面/校验余量。",
         )
-        solver = "exact"
+        solver = VALIDATION_DEFAULT_SOLVER
         heuristic_weight = 1.0
-        beam_width = 32
-        time_budget_ms: float | None = float(timeout_seconds) * 1000.0
+        beam_width = VALIDATION_DEFAULT_BEAM_WIDTH
+        time_budget_ms: float | None = _validation_time_budget_ms(float(timeout_seconds))
     else:
-        solver = st.selectbox("Solver", options=["real_hook", "exact", "weighted", "beam", "lns"], index=0)
+        solver = st.selectbox("Solver", options=["beam", "exact", "weighted", "real_hook", "lns"], index=0)
         heuristic_weight = st.number_input("Heuristic Weight", min_value=1.0, value=1.0, step=0.5)
-        beam_width = st.number_input("Beam Width", min_value=1, value=16, step=1)
+        beam_width = st.number_input("Beam Width", min_value=1, value=VALIDATION_DEFAULT_BEAM_WIDTH, step=1)
         time_budget_ms = None
     compare_solvers = st.checkbox("Compare Solvers", value=False)
     compare_external_plan = st.checkbox(
@@ -222,6 +238,7 @@ def main():
     summary_cols[3].metric("最终占用线", len(view.summary.final_tracks))
     summary_cols[4].metric("库内台位", view.summary.assigned_spot_count)
     summary_cols[5].metric("Verifier", "PASS" if view.summary.is_valid else "FAIL")
+    st.caption(_plan_validation_source_label(plan_payload))
 
     if view.verifier_errors:
         st.error("校验未通过")
@@ -464,6 +481,7 @@ def _render_workflow_demo(
     summary_cols[3].metric("最终占用线", len(view.summary.final_tracks))
     summary_cols[4].metric("库内台位", view.summary.assigned_spot_count)
     summary_cols[5].metric("Verifier", "PASS" if view.summary.is_valid else "FAIL")
+    st.caption("当前 PASS/FAIL 验证的是本 workflow 阶段当前 Solver 生成的钩计划。")
 
     if view.verifier_errors:
         st.error("阶段校验未通过")

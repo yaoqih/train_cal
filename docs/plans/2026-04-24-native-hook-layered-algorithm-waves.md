@@ -319,3 +319,76 @@ PYTHONPATH=src .venv/bin/python scripts/run_external_validation_parallel.py \
   - `PYTHONPATH=src .venv/bin/pytest -q tests/solver/test_capacity_release.py tests/solver/test_astar_solver.py tests/solver/test_structural_metrics.py tests/solver/test_move_generator.py` passed with `114 passed, 6 skipped`.
 - Next gate:
   - Wave 11 should build soft target templates from capacity release facts, especially for `大库:RANDOM` and `存4北`, but must remain facts/scoring-only until full validation proves no distribution regression.
+
+### 2026-04-25 Wave 10B Capacity Release Prefix Experiment
+
+- Tested changing capacity-eviction candidate generation from "smallest valid front eviction" to "smallest prefix covering the current capacity pressure".
+  - Motivation: high-tail truth cases often repeatedly evict one small front block from capacity-tight target tracks; one coordinated release looked like a lower-hook primitive.
+  - Focused unit test confirmed the intended candidate behavior, and targeted probes stayed stable on `validation_20260320Z.json` (`201` hooks after rollback check) and `validation_20260204W.json` (`265` hooks).
+- Full truth no-recovery validation rejected the behavior:
+  - Artifact: `artifacts/validation_inputs_truth_capacity_release_prefix_wave_current_no_recovery/summary.json`.
+  - Result regressed from the physical/profile no-recovery baseline `112/127` solved to `98/127` solved.
+  - Failures became `19 no_solution` plus `10 capacity_infeasible`; newly failed solved-baseline cases included `validation_2025_09_04_noon.json`, `validation_2025_09_08_noon.json`, `validation_2025_09_09_noon.json`, `validation_20260106W.json`, `validation_20260204W.json`, `validation_20260304W.json`, `validation_20260318W.json`, and `validation_20260320Z.json`.
+  - Solved-case distribution improved superficially (`p50=64`, `p75=86.75`, `p95=144.45`, `max=210`) only because many hard-but-solvable tails became unsolved.
+- Decision:
+  - Reject and revert Wave 10B as a default move-generation rule.
+  - Capacity release remains useful as a diagnostic/fact layer, but "release enough in one prefix" is too aggressive when injected into the only default candidate path.
+  - Next safe approach must keep the original smallest-eviction candidate and add capacity-wave alternatives behind a bounded variant selector or runner-level A/B acceptance gate, never as a replacement that can reduce solvability.
+
+### 2026-04-25 Native Physical Access Hardening
+
+- Root cause found during bottom-layer review:
+  - Native `ATTACH` is a hook operation on the source track, but before it the locomotive must move from the previous `loco_track_name` to that source track.
+  - If the locomotive is already carrying vehicles, this access move is not a free-loco move. It must obey the same train-length, L1, reverse-clearance, and intermediate-occupancy constraints as a `DETACH` route.
+  - The previous `validate_loco_access()` implementation used `train_length_m=0.0`, so it correctly caught blocked intermediate tracks such as `洗北 -> 洗南` and `修库外 -> 修库内`, but could miss loaded-access length violations.
+- Implementation:
+  - `RouteOracle.validate_loco_access()` now accepts `carried_train_length_m`.
+  - `verify_plan()` passes the current `pre_state.loco_carry` length into every `ATTACH` access check.
+  - `generate_real_hook_moves()` uses the same carried length when filtering additional `ATTACH` candidates.
+- Tests:
+  - `test_route_oracle_rejects_loaded_loco_access_l1_length_overflow`.
+  - `test_plan_verifier_rejects_loaded_loco_access_length_overflow_before_second_attach`.
+  - `test_generate_real_hook_moves_skips_loaded_attach_when_access_length_exceeds_l1_limit`.
+- Design decision:
+  - Keep this as a hard physical rule, not a scoring preference. It removes physically invalid native-hook plans and makes solver/verifier consistent.
+  - This may reduce apparent solvability or increase hooks on cases that previously used invalid loaded access; such changes are expected and should be treated as correctness improvements, not hook-count regressions.
+
+### 2026-04-26 Validation Recovery And Structural Gate
+
+- Root cause:
+  - Batch validation had a stronger recovery path than CLI/Web, so the same valid scenario could look unsolved or unstable in the web path.
+  - Recovery only retried incomplete results. It did not challenge complete but structurally pathological plans such as very high repeated vehicle touches.
+  - A naive "hook_count > 120" recovery trigger was too broad: large but low-churn valid scenarios are normal production scale, not necessarily bad local minima.
+- Implementation:
+  - Added shared validation defaults in `src/fzed_shunting/solver/profile.py`.
+  - Added `src/fzed_shunting/solver/validation_recovery.py` and routed CLI/Web through it so batch, CLI, and Streamlit use the same validation-profile recovery.
+  - Kept default first-pass near-goal partial resume conservative; recovery retries opt into `RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 10`.
+  - Recovery now challenges:
+    - retryable no-solution beam results;
+    - complete results whose `max_vehicle_touch_count` is structurally risky.
+  - Recovery no longer treats high total hook count alone as pathology. The structural gate is `max_vehicle_touch_count > 80`, because repeated touches represent avoidable churn better than scenario-scale hook count.
+  - Runner recovery keeps the shortest complete result across retry widths and runs retry candidates with the configured `max_workers`, instead of serializing all recovery work.
+- Focused validation:
+  - `artifacts/focused_20260320z_structural_gate/summary.json`: `validation_20260320Z.json` solved in `140` hooks, `constructive_partial_resume`, recovery enabled, `max_vehicle_touch_count=24`.
+  - `artifacts/focused_20260206z_structural_gate/summary.json`: `validation_20260206Z.json` solved in `269` hooks, recovery beam `24`, `max_vehicle_touch_count=56`.
+- Full positive validation:
+  - Artifact: `artifacts/validation_inputs_positive_structural_gate_parallel/summary.json`.
+  - Result: `64/64` solved.
+  - Hook distribution: `min=2, p50=10, p75=30, p90=97, p95=97, max=101`.
+  - Compared with `artifacts/validation_inputs_positive_recovery_quality_gate/summary.json`, p75 stayed at `30` and max improved from `109` to `101`.
+- Full truth validation:
+  - Artifact: `artifacts/validation_inputs_truth_structural_gate_parallel/summary.json`.
+  - Result: `117/127` solved.
+  - Failures: `10/127`, all `capacity_infeasible`; no `no_solution` failures.
+  - Hook distribution on solved truth cases: `min=5, p50=73, p75=110, p90=143, p95=179, max=293`.
+  - Compared with `artifacts/validation_inputs_truth_recovery_quality_gate/summary.json`, max improved from `1009` to `293`, p95 improved from `209` to `179`, and `validation_20260320Z.json` improved from `1009` to `140`.
+- Decision:
+  - Adopt this recovery layer. It is not a sample hack: it uses generic structural churn (`max_vehicle_touch_count`) to decide whether a complete plan deserves a wider search challenge.
+  - Do not recover solely because total hook count is high; that conflates production scale with bad search behavior.
+  - Keep physical reachability and verifier rules strict. This layer only chooses among valid solver attempts and never relaxes constraints.
+- Remaining tail:
+  - Top truth tails are now dominated by genuinely large staging work rather than 1000+ churn loops:
+    - `validation_20260210W.json`: `293` hooks, `max_vehicle_touch_count=50`.
+    - `validation_20260206Z.json`: `269` hooks, `max_vehicle_touch_count=56`.
+    - `validation_2025_09_08_noon.json`: `216` hooks, `max_vehicle_touch_count=68`.
+  - Next lower-risk improvement should target state-quality selection for capacity/staging-heavy cases, not another unconditional candidate-ordering rule.

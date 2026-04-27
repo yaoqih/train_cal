@@ -194,6 +194,7 @@ class RouteOracle:
         route: ResolvedRoute | None = None,
     ) -> PathValidationResult:
         errors: list[str] = []
+        blocking_tracks: list[str] = []
         if not path_tracks:
             errors.append("pathTracks cannot be empty")
             return PathValidationResult(is_valid=False, errors=errors)
@@ -270,6 +271,45 @@ class RouteOracle:
             required_reverse_clearance_m=required_reverse_clearance_m,
             blocking_tracks=blocking_tracks if occupied_track_sequences is not None else [],
             errors=errors,
+        )
+
+    def validate_loco_access(
+        self,
+        *,
+        loco_track: str,
+        target_track: str,
+        occupied_track_sequences: dict[str, list[str]] | None = None,
+        carried_train_length_m: float = 0.0,
+    ) -> PathValidationResult:
+        """Validate whether the locomotive can reach a hook endpoint.
+
+        ATTACH itself is represented as a native same-track hook, but the
+        locomotive still must be able to reach that track through clear portal
+        tracks. If it is already carrying vehicles, the access move must also
+        satisfy the same length/reverse-clearance constraints as a DETACH move.
+        The endpoint may contain the vehicles being attached, so only
+        intermediate tracks can block access.
+        """
+        path_tracks = self.resolve_path_tracks(loco_track, target_track)
+        if path_tracks is None:
+            return PathValidationResult(
+                is_valid=False,
+                errors=[f"No locomotive access path mapping for {loco_track} -> {target_track}"],
+            )
+        route = self.resolve_route(loco_track, target_track)
+        if route is None and loco_track != target_track:
+            return PathValidationResult(
+                is_valid=False,
+                errors=[f"No locomotive access route mapping for {loco_track} -> {target_track}"],
+            )
+        return self.validate_path(
+            source_track=loco_track,
+            target_track=target_track,
+            path_tracks=path_tracks,
+            train_length_m=carried_train_length_m,
+            occupied_track_sequences=occupied_track_sequences,
+            expected_path_tracks=path_tracks,
+            route=route,
         )
 
     def resolve_route(self, source_track: str, target_track: str) -> ResolvedRoute | None:

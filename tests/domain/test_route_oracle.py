@@ -85,6 +85,20 @@ def test_route_oracle_rejects_l1_length_overflow():
     assert any("190" in error for error in result.errors)
 
 
+def test_route_oracle_rejects_loaded_loco_access_l1_length_overflow():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="存5北",
+        target_track="存2",
+        carried_train_length_m=200.0,
+    )
+
+    assert result.is_valid is False
+    assert any("190" in error for error in result.errors)
+
+
 def test_route_oracle_uses_master_topology_for_custom_tracks():
     master = MasterData(
         tracks={
@@ -153,6 +167,152 @@ def test_route_oracle_uses_master_topology_for_custom_tracks():
 
     assert route is not None
     assert route.branch_codes == ["A0-J1", "J1-J2", "J2-C0"]
+
+
+def test_route_oracle_rejects_loco_access_when_generic_intermediate_track_is_blocked():
+    master = MasterData(
+        tracks={
+            "A": Track(
+                code="A",
+                name="A",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("A0", "J1"),
+                connection_nodes=("J1",),
+                terminal_branch="A0-J1",
+            ),
+            "B": Track(
+                code="B",
+                name="B",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J2"),
+                connection_nodes=("J1", "J2"),
+            ),
+            "C": Track(
+                code="C",
+                name="C",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("J2", "C0"),
+                connection_nodes=("J2",),
+                terminal_branch="J2-C0",
+            ),
+        },
+        physical_routes={
+            "A0-J1": PhysicalRoute(
+                code="A0-J1",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="A0",
+                right_node="J1",
+            ),
+            "J1-J2": PhysicalRoute(
+                code="J1-J2",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J2",
+            ),
+            "J2-C0": PhysicalRoute(
+                code="J2-C0",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="J2",
+                right_node="C0",
+            ),
+        },
+    )
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="A",
+        target_track="C",
+        occupied_track_sequences={"B": ["BLOCK"]},
+    )
+
+    assert result.is_valid is False
+    assert result.blocking_tracks == ["B"]
+    assert any("B" in error for error in result.errors)
+
+
+def test_route_oracle_allows_blocked_intermediate_track_when_clear_path_rule_is_disabled():
+    master = MasterData(
+        tracks={
+            "A": Track(
+                code="A",
+                name="A",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("A0", "J1"),
+                connection_nodes=("J1",),
+                terminal_branch="A0-J1",
+            ),
+            "B": Track(
+                code="B",
+                name="B",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J2"),
+                connection_nodes=("J1", "J2"),
+            ),
+            "C": Track(
+                code="C",
+                name="C",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("J2", "C0"),
+                connection_nodes=("J2",),
+                terminal_branch="J2-C0",
+            ),
+        },
+        physical_routes={
+            "A0-J1": PhysicalRoute(
+                code="A0-J1",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="A0",
+                right_node="J1",
+            ),
+            "J1-J2": PhysicalRoute(
+                code="J1-J2",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J2",
+            ),
+            "J2-C0": PhysicalRoute(
+                code="J2-C0",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="J2",
+                right_node="C0",
+            ),
+        },
+        business_rules=BusinessRules(require_clear_intermediate_path_tracks=False),
+    )
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="A",
+        target_track="C",
+        occupied_track_sequences={"B": ["BLOCK"]},
+    )
+
+    assert result.is_valid is True
+    assert result.blocking_tracks == []
 
 
 def test_route_oracle_returns_route_metrics():

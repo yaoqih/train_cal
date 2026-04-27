@@ -15,7 +15,14 @@ from fzed_shunting.sim.generator import (
     generate_typical_suite,
     generate_typical_workflow_suite,
 )
-from fzed_shunting.solver.astar_solver import solve_with_simple_astar
+from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_time_budget_ms,
+)
+from fzed_shunting.solver.validation_recovery import solve_with_validation_recovery_result
 from fzed_shunting.workflow.runner import solve_workflow
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
@@ -90,9 +97,13 @@ def generate_typical_workflow_suite_cmd(
 @app.command("solve")
 def solve(
     input: Path = typer.Option(..., exists=True, dir_okay=False),
-    solver: str = typer.Option("exact"),
+    solver: str = typer.Option(VALIDATION_DEFAULT_SOLVER),
     heuristic_weight: float = typer.Option(1.0),
-    beam_width: int | None = typer.Option(None),
+    beam_width: int | None = typer.Option(VALIDATION_DEFAULT_BEAM_WIDTH),
+    timeout_seconds: float | None = typer.Option(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+        help="Solver budget profile aligned with external validation. Use 0 to disable.",
+    ),
 ):
     master = load_master_data(DEFAULT_MASTER_DIR)
     payload = json.loads(input.read_text(encoding="utf-8"))
@@ -102,6 +113,7 @@ def solve(
         solver=solver,
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
+        time_budget_ms=_cli_time_budget_ms(timeout_seconds),
     )
     typer.echo(json.dumps(result, ensure_ascii=False))
 
@@ -110,9 +122,13 @@ def solve(
 def solve_suite(
     input: Path = typer.Option(..., exists=True, dir_okay=False),
     output_dir: Path = typer.Option(..., exists=False, file_okay=False, dir_okay=True),
-    solver: str = typer.Option("exact"),
+    solver: str = typer.Option(VALIDATION_DEFAULT_SOLVER),
     heuristic_weight: float = typer.Option(1.0),
-    beam_width: int | None = typer.Option(None),
+    beam_width: int | None = typer.Option(VALIDATION_DEFAULT_BEAM_WIDTH),
+    timeout_seconds: float | None = typer.Option(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+        help="Per-scenario solver budget profile aligned with external validation. Use 0 to disable.",
+    ),
 ):
     master = load_master_data(DEFAULT_MASTER_DIR)
     suite_payload = json.loads(input.read_text(encoding="utf-8"))
@@ -133,6 +149,7 @@ def solve_suite(
                 solver=solver,
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
+                time_budget_ms=_cli_time_budget_ms(timeout_seconds),
             )
         except Exception as exc:  # noqa: BLE001
             scenario_result = _build_suite_error_result(
@@ -180,9 +197,13 @@ def solve_suite(
 @app.command("solve-workflow")
 def solve_workflow_cmd(
     input: Path = typer.Option(..., exists=True, dir_okay=False),
-    solver: str = typer.Option("exact"),
+    solver: str = typer.Option(VALIDATION_DEFAULT_SOLVER),
     heuristic_weight: float = typer.Option(1.0),
-    beam_width: int | None = typer.Option(None),
+    beam_width: int | None = typer.Option(VALIDATION_DEFAULT_BEAM_WIDTH),
+    timeout_seconds: float | None = typer.Option(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+        help="Per-stage solver budget profile aligned with external validation. Use 0 to disable.",
+    ),
 ):
     master = load_master_data(DEFAULT_MASTER_DIR)
     payload = json.loads(input.read_text(encoding="utf-8"))
@@ -192,6 +213,7 @@ def solve_workflow_cmd(
         solver=solver,
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
+        time_budget_ms=_cli_time_budget_ms(timeout_seconds),
     )
     typer.echo(
         json.dumps(
@@ -220,20 +242,57 @@ def _solve_payload(
     *,
     master,
     payload: dict,
-    solver: str,
+    solver: str | None,
     heuristic_weight: float,
     beam_width: int | None,
+    time_budget_ms: float | None = None,
 ) -> dict:
     normalized = normalize_plan_input(payload, master)
     initial = build_initial_state(normalized)
-    plan = solve_with_simple_astar(
+    effective_solver = solver or VALIDATION_DEFAULT_SOLVER
+    effective_beam_width = (
+        beam_width
+        if beam_width is not None
+        else VALIDATION_DEFAULT_BEAM_WIDTH
+        if effective_solver == "beam"
+        else None
+    )
+    effective_time_budget_ms = (
+        time_budget_ms
+        if time_budget_ms is not None
+        else validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    )
+    result = solve_with_validation_recovery_result(
         normalized,
         initial,
         master=master,
-        solver_mode=solver,
+        solver_mode=effective_solver,
         heuristic_weight=heuristic_weight,
-        beam_width=beam_width,
+        beam_width=effective_beam_width,
+        time_budget_ms=effective_time_budget_ms,
+        enable_depot_late_scheduling=False,
+        solve_result_fn=solve_with_simple_astar_result,
     )
+    if not result.is_complete:
+        return {
+            "scenario_type": "single",
+            "solver": effective_solver,
+            "fallback_stage": result.fallback_stage,
+            "partial_fallback_stage": result.partial_fallback_stage,
+            "is_proven_optimal": result.is_proven_optimal,
+            "debug_stats": result.debug_stats or {},
+            "vehicle_count": len(normalized.vehicles),
+            "hook_plan": [],
+            "hook_count": 0,
+            "partial_hook_count": len(result.partial_plan),
+            "final_state": None,
+            "is_valid": False,
+            "verifier_errors": [],
+            "solver_errors": [
+                "No complete solver plan found within validation-profile recovery"
+            ],
+        }
+    plan = result.plan
     route_oracle = RouteOracle(master)
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in normalized.vehicles}
     hook_plan = [
@@ -248,7 +307,10 @@ def _solve_payload(
     verify_report = verify_plan(master, normalized, hook_plan)
     return {
         "scenario_type": "single",
-        "solver": solver,
+        "solver": effective_solver,
+        "fallback_stage": result.fallback_stage,
+        "is_proven_optimal": result.is_proven_optimal,
+        "debug_stats": result.debug_stats or {},
         "vehicle_count": len(normalized.vehicles),
         "hook_plan": hook_plan,
         "hook_count": len(hook_plan),
@@ -266,6 +328,7 @@ def _solve_suite_payload(
     solver: str,
     heuristic_weight: float,
     beam_width: int | None,
+    time_budget_ms: float | None = None,
 ) -> dict:
     if _is_workflow_payload(payload):
         result = solve_workflow(
@@ -274,6 +337,7 @@ def _solve_suite_payload(
             solver=solver,
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
         )
         stage_payloads = [
             {
@@ -307,6 +371,7 @@ def _solve_suite_payload(
         solver=solver,
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
+        time_budget_ms=time_budget_ms,
     )
 
 
@@ -348,6 +413,12 @@ def _build_suite_error_result(
 def _is_workflow_payload(payload: dict) -> bool:
     workflow_stages = payload.get("workflowStages")
     return isinstance(workflow_stages, list)
+
+
+def _cli_time_budget_ms(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is not None and timeout_seconds <= 0:
+        return None
+    return validation_time_budget_ms(timeout_seconds)
 
 
 def _build_hook_payload(
