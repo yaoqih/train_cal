@@ -528,6 +528,7 @@ def _render_step(view, step_index: int, *, vehicle_display_metadata: dict[str, d
         st.info("Step 0 为初始状态。")
     else:
         st.write(f"第 {step.hook.hook_no} 钩: {_hook_title(step.hook)}")
+        st.caption(_format_pre_hook_loco_carry_text(view, step_index, vehicle_meta))
         st.caption(
             f"车辆: {_format_hook_vehicle_text(step.hook.vehicle_nos, vehicle_meta)} | "
             f"路径: {' -> '.join(step.hook.path_tracks)}"
@@ -1231,6 +1232,26 @@ def _format_hook_vehicle_text(
     return " ".join(
         _format_vehicle_display_text(vehicle_no, vehicle_display_metadata)
         for vehicle_no in vehicle_nos
+    )
+
+
+def _format_pre_hook_loco_carry_text(
+    view,
+    step_index: int,
+    vehicle_display_metadata: dict[str, dict[str, str]] | None = None,
+) -> str:
+    previous_step_index = step_index - 1
+    if previous_step_index < 0 or previous_step_index >= len(view.steps):
+        carry_vehicle_nos: list[str] = []
+    else:
+        carry_vehicle_nos = list(
+            getattr(view.steps[previous_step_index], "loco_carry_vehicle_nos", [])
+        )
+    if not carry_vehicle_nos:
+        return "本钩前调车机后挂: 无"
+    return (
+        "本钩前调车机后挂: "
+        f"{_format_hook_vehicle_text(carry_vehicle_nos, vehicle_display_metadata)}"
     )
 
 

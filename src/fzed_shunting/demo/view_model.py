@@ -68,6 +68,7 @@ class DemoStep(BaseModel):
     step_index: int
     hook: DemoHook | None = None
     loco_track_name: str
+    loco_carry_vehicle_nos: list[str] = Field(default_factory=list)
     changed_tracks: list[str] = Field(default_factory=list)
     track_sequences: dict[str, list[str]] = Field(default_factory=dict)
     weighed_vehicle_nos: list[str] = Field(default_factory=list)
@@ -414,6 +415,7 @@ def _build_steps(
                 step_index=index,
                 hook=hook,
                 loco_track_name=snapshot.loco_track_name,
+                loco_carry_vehicle_nos=list(snapshot.loco_carry),
                 changed_tracks=changed_tracks,
                 track_sequences={track: list(seq) for track, seq in snapshot.track_sequences.items()},
                 weighed_vehicle_nos=sorted(snapshot.weighed_vehicle_nos),
