@@ -560,6 +560,136 @@ def test_plan_verifier_rejects_heavy_equivalent_and_l1_overflow_together():
     assert any("190m" in error or "190" in error for error in report.errors)
 
 
+def test_plan_verifier_rejects_loaded_loco_access_length_overflow_before_second_attach():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存2", "trackDistance": 239.2},
+        ],
+        "vehicleInfo": [
+            *[
+                {
+                    "trackName": "存5北",
+                    "order": str(i),
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"LOAD_A_{i}",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.0,
+                    "targetTrack": "存2",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for i in range(1, 16)
+            ],
+            {
+                "trackName": "存2",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "LOAD_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "存2",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "存5北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    first_block = [f"LOAD_A_{i}" for i in range(1, 16)]
+    plan = [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": first_block,
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "ATTACH",
+            "sourceTrack": "存2",
+            "targetTrack": "存2",
+            "vehicleNos": ["LOAD_B"],
+            "pathTracks": ["存2"],
+        },
+        {
+            "hookNo": 3,
+            "actionType": "DETACH",
+            "sourceTrack": "存2",
+            "targetTrack": "存2",
+            "vehicleNos": first_block + ["LOAD_B"],
+            "pathTracks": ["存2"],
+        },
+    ]
+
+    report = verify_plan(master, normalized, plan)
+
+    assert report.is_valid is False
+    assert any("Locomotive access before ATTACH" in error for error in report.errors)
+    assert any("190m" in error or "190" in error for error in report.errors)
+
+
+def test_plan_verifier_rejects_detach_prefix_when_full_carry_exceeds_route_length():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存2", "trackDistance": 239.2},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": str(i),
+                "vehicleModel": "棚车",
+                "vehicleNo": f"DETACH_FULL_{i}",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "存2",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for i in range(1, 16)
+        ],
+        "locoTrackName": "存5北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    vehicle_nos = [f"DETACH_FULL_{i}" for i in range(1, 16)]
+    plan = [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": vehicle_nos,
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存2",
+            "vehicleNos": ["DETACH_FULL_1"],
+            "pathTracks": ["存5北", "渡1", "渡2", "渡3", "存2"],
+        },
+        {
+            "hookNo": 3,
+            "actionType": "DETACH",
+            "sourceTrack": "存2",
+            "targetTrack": "存2",
+            "vehicleNos": vehicle_nos[1:],
+            "pathTracks": ["存2"],
+        },
+    ]
+
+    report = verify_plan(master, normalized, plan)
+
+    assert report.is_valid is False
+    assert any("190m" in error or "190" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_more_than_one_weigh_vehicle_per_hook():
     master = load_master_data(DATA_DIR)
     payload = {

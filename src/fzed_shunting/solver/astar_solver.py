@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import Any
 
 from fzed_shunting.domain.master_data import MasterData
+from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.anytime import (
     _remaining_budget_ms,
@@ -13,6 +14,7 @@ from fzed_shunting.solver.anytime import (
 )
 from fzed_shunting.solver.budget import SearchBudget
 from fzed_shunting.solver.capacity_release import compute_capacity_release_plan
+from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
 from fzed_shunting.solver.lns import (
     _build_repair_plan_input,
     _improve_incumbent_result,
@@ -60,7 +62,11 @@ BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS = 100
 RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS = 8_000.0
 LOCALIZED_RESUME_BUDGET_RATIO = 0.50
 LOCALIZED_RESUME_MIN_FULL_BEAM_MS = 500.0
-RELAXED_RESCUE_MAX_FINAL_HEURISTIC = 4
+DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 4
+RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 10
+RELAXED_RESCUE_MAX_FINAL_HEURISTIC = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+NEAR_GOAL_PARTIAL_RESUME_MAX_BUDGET_MS = 60_000.0
+NEAR_GOAL_PARTIAL_RESUME_BUDGET_RATIO = 2.0 / 3.0
 
 
 def solve_with_simple_astar(
@@ -77,6 +83,7 @@ def solve_with_simple_astar(
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
     enable_depot_late_scheduling: bool = True,
+    near_goal_partial_resume_max_final_heuristic: int = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -92,6 +99,7 @@ def solve_with_simple_astar(
         enable_anytime_fallback=enable_anytime_fallback,
         enable_constructive_seed=enable_constructive_seed,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        near_goal_partial_resume_max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
     ).plan
 
 
@@ -109,6 +117,7 @@ def solve_with_simple_astar_result(
     enable_anytime_fallback: bool = True,
     enable_constructive_seed: bool = True,
     enable_depot_late_scheduling: bool = True,
+    near_goal_partial_resume_max_final_heuristic: int = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
 ) -> SolverResult:
     solver_mode = _normalize_solver_mode(solver_mode)
     _validate_solver_options(
@@ -191,7 +200,11 @@ def solve_with_simple_astar_result(
     ):
         _ts = perf_counter()
         elapsed_so_far_ms = (perf_counter() - started_at) * 1000
-        resume_budget = min(5_000.0, max(500.0, (time_budget_ms - elapsed_so_far_ms) * 0.20))
+        resume_budget = _partial_resume_budget_ms(
+            constructive_seed,
+            remaining_budget_ms=time_budget_ms - elapsed_so_far_ms,
+            max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+        )
         resume_result = _try_resume_partial_completion(
             plan_input=plan_input,
             initial_state=initial_state,
@@ -547,6 +560,7 @@ def solve_with_simple_astar_result(
         result,
         plan_input=plan_input,
         initial_state=initial_state,
+        master=master,
         debug_stats=debug_stats,
     )
 
@@ -612,6 +626,7 @@ def _attach_structural_debug_stats(
     *,
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
+    master: MasterData | None,
     debug_stats: dict[str, Any] | None,
 ) -> SolverResult:
     stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
@@ -623,6 +638,12 @@ def _attach_structural_debug_stats(
         plan_input,
         initial_state,
     ).to_dict()
+    if master is not None:
+        stats["initial_route_blockage_plan"] = compute_route_blockage_plan(
+            plan_input,
+            initial_state,
+            RouteOracle(master),
+        ).to_dict()
     active_plan = result.plan if result.is_complete else result.partial_plan
     stats["plan_shape_metrics"] = summarize_plan_shape(active_plan)
     final_state = _replay_solver_moves(
@@ -633,6 +654,17 @@ def _attach_structural_debug_stats(
     if final_state is not None:
         key = "final_structural_metrics" if result.is_complete else "partial_structural_metrics"
         stats[key] = compute_structural_metrics(plan_input, final_state).to_dict()
+        if master is not None:
+            route_key = (
+                "final_route_blockage_plan"
+                if result.is_complete
+                else "partial_route_blockage_plan"
+            )
+            stats[route_key] = compute_route_blockage_plan(
+                plan_input,
+                final_state,
+                RouteOracle(master),
+            ).to_dict()
     return replace(result, debug_stats=stats)
 
 
@@ -715,14 +747,36 @@ def _beam_complete_seed_budget_ms(
     return min(time_budget_ms, max(1.0, time_budget_ms * ratio))
 
 
+def _partial_resume_budget_ms(
+    seed: SolverResult,
+    *,
+    remaining_budget_ms: float,
+    max_final_heuristic: int = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+) -> float:
+    remaining_budget_ms = max(0.0, remaining_budget_ms)
+    final_h = _solver_result_final_heuristic(seed)
+    if final_h is not None and final_h <= max_final_heuristic:
+        return min(
+            NEAR_GOAL_PARTIAL_RESUME_MAX_BUDGET_MS,
+            max(500.0, remaining_budget_ms * NEAR_GOAL_PARTIAL_RESUME_BUDGET_RATIO),
+        )
+    return min(5_000.0, max(500.0, remaining_budget_ms * 0.20))
+
+
 def _shorter_complete_result(
     incumbent: SolverResult | None,
-    candidate: SolverResult,
+    candidate: SolverResult | None,
 ) -> SolverResult:
-    if incumbent is None or not incumbent.is_complete:
+    if candidate is None:
+        if incumbent is None:
+            raise ValueError("at least one solver result is required")
+        return incumbent
+    if incumbent is None:
         return candidate
     if not candidate.is_complete:
         return incumbent
+    if not incumbent.is_complete:
+        return candidate
     if len(candidate.plan) < len(incumbent.plan):
         return candidate
     return incumbent
@@ -743,6 +797,7 @@ def _run_constructive_stage(
     time_budget_ms: float | None,
     enable_depot_late_scheduling: bool = False,
     strict_staging_regrab: bool = True,
+    route_release_bias: bool = False,
     budget_fraction: float = 0.15,
 ) -> SolverResult | None:
     """Run the priority-rule dispatcher and wrap the result as a SolverResult."""
@@ -759,6 +814,7 @@ def _run_constructive_stage(
             max_iterations=1500,
             time_budget_ms=constructive_budget,
             strict_staging_regrab=strict_staging_regrab,
+            route_release_bias=route_release_bias,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -831,6 +887,7 @@ def _attach_verification(
         plan_input,
         partial_hook_plan,
         initial_state_override=initial_state,
+        require_complete_goals=False,
     )
     return replace(result, partial_verification_report=partial_report)
 
@@ -998,6 +1055,7 @@ def _try_resume_from_checkpoint(
                 beam_width=8,
                 budget=SearchBudget(time_budget_ms=remaining_budget_ms),
                 enable_depot_late_scheduling=enable_depot_late_scheduling,
+                enable_structural_diversity=True,
             )
         except ValueError:
             localized_completion = None
@@ -1077,6 +1135,7 @@ def _try_localized_resume_completion(
             beam_width=16,
             budget=SearchBudget(time_budget_ms=beam_budget_ms),
             enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_structural_diversity=True,
         )
     except ValueError:
         return None

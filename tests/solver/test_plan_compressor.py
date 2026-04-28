@@ -137,6 +137,81 @@ def _many_rebuild_vehicle_payload(group_count: int) -> dict:
     }
 
 
+def _multi_source_same_target_payload() -> dict:
+    return {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 160},
+            {"trackName": "存2", "trackDistance": 160},
+            {"trackName": "存3", "trackDistance": 160},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": track_name,
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for track_name, vehicle_no in (("存1", "A"), ("存2", "B"))
+        ],
+        "locoTrackName": "机库",
+    }
+
+
+def _same_source_same_target_payload() -> dict:
+    return {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 160},
+            {"trackName": "存2", "trackDistance": 160},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存1",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存2",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(("A", "B"), start=1)
+        ],
+        "locoTrackName": "机库",
+    }
+
+
+def _same_target_order_free_payload() -> dict:
+    return {
+        "trackInfo": [
+            {"trackName": "存2", "trackDistance": 160},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存2",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存2",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(("A", "B"), start=1)
+        ],
+        "locoTrackName": "存2",
+    }
+
+
 def test_compressor_removes_redundant_round_trip_window():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_payload("存1"), master)
@@ -189,6 +264,44 @@ def test_compressor_continues_until_multiple_independent_windows_removed():
     result = compress_plan(normalized, initial, plan, master=master)
 
     assert result.accepted_rewrite_count == 3
+    assert result.compressed_plan == []
+
+
+def test_compressor_removes_order_only_rewrite_when_verifier_accepts_final_state():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        _same_target_order_free_payload(),
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存2",
+            target_track="存2",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存2"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存2",
+            target_track="存2",
+            vehicle_nos=["A"],
+            path_tracks=["存2"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存2",
+            target_track="存2",
+            vehicle_nos=["B"],
+            path_tracks=["存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
     assert result.compressed_plan == []
 
 
@@ -400,6 +513,199 @@ def test_compressor_rejects_source_discontinuous_candidate():
             target_track="存2",
             vehicle_nos=["A"],
             path_tracks=["临1", "渡3", "存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 0
+    assert result.compressed_plan == plan
+
+
+def test_compressor_merges_adjacent_attach_detach_pairs_when_final_order_is_preserved():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_multi_source_same_target_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存2",
+            target_track="存2",
+            vehicle_nos=["B"],
+            path_tracks=["存2"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存2",
+            target_track="存3",
+            vehicle_nos=["B"],
+            path_tracks=["存2", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存3",
+            vehicle_nos=["A"],
+            path_tracks=["存1", "临1", "渡3", "存3"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
+    assert result.compressed_plan == [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存2",
+            target_track="存2",
+            vehicle_nos=["B"],
+            path_tracks=["存2"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存2",
+            target_track="存3",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存2", "存3"],
+            action_type="DETACH",
+        ),
+    ]
+
+
+def test_compressor_merges_adjacent_same_source_same_target_pairs():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_same_source_same_target_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存2",
+            vehicle_nos=["A"],
+            path_tracks=["存1", "渡7", "存2"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["B"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存2",
+            vehicle_nos=["B"],
+            path_tracks=["存1", "渡7", "存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
+    assert result.compressed_plan == [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存2",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1", "渡7", "存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+
+def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗北", "trackDistance": 71.6},
+            {"trackName": "洗南", "trackDistance": 90.0},
+            {"trackName": "存3", "trackDistance": 85},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "洗北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "洗南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "临3",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="洗北",
+            target_track="洗北",
+            vehicle_nos=["B"],
+            path_tracks=["洗北"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="洗北",
+            target_track="存3",
+            vehicle_nos=["B"],
+            path_tracks=["洗北", "临3", "机棚", "机北", "渡6", "渡7", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="洗南",
+            target_track="洗南",
+            vehicle_nos=["A"],
+            path_tracks=["洗南"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="洗南",
+            target_track="存3",
+            vehicle_nos=["A"],
+            path_tracks=["洗南", "洗北", "临3", "机棚", "机北", "渡6", "渡7", "存3"],
             action_type="DETACH",
         ),
     ]

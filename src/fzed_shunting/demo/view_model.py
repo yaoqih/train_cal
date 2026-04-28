@@ -5,7 +5,14 @@ from pydantic import BaseModel, Field
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import PathValidationResult, RouteOracle
 from fzed_shunting.io.normalize_input import normalize_plan_input
-from fzed_shunting.solver.astar_solver import solve_with_simple_astar
+from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
+from fzed_shunting.solver.profile import (
+    VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_SOLVER,
+    VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_time_budget_ms,
+)
+from fzed_shunting.solver.validation_recovery import solve_with_validation_recovery_result
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import ReplayState, build_initial_state, replay_plan
 
@@ -123,10 +130,10 @@ def build_demo_view_model(
     master: MasterData,
     payload: dict,
     plan_payload: list[dict] | dict | None = None,
-    solver: str = "exact",
+    solver: str = VALIDATION_DEFAULT_SOLVER,
     heuristic_weight: float = 1.0,
-    beam_width: int | None = None,
-    time_budget_ms: float | None = None,
+    beam_width: int | None = VALIDATION_DEFAULT_BEAM_WIDTH,
+    time_budget_ms: float | None = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS),
     compare_external_plan: bool = False,
     initial_state_override: ReplayState | None = None,
 ) -> DemoViewModel:
@@ -208,7 +215,7 @@ def build_demo_view_model(
         solver_hook_count: int | None = None
         solver_error: str | None = None
         try:
-            solver_plan = solve_with_simple_astar(
+            solver_result = solve_with_validation_recovery_result(
                 normalized,
                 initial,
                 master=master,
@@ -216,9 +223,11 @@ def build_demo_view_model(
                 heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
                 time_budget_ms=time_budget_ms,
+                enable_depot_late_scheduling=False,
+                solve_result_fn=solve_with_simple_astar_result,
             )
-            if solver_plan:
-                solver_hook_count = len(solver_plan)
+            if solver_result.is_complete:
+                solver_hook_count = len(solver_result.plan)
             else:
                 solver_error = "No solution found"
         except Exception as exc:  # noqa: BLE001
@@ -268,10 +277,10 @@ def build_demo_view_model(
 def build_demo_workflow_view_model(
     master: MasterData,
     payload: dict,
-    solver: str = "exact",
+    solver: str = VALIDATION_DEFAULT_SOLVER,
     heuristic_weight: float = 1.0,
-    beam_width: int | None = None,
-    time_budget_ms: float | None = None,
+    beam_width: int | None = VALIDATION_DEFAULT_BEAM_WIDTH,
+    time_budget_ms: float | None = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS),
 ) -> DemoWorkflowViewModel:
     from fzed_shunting.workflow.runner import solve_workflow
 
@@ -301,7 +310,7 @@ def _resolve_hook_plan(
     time_budget_ms: float | None = None,
 ) -> list[dict]:
     if plan_payload is None:
-        plan = solve_with_simple_astar(
+        result = solve_with_validation_recovery_result(
             normalized,
             initial,
             master=master,
@@ -309,7 +318,13 @@ def _resolve_hook_plan(
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
             time_budget_ms=time_budget_ms,
+            enable_depot_late_scheduling=False,
+            solve_result_fn=solve_with_simple_astar_result,
         )
+        if not result.is_complete:
+            raise ValueError(
+                "No complete solver plan found within validation-profile recovery"
+            )
         return [
             _build_demo_hook(
                 idx,
@@ -317,7 +332,7 @@ def _resolve_hook_plan(
                 route_oracle=route_oracle,
                 length_by_vehicle=length_by_vehicle,
             ).model_dump(mode="json")
-            for idx, move in enumerate(plan, start=1)
+            for idx, move in enumerate(result.plan, start=1)
         ]
     raw_hooks = plan_payload.get("hook_plan", plan_payload) if isinstance(plan_payload, dict) else plan_payload
     resolved: list[dict] = []
