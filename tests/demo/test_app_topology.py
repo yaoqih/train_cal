@@ -294,6 +294,62 @@ def test_format_hook_vehicle_text_appends_spotting_attributes_and_length():
     )
 
 
+def test_format_pre_hook_loco_carry_text_uses_previous_step_carry():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CARRY_SHOW_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    plan_payload = [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": ["CARRY_SHOW_1"],
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "机库",
+            "vehicleNos": ["CARRY_SHOW_1"],
+            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        },
+    ]
+
+    view = build_demo_view_model(master, payload, plan_payload=plan_payload)
+    vehicle_display_metadata = app._build_vehicle_display_metadata(payload)
+
+    assert app._format_pre_hook_loco_carry_text(
+        view,
+        1,
+        vehicle_display_metadata,
+    ) == "本钩前调车机后挂: 无"
+    assert app._format_pre_hook_loco_carry_text(
+        view,
+        2,
+        vehicle_display_metadata,
+    ) == "本钩前调车机后挂: CARRY_SHOW_1(对位=机库，属性=无，长度=14.3m)"
+
+
 def test_build_step_state_rows_uses_formatted_vehicle_text():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -317,7 +373,7 @@ def test_build_step_state_rows_uses_formatted_vehicle_text():
         "locoTrackName": "机库",
     }
 
-    view = build_demo_view_model(master, payload)
+    view = build_demo_view_model(master, payload, plan_payload=[])
     vehicle_display_metadata = app._build_vehicle_display_metadata(payload)
     rows = app._build_step_state_rows(view.steps[0].track_map, vehicle_display_metadata)
 

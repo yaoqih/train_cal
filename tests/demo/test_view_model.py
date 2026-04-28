@@ -330,6 +330,9 @@ def test_build_demo_view_model_counts_atomic_attach_and_detach_hooks():
 
     assert view.summary.hook_count == 2
     assert [step.hook.action_type for step in view.steps[1:] if step.hook] == ["ATTACH", "DETACH"]
+    assert view.steps[0].loco_carry_vehicle_nos == []
+    assert view.steps[1].loco_carry_vehicle_nos == ["V_ATOMIC_1"]
+    assert view.steps[2].loco_carry_vehicle_nos == []
 
 
 def test_build_demo_view_model_keeps_verifier_errors():
