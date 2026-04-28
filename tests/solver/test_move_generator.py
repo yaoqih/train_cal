@@ -1840,6 +1840,140 @@ def test_generate_real_hook_moves_keeps_extra_attach_when_it_reduces_detach_grou
     assert ("BLOCK_B",) in [tuple(move.vehicle_nos) for move in attach_moves]
 
 
+def test_generate_real_hook_moves_detaches_only_tail_blocks():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "调棚",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HEAD1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HEAD2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2库内",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库内",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "4",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修3库内",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("HEAD1", "HEAD2", "TAIL1", "TAIL2"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+    detach_blocks = {
+        tuple(move.vehicle_nos)
+        for move in moves
+        if move.action_type == "DETACH"
+    }
+
+    assert ("TAIL2",) in detach_blocks
+    assert ("TAIL1", "TAIL2") in detach_blocks
+    assert ("HEAD1",) not in detach_blocks
+    assert ("HEAD1", "HEAD2") not in detach_blocks
+
+
+def test_generate_real_hook_moves_can_set_back_tail_pushers_to_expose_close_door():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存4北", "trackDistance": 317.8},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CD_INNER",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "关门车",
+            },
+        ]
+        + [
+            {
+                "trackName": "存5北",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(["PUSH1", "PUSH2", "PUSH3"], start=2)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = ReplayState(
+        track_sequences={"存5北": []},
+        loco_track_name="存5北",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("CD_INNER", "PUSH1", "PUSH2", "PUSH3"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "DETACH"
+        and move.source_track == "存5北"
+        and move.target_track == "存5北"
+        and tuple(move.vehicle_nos) == ("PUSH1", "PUSH2", "PUSH3")
+        for move in moves
+    )
+
+
 def test_generate_real_hook_moves_keeps_attach_even_when_combined_carry_exceeds_equivalent_limit():
     master = load_master_data(DATA_DIR)
     payload = {

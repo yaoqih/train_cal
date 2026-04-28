@@ -7,6 +7,7 @@ from fzed_shunting.domain.depot_spots import (
     allocate_spots_for_block,
     spot_candidates_for_vehicle,
 )
+from fzed_shunting.domain.carry_order import iter_carried_tail_blocks
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
@@ -55,7 +56,7 @@ def _min_detach_groups(
         return 0
     groups = 0
     shared_targets: set[str] = set()
-    for vehicle_no in vehicle_nos:
+    for vehicle_no in reversed(tuple(vehicle_nos)):
         effective_targets = _effective_target_tracks_for_detach(
             vehicle_no,
             vehicle_by_no=vehicle_by_no,
@@ -637,9 +638,7 @@ def generate_real_hook_moves(
 
     # --- DETACH moves ---
     if state.loco_carry:
-        carry = list(state.loco_carry)
-        for prefix_size in range(1, len(carry) + 1):
-            drop_block = carry[:prefix_size]
+        for drop_block in iter_carried_tail_blocks(state.loco_carry):
             drop_vehicles = [vehicle_by_no[vno] for vno in drop_block if vno in vehicle_by_no]
             if not drop_vehicles:
                 continue
@@ -665,6 +664,14 @@ def generate_real_hook_moves(
                             plan_input=plan_input,
                         )
                     )
+            if _tail_detach_exposes_carried_vehicle(
+                carry=state.loco_carry,
+                drop_block=drop_block,
+                vehicle_by_no=vehicle_by_no,
+                plan_input=plan_input,
+                state=state,
+            ):
+                goal_targets.add(state.loco_track_name)
             detach_targets: list[str] = sorted(goal_targets)
             for target_track in detach_targets:
                 move = _build_candidate_move(
@@ -780,6 +787,63 @@ def _real_hook_attach_frontier_prefix_sizes(
         if best_prefix_for_group is None or prefix_size > best_prefix_for_group:
             frontier[detach_groups] = prefix_size
     return set(frontier.values()) | set(requested_prefix_sizes)
+
+
+def _tail_detach_exposes_carried_vehicle(
+    *,
+    carry: tuple[str, ...],
+    drop_block: list[str],
+    vehicle_by_no: dict,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+) -> bool:
+    if len(drop_block) >= len(carry):
+        return False
+    exposed_vehicle_no = carry[-len(drop_block) - 1]
+    exposed_vehicle = vehicle_by_no.get(exposed_vehicle_no)
+    if exposed_vehicle is None:
+        return False
+    if goal_is_satisfied(
+        exposed_vehicle,
+        track_name=state.loco_track_name,
+        state=state,
+        plan_input=plan_input,
+    ):
+        return False
+    if exposed_vehicle.need_weigh and exposed_vehicle_no not in state.weighed_vehicle_nos:
+        return True
+    if exposed_vehicle.goal.target_mode == "SPOT":
+        return True
+    if (
+        exposed_vehicle.is_close_door
+        and "存4北" in exposed_vehicle.goal.allowed_target_tracks
+        and sum(
+            1
+            for vehicle_no in drop_block
+            if (
+                (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+                and not vehicle.is_close_door
+                and "存4北" in vehicle.goal.allowed_target_tracks
+            )
+        )
+        >= 3
+    ):
+        return True
+    exposed_targets = _effective_target_tracks_for_detach(
+        exposed_vehicle_no,
+        vehicle_by_no=vehicle_by_no,
+        weighed_vehicle_nos=state.weighed_vehicle_nos,
+    )
+    drop_targets: set[str] = set()
+    for vehicle_no in drop_block:
+        drop_targets.update(
+            _effective_target_tracks_for_detach(
+                vehicle_no,
+                vehicle_by_no=vehicle_by_no,
+                weighed_vehicle_nos=state.weighed_vehicle_nos,
+            )
+        )
+    return bool(exposed_targets and not exposed_targets.issubset(drop_targets))
 
 
 def _generate_capacity_eviction_moves(

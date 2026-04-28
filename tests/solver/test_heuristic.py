@@ -156,6 +156,58 @@ def test_h_weigh_zero_when_weigh_already_done():
     assert breakdown.h_weigh == 0
 
 
+def test_real_hook_carry_detach_heuristic_scans_tail_to_head():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload(
+        [
+            {
+                "trackName": "调棚",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HEAD1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ]
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    heuristic = make_state_heuristic_real_hook(normalized)
+    state = ReplayState(
+        track_sequences={},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("HEAD1", "TAIL1", "TAIL2"),
+    )
+
+    assert heuristic(state) == 2
+
+
 def test_h_blocking_strengthens_when_target_has_blocker():
     master = load_master_data(DATA_DIR)
     payload = _base_payload(

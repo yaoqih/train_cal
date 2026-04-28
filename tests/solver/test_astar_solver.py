@@ -672,6 +672,57 @@ def test_apply_move_matches_replay_plan_for_attach_releases_source_spot_assignme
     assert applied.loco_carry == ("APPLY_ATTACH_1",)
 
 
+def test_apply_move_detach_removes_tail_block_from_loco_carry():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "调棚",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(["HEAD1", "HEAD2", "TAIL1", "TAIL2"], start=1)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    state = ReplayState(
+        track_sequences={"修2库内": ["OLD"]},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("HEAD1", "HEAD2", "TAIL1", "TAIL2"),
+    )
+    move = HookAction(
+        source_track="调棚",
+        target_track="修2库内",
+        vehicle_nos=["TAIL1", "TAIL2"],
+        path_tracks=["调棚", "修2库内"],
+        action_type="DETACH",
+    )
+
+    applied = _apply_move(
+        state=state,
+        move=move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    assert applied.loco_carry == ("HEAD1", "HEAD2")
+    assert applied.track_sequences["修2库内"] == ["TAIL1", "TAIL2", "OLD"]
+
+
 def test_vehicle_track_lookup_returns_current_tracks():
     state = ReplayState(
         track_sequences={
@@ -931,8 +982,8 @@ def test_simple_astar_can_clear_front_blocker_via_temporary_track():
 
     assert len(plan) == 3
     assert [move.action_type for move in plan] == ["ATTACH", "DETACH", "DETACH"]
-    assert plan[1].target_track == "存5北"
-    assert plan[1].vehicle_nos == ["E7"]
+    assert plan[1].target_track == "机库"
+    assert plan[1].vehicle_nos == ["E8"]
     assert replay.final_state.track_sequences["存5北"] == ["E7"]
     assert replay.final_state.track_sequences["机库"] == ["E8"]
 
@@ -992,8 +1043,8 @@ def test_simple_astar_can_clear_front_blocker_via_cun4nan_staging():
 
     assert len(plan) == 3
     assert [move.action_type for move in plan] == ["ATTACH", "DETACH", "DETACH"]
-    assert plan[1].target_track == "存5北"
-    assert plan[1].vehicle_nos == ["E7A"]
+    assert plan[1].target_track == "机库"
+    assert plan[1].vehicle_nos == ["E8A"]
     assert replay.final_state.track_sequences["存5北"] == ["E7A"]
     assert replay.final_state.track_sequences["机库"] == ["E8A"]
 
@@ -3072,6 +3123,124 @@ def test_solver_resumes_relaxed_constructive_partial_when_primary_paths_fail():
     assert calls[-1][0] is False
     assert result.is_complete is True
     assert result.plan == resumed.plan
+
+
+def test_solver_tries_route_release_constructive_when_regular_partials_stall():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "RBR1",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["RBR1"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+    )
+    route_release_complete = SolverResult(
+        plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["RBR1"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            ),
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["RBR1"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="constructive_route_release",
+    )
+    calls: list[tuple[bool, bool]] = []
+
+    def fake_constructive_stage(
+        *,
+        strict_staging_regrab=True,
+        route_release_bias=False,
+        **_kwargs,
+    ):
+        calls.append((strict_staging_regrab, route_release_bias))
+        if route_release_bias:
+            return route_release_complete
+        return partial
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", side_effect=fake_constructive_stage):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", return_value=None):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._solve_search_result",
+                    return_value=SolverResult(
+                        plan=[],
+                        expanded_nodes=1,
+                        generated_nodes=1,
+                        closed_nodes=0,
+                        elapsed_ms=1.0,
+                        is_complete=False,
+                        fallback_stage="beam",
+                    ),
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                    ):
+                        result = solve_with_simple_astar_result(
+                            normalized,
+                            initial,
+                            master=master,
+                            solver_mode="beam",
+                            beam_width=8,
+                            time_budget_ms=30_000.0,
+                            enable_anytime_fallback=True,
+                            verify=False,
+                        )
+
+    assert calls == [(True, False), (False, False), (False, True)]
+    assert result.is_complete is True
+    assert result.plan == route_release_complete.plan
+    assert result.fallback_stage == "constructive_route_release"
 
 
 def test_beam_mode_gives_near_goal_constructive_partial_enough_resume_budget():

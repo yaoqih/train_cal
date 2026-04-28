@@ -60,6 +60,7 @@ PARTIAL_RESUME_MAX_CHECKPOINTS = 6
 BEAM_COMPLETE_SEED_MIN_BUDGET_RATIO = 0.20
 BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS = 100
 RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS = 8_000.0
+ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS = 20_000.0
 LOCALIZED_RESUME_BUDGET_RATIO = 0.50
 LOCALIZED_RESUME_MIN_FULL_BEAM_MS = 500.0
 DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 4
@@ -277,6 +278,58 @@ def solve_with_simple_astar_result(
                 )
         phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
+    # Stage 0.8: route-release constructive rescue. Some legal states are not
+    # near-goal in the heuristic but are dominated by route blockers: staging
+    # or already-satisfied tracks physically block access to target tracks.
+    # Biasing constructive toward route-blockage release is a general recovery
+    # strategy for those cases and is cheaper than spending the whole beam
+    # budget in a broad state space.
+    if (
+        enable_constructive_seed
+        and enable_anytime_fallback
+        and solver_mode in {"exact", "beam"}
+        and constructive_seed is not None
+        and not constructive_seed.is_complete
+        and constructive_seed.partial_plan
+        and time_budget_ms is not None
+    ):
+        _ts = perf_counter()
+        route_release_budget = min(
+            time_budget_ms,
+            ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS,
+        )
+        route_release_seed = _run_constructive_stage(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            time_budget_ms=route_release_budget,
+            enable_depot_late_scheduling=optimize_depot_late_in_search,
+            strict_staging_regrab=False,
+            route_release_bias=True,
+            budget_fraction=1.0,
+        )
+        if route_release_seed is not None:
+            if route_release_seed.is_complete:
+                route_release_seed = replace(
+                    route_release_seed,
+                    fallback_stage="constructive_route_release",
+                )
+            constructive_seed = _shorter_complete_result(
+                constructive_seed,
+                route_release_seed,
+            )
+            if (
+                not constructive_seed.is_complete
+                and route_release_seed.partial_plan
+                and len(route_release_seed.partial_plan) > len(constructive_seed.partial_plan)
+            ):
+                constructive_seed = replace(
+                    constructive_seed,
+                    partial_plan=list(route_release_seed.partial_plan),
+                    partial_fallback_stage=route_release_seed.partial_fallback_stage,
+                )
+        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
     result: SolverResult
     if solver_mode == "lns":
         _ts = perf_counter()
@@ -349,11 +402,29 @@ def solve_with_simple_astar_result(
         phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
             _ts = perf_counter()
-            result = _anytime_run_fallback_chain(
+            chain_incumbent = result
+            if (
+                result.is_complete
+                and not result.is_proven_optimal
+                and constructive_seed is not None
+                and time_budget_ms is not None
+            ):
+                chain_incumbent = SolverResult(
+                    plan=[],
+                    expanded_nodes=0,
+                    generated_nodes=0,
+                    closed_nodes=0,
+                    elapsed_ms=0.0,
+                    is_complete=False,
+                    is_proven_optimal=False,
+                    fallback_stage=solver_mode,
+                    debug_stats=debug_stats,
+                )
+            chain_result = _anytime_run_fallback_chain(
                 plan_input=plan_input,
                 initial_state=initial_state,
                 master=master,
-                incumbent=result,
+                incumbent=chain_incumbent,
                 started_at=started_at,
                 time_budget_ms=time_budget_ms,
                 node_budget=node_budget,
@@ -363,6 +434,7 @@ def solve_with_simple_astar_result(
                 solve_search_result=_solve_search_result,
                 enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
+            result = _shorter_complete_result(result, chain_result)
             phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
         if solver_mode == "beam" and beam_width is not None:
             _ts = perf_counter()
@@ -778,6 +850,10 @@ def _shorter_complete_result(
     if not incumbent.is_complete:
         return candidate
     if len(candidate.plan) < len(incumbent.plan):
+        return candidate
+    if len(candidate.plan) == len(incumbent.plan) and (
+        candidate.is_proven_optimal and not incumbent.is_proven_optimal
+    ):
         return candidate
     return incumbent
 

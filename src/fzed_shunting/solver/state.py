@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fzed_shunting.domain.carry_order import remove_carried_tail_block
 from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_candidates_for_vehicle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.goal_logic import goal_is_satisfied
@@ -98,11 +99,7 @@ def _apply_detach(
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict[str, NormalizedVehicle],
 ) -> ReplayState:
-    carry_list = list(state.loco_carry)
-    k = len(move.vehicle_nos)
-    if carry_list[:k] != move.vehicle_nos:
-        raise ValueError("Vehicle block is not at the front of loco_carry")
-    next_carry = tuple(carry_list[k:])
+    next_carry = remove_carried_tail_block(state.loco_carry, move.vehicle_nos)
     next_track_sequences = dict(state.track_sequences)
     existing_target_seq = list(state.track_sequences.get(move.target_track, []))
     next_target_seq = _place_on_track(existing_target_seq, move.vehicle_nos)

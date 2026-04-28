@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
+from fzed_shunting.domain.carry_order import is_carried_tail_block
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
@@ -765,6 +766,12 @@ def _score_native_move(
         plan_input=plan_input,
         vehicle_by_no=vehicle_by_no,
     )
+    supports_close_door_push = _move_attaches_close_door_pushers(
+        move=move,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
     close_door_sequence_debt = _close_door_sequence_debt(
         move=move,
         state=state,
@@ -793,6 +800,8 @@ def _score_native_move(
     elif exposes_committed_carry:
         tier = 2
     elif clears_route_blocker:
+        tier = 2
+    elif supports_close_door_push:
         tier = 2
     elif (
         move.action_type == "ATTACH"
@@ -883,6 +892,13 @@ def _close_door_sequence_debt(
 ) -> int:
     if move.action_type != "ATTACH" or state.loco_carry:
         return 0
+    if _move_attaches_close_door_pushers(
+        move=move,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    ):
+        return 0
     unresolved_close_door_nos = {
         vehicle.vehicle_no
         for vehicle in plan_input.vehicles
@@ -917,6 +933,45 @@ def _close_door_sequence_debt(
     if moved_pushers:
         return moved_pushers
     return 0
+
+
+def _move_attaches_close_door_pushers(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if move.action_type != "ATTACH" or state.loco_carry:
+        return False
+    moved_pushers = sum(
+        1
+        for vehicle_no in move.vehicle_nos
+        if (
+            (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+            and not vehicle.is_close_door
+            and "存4北" in vehicle.goal.allowed_target_tracks
+        )
+    )
+    if moved_pushers <= 0:
+        return False
+    final_seq = state.track_sequences.get("存4北", [])
+    for vehicle in plan_input.vehicles:
+        if not vehicle.is_close_door or "存4北" not in vehicle.goal.allowed_target_tracks:
+            continue
+        if vehicle.vehicle_no not in final_seq:
+            continue
+        if goal_is_satisfied(
+            vehicle,
+            track_name="存4北",
+            state=state,
+            plan_input=plan_input,
+        ):
+            continue
+        needed_pushers = max(0, 3 - final_seq.index(vehicle.vehicle_no))
+        if needed_pushers > 0 and moved_pushers >= needed_pushers:
+            return True
+    return False
 
 
 def _move_consumes_close_door_pushers(
@@ -1237,20 +1292,24 @@ def _move_exposes_committed_carry_vehicle(
     carry = list(state.loco_carry)
     if not carry:
         return False
-    prefix_size = len(move.vehicle_nos)
-    if carry[:prefix_size] != move.vehicle_nos:
+    tail_size = len(move.vehicle_nos)
+    if not is_carried_tail_block(carry, move.vehicle_nos):
         return False
 
-    first_committed_index: int | None = None
-    for index, vehicle_no in enumerate(carry):
+    last_committed_index: int | None = None
+    for index in range(len(carry) - 1, -1, -1):
+        vehicle_no = carry[index]
         vehicle = vehicle_by_no.get(vehicle_no)
         if vehicle is None:
             continue
         if _is_critical_carry_vehicle(vehicle, state=state, plan_input=plan_input):
-            first_committed_index = index
+            last_committed_index = index
             break
 
-    return first_committed_index is not None and 0 < first_committed_index and prefix_size <= first_committed_index
+    if last_committed_index is None:
+        return False
+    tail_distance = len(carry) - 1 - last_committed_index
+    return tail_distance > 0 and tail_size <= tail_distance
 
 
 def _is_critical_carry_vehicle(

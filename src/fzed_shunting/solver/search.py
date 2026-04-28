@@ -13,6 +13,7 @@ from itertools import count
 from time import perf_counter
 from typing import Any
 
+from fzed_shunting.domain.carry_order import is_carried_tail_block
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
@@ -353,19 +354,23 @@ def _carry_exposure_bonus(
     if move.action_type != "DETACH":
         return 0
     carry = list(state.loco_carry)
-    prefix_size = len(move.vehicle_nos)
-    if not carry or carry[:prefix_size] != move.vehicle_nos:
+    tail_size = len(move.vehicle_nos)
+    if not carry or not is_carried_tail_block(carry, move.vehicle_nos):
         return 0
 
-    first_committed_index: int | None = None
-    for index, vehicle_no in enumerate(carry):
+    last_committed_index: int | None = None
+    for index in range(len(carry) - 1, -1, -1):
+        vehicle_no = carry[index]
         vehicle = vehicle_by_no.get(vehicle_no)
         if vehicle is None:
             continue
         if _is_critical_carry_vehicle(vehicle, state=state, plan_input=plan_input):
-            first_committed_index = index
+            last_committed_index = index
             break
-    if first_committed_index is None or first_committed_index == 0 or prefix_size > first_committed_index:
+    if last_committed_index is None:
+        return 0
+    tail_distance = len(carry) - 1 - last_committed_index
+    if tail_distance == 0 or tail_size > tail_distance:
         return 0
     return 1
 

@@ -4,7 +4,8 @@ import pytest
 
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
-from fzed_shunting.verify.replay import build_initial_state, replay_plan
+from fzed_shunting.verify.plan_verifier import verify_plan
+from fzed_shunting.verify.replay import ReplayState, build_initial_state, replay_plan
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -161,6 +162,154 @@ def test_replay_attach_releases_source_spot_assignment():
     assert result.final_state.track_sequences["修1库内"] == []
     assert result.final_state.loco_carry == ("C_ATTACH",)
     assert result.final_state.spot_assignments == {}
+
+
+def test_replay_detach_removes_tail_block_from_loco_carry_and_prepends_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "调棚",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(["HEAD1", "HEAD2", "TAIL1", "TAIL2"], start=1)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = ReplayState(
+        track_sequences={"修2库内": ["OLD_NORTH", "OLD_SOUTH"]},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("HEAD1", "HEAD2", "TAIL1", "TAIL2"),
+    )
+
+    result = replay_plan(
+        initial,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "DETACH",
+                "sourceTrack": "调棚",
+                "targetTrack": "修2库内",
+                "vehicleNos": ["TAIL1", "TAIL2"],
+                "pathTracks": ["调棚", "修2库内"],
+            }
+        ],
+        plan_input=normalized,
+    )
+
+    assert result.final_state.loco_carry == ("HEAD1", "HEAD2")
+    assert result.final_state.track_sequences["修2库内"] == [
+        "TAIL1",
+        "TAIL2",
+        "OLD_NORTH",
+        "OLD_SOUTH",
+    ]
+
+
+def test_plan_verifier_rejects_detach_from_loco_carry_head():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HEAD1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "机库",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HEAD2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "TAIL2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "机库",
+                "targetTrack": "机库",
+                "vehicleNos": ["HEAD1", "HEAD2"],
+                "pathTracks": ["机库"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "ATTACH",
+                "sourceTrack": "调棚",
+                "targetTrack": "调棚",
+                "vehicleNos": ["TAIL1", "TAIL2"],
+                "pathTracks": ["调棚"],
+            },
+            {
+                "hookNo": 3,
+                "actionType": "DETACH",
+                "sourceTrack": "调棚",
+                "targetTrack": "修2库内",
+                "vehicleNos": ["HEAD1", "HEAD2"],
+                "pathTracks": ["调棚", "修2库内"],
+            },
+        ],
+    )
+
+    assert not report.is_valid
+    assert "tail of loco_carry" in report.errors[0]
 
 
 def test_replay_assigns_exact_depot_spot_when_moving_into_depot():

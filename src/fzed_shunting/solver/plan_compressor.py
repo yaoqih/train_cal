@@ -434,14 +434,14 @@ def _final_detach_groups(
     final_track_by_vehicle: dict[str, str],
 ) -> list[tuple[str, list[str]]] | None:
     groups: list[tuple[str, list[str]]] = []
-    index = 0
-    while index < len(moved):
-        target = final_track_by_vehicle[moved[index]]
-        group: list[str] = []
-        while index < len(moved) and final_track_by_vehicle[moved[index]] == target:
-            group.append(moved[index])
-            index += 1
-        groups.append((target, group))
+    index = len(moved)
+    while index > 0:
+        target = final_track_by_vehicle[moved[index - 1]]
+        start = index - 1
+        while start > 0 and final_track_by_vehicle[moved[start - 1]] == target:
+            start -= 1
+        groups.append((target, list(moved[start:index])))
+        index = start
     return groups
 
 

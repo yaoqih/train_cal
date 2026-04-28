@@ -247,7 +247,7 @@ from fzed_shunting.solver.depot_late import reorder_depot_late
 
 
 class TestReorderDepotLate:
-    def test_reorder_swaps_independent_depot_hook_later(self) -> None:
+    def test_reorder_rejects_swap_that_would_detach_inner_carry_vehicle(self) -> None:
         plan_input = _plan_input([
             _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存2", ["存4北"]),
@@ -260,10 +260,8 @@ class TestReorderDepotLate:
             _hook("存2", "存4北", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
-        assert [hook.action_type for hook in reordered] == ["ATTACH", "ATTACH", "DETACH", "DETACH"]
-        assert reordered[1].target_track == "存2"
-        assert reordered[2].target_track == "修1库内"
-        assert depot_earliness(reordered) < depot_earliness(plan)
+        assert reordered == plan
+        assert depot_earliness(reordered) == depot_earliness(plan)
 
     def test_reorder_rejects_dependent_swap(self) -> None:
         plan_input = _plan_input([
@@ -301,31 +299,12 @@ class TestReorderDepotLate:
         assert reordered == plan
 
     def test_reorder_handles_two_random_depot_vehicles(self) -> None:
-        """Two 大库:RANDOM vehicles; adjacent swap — verify _canonicalize_state
-        handles per-vehicle spot assignment correctly.
+        """Do not accept a depot-late swap that would detach a non-tail car.
 
-        Setup: plan = [V1->修1库内, V3->存4北, V2->修1库内] where V1, V2 are
-        大库:RANDOM-bound and V3 is non-depot. Baseline replay assigns
-        V1=101, V2=102 (the first two spots in 修1库内 NORMAL). Only one
-        adjacent (depot, non-depot) pair exists — indices (0, 1) — so the
-        algorithm attempts to move V3 before V1.
-
-        Observed behavior (committed branch): reorder SUCCEEDS. The swap
-        preserves the relative order of V1 and V2, so allocate_spots_for_block
-        deterministically re-assigns V1=101 and V2=102 in both the baseline
-        and candidate replays. _canonicalize_state sees identical
-        sorted(spot_assignments.items()) tuples and accepts the swap.
-
-        Note on the review concern (Important #1): _canonicalize_state
-        compares spot_assignments pair-wise, which WOULD reject any swap
-        that flips the relative order of two 大库:RANDOM vehicles (same
-        spots occupied, different vehicle->spot mapping). However, the
-        current reorder algorithm only swaps (depot, non-depot) adjacent
-        pairs, so it CANNOT swap two depot hooks relative to each other —
-        making the concern theoretical for this algorithm. If a future
-        change (e.g., Wave 3) adds depot-depot swap patterns or block-level
-        moves, revisit _canonicalize_state to use a RANDOM-aware
-        canonicalization like solver.state._state_key does.
+        Swapping the non-depot ATTACH(V3) ahead of DETACH(V1->修1库内) would
+        leave carry=(V1,V3) and then try to detach V1 from the inner side.
+        Tail-only detach correctly rejects that candidate before spot
+        canonicalization matters.
         """
         plan_input = _plan_input([
             _vehicle(
@@ -349,19 +328,8 @@ class TestReorderDepotLate:
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
 
-        # The swap succeeded at the atomic-hook level:
-        # ATTACH(V3) moves ahead of DETACH(V1->修1库内), delaying the first depot hook by one step.
-        assert [h.action_type for h in reordered] == [
-            "ATTACH",
-            "ATTACH",
-            "DETACH",
-            "DETACH",
-            "ATTACH",
-            "DETACH",
-        ]
-        assert [h.vehicle_nos for h in reordered] == [["V1"], ["V3"], ["V1"], ["V3"], ["V2"], ["V2"]]
-        # Earliness strictly improved (the first depot DETACH moved from step 2 to step 3).
-        assert depot_earliness(reordered) < depot_earliness(plan)
+        assert reordered == plan
+        assert depot_earliness(reordered) == depot_earliness(plan)
 
     def test_reorder_semantic_topo_jumps_past_blocked_swap(self) -> None:
         """Plan [A_depot, B_nondepot_dep_on_A, C_nondepot_independent].
@@ -388,8 +356,8 @@ class TestReorderDepotLate:
         # Adjacent-swap can't move C past B. Plan stays as-is.
         assert reordered == plan
 
-    def test_reorder_topological_handles_simple_swap(self) -> None:
-        """The existing simple-swap case should still improve at the atomic-hook level."""
+    def test_reorder_topological_rejects_simple_tail_invalid_swap(self) -> None:
+        """The simple adjacent swap is illegal once DETACH is tail-only."""
         plan_input = _plan_input([
             _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存2", ["存4北"]),
@@ -402,8 +370,7 @@ class TestReorderDepotLate:
             _hook("存2", "存4北", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
-        assert reordered[1].vehicle_nos == ["V2"]
-        assert reordered[2].vehicle_nos == ["V1"]
+        assert reordered == plan
 
 
 from fzed_shunting.solver.search import _priority

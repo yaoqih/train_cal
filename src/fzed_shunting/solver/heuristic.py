@@ -68,8 +68,8 @@ def compute_admissible_heuristic_real_hook(
 def _h_carry_detach(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
     """Admissible lower bound on remaining DETACHes for vehicles in loco_carry.
 
-    Greedy forward scan: maintain the intersection of allowed target tracks
-    across the current DETACH prefix. When the intersection hits empty, a
+    Greedy tail-to-head scan: maintain the intersection of allowed target tracks
+    across the current DETACH tail block. When the intersection hits empty, a
     new DETACH group must start (increment count). Handles need_weigh vehicles
     by treating their effective goal as {"机库"} until weighed.
 
@@ -81,7 +81,7 @@ def _h_carry_detach(plan_input: NormalizedPlanInput, state: ReplayState) -> int:
     vehicle_by_no = {v.vehicle_no: v for v in plan_input.vehicles}
     groups = 0
     shared: set[str] = set()
-    for vehicle_no in state.loco_carry:
+    for vehicle_no in reversed(state.loco_carry):
         v = vehicle_by_no.get(vehicle_no)
         if v is None:
             groups += 1

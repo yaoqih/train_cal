@@ -855,7 +855,7 @@ def test_score_native_move_keeps_goal_detach_high_priority_even_when_heuristic_i
         update={
             "track_sequences": {"存1": ["ATTACH_PEER"]},
             "loco_track_name": "存5北",
-            "loco_carry": ("GOAL_PRE", "CARRY_PEER"),
+            "loco_carry": ("CARRY_PEER", "GOAL_PRE"),
         }
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
@@ -1077,7 +1077,7 @@ def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_v
                 "vehicleNo": "ATTACH_PEER",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "存1",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
@@ -1089,7 +1089,7 @@ def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_v
         update={
             "track_sequences": {"存2": ["ATTACH_PEER"]},
             "loco_track_name": "存5北",
-            "loco_carry": ("CARRY_BLOCKER", "CARRY_SPOT"),
+            "loco_carry": ("CARRY_SPOT", "CARRY_BLOCKER"),
             "spot_assignments": {},
         }
     )

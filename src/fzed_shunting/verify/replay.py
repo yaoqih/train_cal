@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from pydantic import BaseModel, Field
 
+from fzed_shunting.domain.carry_order import remove_carried_tail_block
 from fzed_shunting.domain.depot_spots import allocate_spots_for_block, build_initial_spot_assignments
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 
@@ -71,10 +72,7 @@ def replay_plan(
                     f"DETACH sourceTrack {source} does not match loco track {state.loco_track_name}"
                 )
             target = hook["targetTrack"]
-            carry_list = list(state.loco_carry)
-            if carry_list[: len(vehicle_nos)] != vehicle_nos:
-                raise ValueError("Vehicle block is not at the front of loco_carry")
-            state.loco_carry = tuple(carry_list[len(vehicle_nos):])
+            state.loco_carry = remove_carried_tail_block(state.loco_carry, vehicle_nos)
             for vehicle_no in vehicle_nos:
                 state.spot_assignments.pop(vehicle_no, None)
             state.track_sequences[target] = list(vehicle_nos) + list(state.track_sequences.get(target, []))
