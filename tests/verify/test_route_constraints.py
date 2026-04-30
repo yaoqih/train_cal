@@ -377,3 +377,208 @@ def test_verifier_rejects_interference_when_intermediate_track_is_occupied():
     assert report.is_valid is False
     assert any("interference" in error.lower() for error in report.errors)
     assert any("存5南" in error for error in report.errors)
+
+
+def test_verifier_rejects_attach_after_detach_leaves_loco_behind_source_track_cars():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 156},
+            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "机棚", "trackDistance": 105.8},
+            {"trackName": "机北", "trackDistance": 69.1},
+            {"trackName": "调北", "trackDistance": 70.1},
+            {"trackName": "调棚", "trackDistance": 174.3},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "MOVE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "调棚",
+                "isSpotting": "是",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "PARKED",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            *[
+                {
+                    "trackName": track,
+                    "order": "2" if track == "存5北" else "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"BLOCK-{idx}",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5南",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for idx, track in enumerate(
+                    ["存5北", "临4", "机棚", "机北", "调北"],
+                    start=1,
+                )
+            ],
+        ],
+        "locoTrackName": "存5北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            _native_attach(hook_no=1, source_track="存5北", vehicle_nos=["MOVE"]),
+            _native_detach(
+                hook_no=2,
+                source_track="存5北",
+                target_track="存5南",
+                vehicle_nos=["MOVE"],
+                path_tracks=["存5北", "存5南"],
+            ),
+            {
+                "hookNo": 3,
+                "actionType": "ATTACH",
+                "sourceTrack": "调棚",
+                "targetTrack": "调棚",
+                "vehicleNos": [],
+                "pathTracks": ["调棚"],
+            },
+        ],
+        require_complete_goals=False,
+    )
+
+    assert report.is_valid is False
+    hook3 = next(item for item in report.hook_reports if item.hook_no == 3)
+    assert "调北" in hook3.blocking_tracks
+    assert "存5南" not in hook3.blocking_tracks
+
+
+def test_verifier_rejects_loco_access_from_cun5nan_north_end_when_all_exits_are_blocked():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "存5南", "trackDistance": 156.0},
+            {"trackName": "调棚", "trackDistance": 174.3},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存4北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "MOVE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "调棚",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "PARKED",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            *[
+                {
+                    "trackName": track,
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": f"ROUTE_BLOCK_{idx}",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": track,
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+                for idx, track in enumerate(["存5北"], start=1)
+            ],
+        ],
+        "locoTrackName": "存4北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            _native_attach(hook_no=1, source_track="存4北", vehicle_nos=["MOVE"]),
+            _native_detach(
+                hook_no=2,
+                source_track="存4北",
+                target_track="存5南",
+                vehicle_nos=["MOVE"],
+                path_tracks=["存4北", "存4南", "存5南"],
+            ),
+            _native_attach(hook_no=3, source_track="调棚", vehicle_nos=[]),
+        ],
+        require_complete_goals=False,
+    )
+
+    assert report.is_valid is False
+    hook3 = next(item for item in report.hook_reports if item.hook_no == 3)
+    assert hook3.blocking_tracks == ["存5北"]
+
+
+def test_verifier_rejects_detach_to_empty_target_from_wrong_entry_end():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "存4南", "trackDistance": 154.5},
+            {"trackName": "存5南", "trackDistance": 156.0},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存4北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "MOVE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "存4北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            _native_attach(hook_no=1, source_track="存4北", vehicle_nos=["MOVE"]),
+            _native_detach(
+                hook_no=2,
+                source_track="存4北",
+                target_track="存5南",
+                vehicle_nos=["MOVE"],
+                path_tracks=["存4北", "存4南", "存5南"],
+            ),
+        ],
+    )
+
+    assert report.is_valid is False
+    hook2 = next(item for item in report.hook_reports if item.hook_no == 2)
+    assert any("complete route path" in error for error in hook2.errors)

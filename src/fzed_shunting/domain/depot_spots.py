@@ -61,11 +61,20 @@ def build_initial_spot_assignments(plan_input: NormalizedPlanInput) -> dict[str,
     return assignments
 
 
+def exact_spot_reservations(plan_input: NormalizedPlanInput) -> frozenset[str]:
+    return frozenset(
+        vehicle.goal.target_spot_code
+        for vehicle in plan_input.vehicles
+        if vehicle.goal.target_mode == "SPOT" and vehicle.goal.target_spot_code
+    )
+
+
 def allocate_spots_for_block(
     vehicles: list[NormalizedVehicle],
     target_track: str,
     yard_mode: str,
     occupied_spot_assignments: dict[str, str],
+    reserved_spot_codes: set[str] | frozenset[str] | None = None,
 ) -> dict[str, str] | None:
     if not vehicles:
         return {}
@@ -80,7 +89,12 @@ def allocate_spots_for_block(
         # together with a weigh vehicle) simply occupy no spot.
         if not _requires_spot_assignment(vehicle, target_track):
             continue
-        candidate_spots = spot_candidates_for_vehicle(vehicle, target_track, yard_mode)
+        candidate_spots = spot_candidates_for_vehicle(
+            vehicle,
+            target_track,
+            yard_mode,
+            reserved_spot_codes=reserved_spot_codes,
+        )
         if not candidate_spots:
             return None
         chosen = next(
@@ -101,21 +115,69 @@ def spot_candidates_for_vehicle(
     vehicle: NormalizedVehicle,
     target_track: str,
     yard_mode: str,
+    reserved_spot_codes: set[str] | frozenset[str] | None = None,
 ) -> list[str]:
     if vehicle.need_weigh and target_track == "机库":
-        return list(WORK_AREA_SPOTS["机库:WEIGH"])
+        candidates = list(WORK_AREA_SPOTS["机库:WEIGH"])
+        return _without_reserved_foreign_spots(
+            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
+        )
     if vehicle.goal.target_mode == "TRACK" and vehicle.goal.target_track == target_track and is_depot_inner_track(target_track):
-        return list_track_spots(target_track, yard_mode)
+        candidates = list_track_spots(target_track, yard_mode)
+        return _without_reserved_foreign_spots(
+            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
+        )
     if vehicle.goal.target_mode == "SPOT":
         work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
         if work_area_spot is not None:
-            return work_area_spot
-        return _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
+            return _without_reserved_foreign_spots(
+                vehicle, target_track, yard_mode, work_area_spot, reserved_spot_codes
+            )
+        candidates = _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
+        return _without_reserved_foreign_spots(
+            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
+        )
     if vehicle.goal.target_area_code == "大库:RANDOM":
-        return _random_depot_spot_candidates(vehicle, target_track, yard_mode)
+        candidates = _random_depot_spot_candidates(vehicle, target_track, yard_mode)
+        return _without_reserved_foreign_spots(
+            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
+        )
     if vehicle.goal.target_area_code in WORK_AREA_SPOTS and vehicle.goal.target_track == target_track:
-        return list(WORK_AREA_SPOTS[vehicle.goal.target_area_code])
+        candidates = list(WORK_AREA_SPOTS[vehicle.goal.target_area_code])
+        return _without_reserved_foreign_spots(
+            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
+        )
     return []
+
+
+def _without_reserved_foreign_spots(
+    vehicle: NormalizedVehicle,
+    target_track: str,
+    yard_mode: str,
+    candidate_spots: list[str],
+    reserved_spot_codes: set[str] | frozenset[str] | None,
+) -> list[str]:
+    if not reserved_spot_codes:
+        return candidate_spots
+    own_exact_spots = set(_own_exact_spot_candidates(vehicle, target_track, yard_mode))
+    return [
+        spot_code
+        for spot_code in candidate_spots
+        if spot_code not in reserved_spot_codes or spot_code in own_exact_spots
+    ]
+
+
+def _own_exact_spot_candidates(
+    vehicle: NormalizedVehicle,
+    target_track: str,
+    yard_mode: str,
+) -> list[str]:
+    if vehicle.goal.target_mode != "SPOT":
+        return []
+    work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
+    if work_area_spot is not None:
+        return work_area_spot
+    return _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
 
 
 def _exact_work_area_spot_candidates(

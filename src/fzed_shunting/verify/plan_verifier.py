@@ -145,6 +145,7 @@ def verify_plan(
                             loco_track=pre_state.loco_track_name,
                             target_track=hook["sourceTrack"],
                             occupied_track_sequences=pre_state.track_sequences,
+                            loco_node=pre_state.loco_node,
                             carried_train_length_m=sum(
                                 length_by_vehicle[vehicle_no]
                                 for vehicle_no in pre_state.loco_carry
@@ -154,6 +155,20 @@ def verify_plan(
                             f"Locomotive access before ATTACH: {error}"
                             for error in access_result.errors
                         )
+                    source_remaining_after_hook = (
+                        _remaining_source_vehicle_count_after_hook(hook=hook, pre_state=pre_state)
+                    )
+                    source_node = (
+                        pre_state.loco_node
+                        if hook.get("actionType") == "DETACH"
+                        and source_remaining_after_hook > 0
+                        else None
+                    )
+                    target_node = (
+                        route_oracle.order_end_node(hook["targetTrack"])
+                        if hook["targetTrack"] != hook["sourceTrack"]
+                        else None
+                    )
                     route_result = route_oracle.validate_path(
                         source_track=hook["sourceTrack"],
                         target_track=hook["targetTrack"],
@@ -164,6 +179,8 @@ def verify_plan(
                             length_by_vehicle=length_by_vehicle,
                         ),
                         occupied_track_sequences=pre_state.track_sequences,
+                        source_node=source_node,
+                        target_node=target_node,
                     )
                     hook_errors.extend(route_result.errors)
         if hook["targetTrack"] != "存4北" and len(hook["vehicleNos"]) > 10:
@@ -228,3 +245,15 @@ def _hook_route_train_length_m(
     if hook.get("actionType") == "DETACH" and pre_state.loco_carry:
         return sum(length_by_vehicle[vehicle_no] for vehicle_no in pre_state.loco_carry)
     return sum(length_by_vehicle[vehicle_no] for vehicle_no in hook["vehicleNos"])
+
+
+def _remaining_source_vehicle_count_after_hook(*, hook: dict, pre_state) -> int:
+    source_track = hook["sourceTrack"]
+    if hook.get("actionType") == "ATTACH":
+        return max(
+            0,
+            len(pre_state.track_sequences.get(source_track, [])) - len(hook["vehicleNos"]),
+        )
+    if hook.get("actionType") == "DETACH":
+        return len(pre_state.track_sequences.get(source_track, []))
+    return len(pre_state.track_sequences.get(source_track, []))

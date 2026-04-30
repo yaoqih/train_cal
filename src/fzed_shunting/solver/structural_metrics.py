@@ -114,10 +114,11 @@ def _front_blocker_pressure(
 ) -> dict[str, int]:
     pressure: Counter[str] = Counter()
     for track, seq in state.track_sequences.items():
-        seen_blocker = False
+        seen_front_vehicle = False
         for vehicle_no in seq:
             vehicle = vehicle_by_no.get(vehicle_no)
             if vehicle is None:
+                seen_front_vehicle = True
                 continue
             satisfied_here = goal_is_satisfied(
                 vehicle,
@@ -125,11 +126,10 @@ def _front_blocker_pressure(
                 state=state,
                 plan_input=plan_input,
             )
-            if seen_blocker and not satisfied_here:
+            if seen_front_vehicle and not satisfied_here:
                 pressure[track] += 1
                 break
-            if not satisfied_here:
-                seen_blocker = True
+            seen_front_vehicle = True
     return dict(pressure)
 
 

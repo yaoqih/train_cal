@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
+from fzed_shunting.solver.goal_logic import goal_is_satisfied
+from fzed_shunting.solver.purity import STAGING_TRACKS
 from fzed_shunting.solver.state import _apply_move
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.plan_verifier import verify_plan
@@ -23,7 +25,7 @@ def compress_plan(
     plan: list[HookAction],
     *,
     master: MasterData | None,
-    max_window_size: int = 8,
+    max_window_size: int = 10,
     max_passes: int = 16,
 ) -> CompressionResult:
     """Verifier-guarded local plan compression.
@@ -38,16 +40,13 @@ def compress_plan(
     accepted = 0
     for _ in range(max_passes):
         changed = False
-        baseline_state = _simulate(plan_input, initial_state, current)
-        if baseline_state is None:
+        if _simulate(plan_input, initial_state, current) is None:
             break
-        baseline_key = _state_equivalence_key(baseline_state)
         current, accepted_rebuild = _try_rebuild_single_source_window(
             master=master,
             plan_input=plan_input,
             initial_state=initial_state,
             current=current,
-            baseline_key=baseline_key,
             max_window_size=max_window_size,
         )
         if accepted_rebuild:
@@ -69,7 +68,6 @@ def compress_plan(
             plan_input=plan_input,
             initial_state=initial_state,
             current=current,
-            baseline_key=baseline_key,
         )
         if accepted_merge:
             accepted += 1
@@ -89,66 +87,14 @@ def compress_plan(
                 if not _verify_candidate(master, plan_input, initial_state, candidate):
                     index += 1
                     continue
-                if _state_equivalence_key(candidate_state) != baseline_key:
-                    if not _is_order_only_goal_state_change(
-                        plan_input=plan_input,
-                        baseline_state=baseline_state,
-                        candidate_state=candidate_state,
-                    ):
-                        index += 1
-                        continue
                 current = candidate
                 accepted += 1
                 changed = True
-                baseline_state = candidate_state
-                baseline_key = _state_equivalence_key(candidate_state)
             if changed:
                 break
         if not changed:
             break
     return CompressionResult(compressed_plan=current, accepted_rewrite_count=accepted)
-
-
-def _is_order_only_goal_state_change(
-    *,
-    plan_input: NormalizedPlanInput,
-    baseline_state: ReplayState,
-    candidate_state: ReplayState,
-) -> bool:
-    if baseline_state.loco_carry != candidate_state.loco_carry:
-        return False
-    if baseline_state.loco_track_name != candidate_state.loco_track_name:
-        return False
-    if baseline_state.weighed_vehicle_nos != candidate_state.weighed_vehicle_nos:
-        return False
-    if baseline_state.spot_assignments != candidate_state.spot_assignments:
-        return False
-    baseline_tracks = {
-        track: sorted(seq)
-        for track, seq in baseline_state.track_sequences.items()
-        if seq
-    }
-    candidate_tracks = {
-        track: sorted(seq)
-        for track, seq in candidate_state.track_sequences.items()
-        if seq
-    }
-    if baseline_tracks != candidate_tracks:
-        return False
-    spot_vehicle_nos = {
-        vehicle.vehicle_no
-        for vehicle in plan_input.vehicles
-        if vehicle.goal.target_mode == "SPOT" or vehicle.goal.target_spot_code
-    }
-    changed_tracks = set(baseline_state.track_sequences) | set(candidate_state.track_sequences)
-    for track in changed_tracks:
-        baseline_seq = baseline_state.track_sequences.get(track, [])
-        candidate_seq = candidate_state.track_sequences.get(track, [])
-        if baseline_seq == candidate_seq:
-            continue
-        if any(vehicle_no in spot_vehicle_nos for vehicle_no in baseline_seq + candidate_seq):
-            return False
-    return True
 
 
 def _try_merge_adjacent_same_source_same_target_pairs(
@@ -159,11 +105,17 @@ def _try_merge_adjacent_same_source_same_target_pairs(
     current: list[HookAction],
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
+    prefix_states = _prefix_states(plan_input, initial_state, current)
     for index in range(0, len(current) - 3):
+        pre_state = prefix_states[index]
+        if pre_state is None:
+            continue
         replacement = _adjacent_same_source_same_target_pair_replacement(
             current=current,
             index=index,
+            plan_input=plan_input,
             route_oracle=route_oracle,
+            pre_state=pre_state,
         )
         if replacement is None:
             continue
@@ -181,7 +133,9 @@ def _adjacent_same_source_same_target_pair_replacement(
     *,
     current: list[HookAction],
     index: int,
+    plan_input: NormalizedPlanInput,
     route_oracle: RouteOracle,
+    pre_state: ReplayState,
 ) -> list[HookAction] | None:
     first_attach, first_detach, second_attach, second_detach = current[index : index + 4]
     if first_attach.action_type != "ATTACH" or second_attach.action_type != "ATTACH":
@@ -206,17 +160,33 @@ def _adjacent_same_source_same_target_pair_replacement(
     source_track = first_attach.source_track
     target_track = first_detach.target_track
     combined = list(first_attach.vehicle_nos) + list(second_attach.vehicle_nos)
-    path_tracks = route_oracle.resolve_path_tracks(source_track, target_track)
+    attach_move = HookAction(
+        source_track=source_track,
+        target_track=source_track,
+        vehicle_nos=combined,
+        path_tracks=[source_track],
+        action_type="ATTACH",
+    )
+    try:
+        after_attach = _apply_move(
+            state=ReplayState.model_validate(pre_state.model_dump()),
+            move=attach_move,
+            plan_input=plan_input,
+            vehicle_by_no={vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles},
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    path_tracks = route_oracle.resolve_clear_path_tracks(
+        source_track,
+        target_track,
+        occupied_track_sequences=after_attach.track_sequences,
+        source_node=after_attach.loco_node,
+        target_node=route_oracle.order_end_node(target_track),
+    )
     if path_tracks is None:
         return None
     return [
-        HookAction(
-            source_track=source_track,
-            target_track=source_track,
-            vehicle_nos=combined,
-            path_tracks=[source_track],
-            action_type="ATTACH",
-        ),
+        attach_move,
         HookAction(
             source_track=source_track,
             target_track=target_track,
@@ -233,22 +203,25 @@ def _try_merge_adjacent_same_target_pairs(
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
     current: list[HookAction],
-    baseline_key: tuple,
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
+    prefix_states = _prefix_states(plan_input, initial_state, current)
     for index in range(0, len(current) - 3):
+        pre_state = prefix_states[index]
+        if pre_state is None:
+            continue
         replacement = _adjacent_same_target_pair_replacement(
             current=current,
             index=index,
+            plan_input=plan_input,
             route_oracle=route_oracle,
+            pre_state=pre_state,
         )
         if replacement is None:
             continue
         candidate = current[:index] + replacement + current[index + 4:]
         candidate_state = _simulate(plan_input, initial_state, candidate)
         if candidate_state is None:
-            continue
-        if _state_equivalence_key(candidate_state) != baseline_key:
             continue
         if not _verify_candidate(master, plan_input, initial_state, candidate):
             continue
@@ -260,7 +233,9 @@ def _adjacent_same_target_pair_replacement(
     *,
     current: list[HookAction],
     index: int,
+    plan_input: NormalizedPlanInput,
     route_oracle: RouteOracle,
+    pre_state: ReplayState,
 ) -> list[HookAction] | None:
     first_attach, first_detach, second_attach, second_detach = current[index : index + 4]
     if first_attach.action_type != "ATTACH" or second_attach.action_type != "ATTACH":
@@ -282,7 +257,29 @@ def _adjacent_same_target_pair_replacement(
 
     target_track = first_detach.target_track
     combined = list(second_attach.vehicle_nos) + list(first_attach.vehicle_nos)
-    path_tracks = route_oracle.resolve_path_tracks(first_attach.source_track, target_track)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    try:
+        after_attach = _apply_move(
+            state=ReplayState.model_validate(pre_state.model_dump()),
+            move=second_attach,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        after_attach = _apply_move(
+            state=after_attach,
+            move=first_attach,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    path_tracks = route_oracle.resolve_clear_path_tracks(
+        first_attach.source_track,
+        target_track,
+        occupied_track_sequences=after_attach.track_sequences,
+        source_node=after_attach.loco_node,
+        target_node=route_oracle.order_end_node(target_track),
+    )
     if path_tracks is None:
         return None
     return [
@@ -304,27 +301,30 @@ def _try_rebuild_single_source_window(
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
     current: list[HookAction],
-    baseline_key: tuple,
     max_window_size: int,
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
+    prefix_states = _prefix_states(plan_input, initial_state, current)
     for window_size in range(4, min(max_window_size, len(current)) + 1):
         for index in range(0, len(current) - window_size + 1):
+            pre_state = prefix_states[index]
+            post_state = prefix_states[index + window_size]
+            if pre_state is None or post_state is None:
+                continue
             replacement = _single_source_window_replacement(
                 plan_input=plan_input,
-                initial_state=initial_state,
                 current=current,
                 index=index,
                 window_size=window_size,
                 route_oracle=route_oracle,
+                pre_state=pre_state,
+                post_state=post_state,
             )
             if replacement is None or len(replacement) >= window_size:
                 continue
             candidate = current[:index] + replacement + current[index + window_size:]
             candidate_state = _simulate(plan_input, initial_state, candidate)
             if candidate_state is None:
-                continue
-            if _state_equivalence_key(candidate_state) != baseline_key:
                 continue
             if not _verify_candidate(master, plan_input, initial_state, candidate):
                 continue
@@ -335,33 +335,120 @@ def _try_rebuild_single_source_window(
 def _single_source_window_replacement(
     *,
     plan_input: NormalizedPlanInput,
-    initial_state: ReplayState,
     current: list[HookAction],
     index: int,
     window_size: int,
     route_oracle: RouteOracle,
+    pre_state: ReplayState,
+    post_state: ReplayState,
 ) -> list[HookAction] | None:
     window = current[index : index + window_size]
     first = window[0]
     if first.action_type != "ATTACH" or not first.vehicle_nos:
         return None
-    pre_state = _simulate(plan_input, initial_state, current[:index])
-    post_state = _simulate(plan_input, initial_state, current[: index + window_size])
-    if pre_state is None or post_state is None:
-        return None
     source_seq = pre_state.track_sequences.get(first.source_track, [])
-    moved = list(first.vehicle_nos)
-    if source_seq[: len(moved)] != moved:
+    if source_seq[: len(first.vehicle_nos)] != list(first.vehicle_nos):
         return None
-    if any(move.source_track == first.source_track and move.action_type == "ATTACH" for move in window[1:]):
-        return None
+    changed = _changed_vehicle_set(pre_state, post_state)
+    for moved in _single_source_moved_candidates(
+        source_seq=source_seq,
+        first=first,
+        window=window,
+        changed_vehicle_nos=changed,
+        plan_input=plan_input,
+        post_state=post_state,
+    ):
+        replacement = _single_source_replacement_for_moved(
+            moved=moved,
+            first=first,
+            plan_input=plan_input,
+            route_oracle=route_oracle,
+            pre_state=pre_state,
+            post_state=post_state,
+        )
+        if replacement is not None:
+            return replacement
+    return None
 
+
+def _single_source_moved_candidates(
+    *,
+    source_seq: list[str],
+    first: HookAction,
+    window: list[HookAction],
+    changed_vehicle_nos: set[str],
+    plan_input: NormalizedPlanInput,
+    post_state: ReplayState,
+) -> list[list[str]]:
+    candidates: list[list[str]] = []
+    first_moved = list(first.vehicle_nos)
+    has_later_same_source_attach = any(
+        move.source_track == first.source_track and move.action_type == "ATTACH"
+        for move in window[1:]
+    )
+    if not has_later_same_source_attach and set(first_moved) == changed_vehicle_nos:
+        candidates.append(first_moved)
+
+    if _is_promising_single_source_window(window):
+        prefix_moved = _changed_source_prefix(
+            source_seq=source_seq,
+            changed_vehicle_nos=changed_vehicle_nos,
+        )
+        if prefix_moved is not None and prefix_moved not in candidates:
+            candidates.append(prefix_moved)
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    return [
+        moved
+        for moved in candidates
+        if _moved_vehicles_have_final_non_staging_or_goal(
+            moved,
+            post_state=post_state,
+            vehicle_by_no=vehicle_by_no,
+            plan_input=plan_input,
+        )
+    ]
+
+
+def _moved_vehicles_have_final_non_staging_or_goal(
+    moved: list[str],
+    *,
+    post_state: ReplayState,
+    vehicle_by_no: dict[str, object],
+    plan_input: NormalizedPlanInput,
+) -> bool:
     final_track_by_vehicle = _vehicle_track_lookup(post_state)
     if any(vehicle_no not in final_track_by_vehicle for vehicle_no in moved):
-        return None
-    if set(moved) != _changed_vehicle_set(pre_state, post_state):
-        return None
+        return False
+    for vehicle_no in moved:
+        track_name = final_track_by_vehicle[vehicle_no]
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if (
+            track_name in STAGING_TRACKS
+            and (
+                vehicle is None
+                or not goal_is_satisfied(
+                    vehicle,
+                    track_name=track_name,
+                    state=post_state,
+                    plan_input=plan_input,
+                )
+            )
+        ):
+            return False
+    return True
 
+
+def _single_source_replacement_for_moved(
+    *,
+    moved: list[str],
+    first: HookAction,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle,
+    pre_state: ReplayState,
+    post_state: ReplayState,
+) -> list[HookAction] | None:
+    final_track_by_vehicle = _vehicle_track_lookup(post_state)
     detach_groups = _final_detach_groups(moved, final_track_by_vehicle)
     if detach_groups is None or not detach_groups:
         return None
@@ -375,23 +462,35 @@ def _single_source_window_replacement(
         )
     ]
     current_loco_track = first.source_track
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    replayed = ReplayState.model_validate(pre_state.model_dump())
+    try:
+        replayed = _apply_move(
+            state=replayed,
+            move=replacement[0],
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+    except Exception:  # noqa: BLE001
+        return None
     for target_track, vehicle_nos in detach_groups:
-        path_tracks = route_oracle.resolve_path_tracks(current_loco_track, target_track)
+        path_tracks = route_oracle.resolve_clear_path_tracks(
+            current_loco_track,
+            target_track,
+            occupied_track_sequences=replayed.track_sequences,
+            source_node=replayed.loco_node,
+            target_node=route_oracle.order_end_node(target_track),
+        )
         if path_tracks is None:
             return None
-        replacement.append(
-            HookAction(
-                source_track=current_loco_track,
-                target_track=target_track,
-                vehicle_nos=vehicle_nos,
-                path_tracks=path_tracks,
-                action_type="DETACH",
-            )
+        move = HookAction(
+            source_track=current_loco_track,
+            target_track=target_track,
+            vehicle_nos=vehicle_nos,
+            path_tracks=path_tracks,
+            action_type="DETACH",
         )
-        current_loco_track = target_track
-    replayed = pre_state
-    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
-    for move in replacement:
+        replacement.append(move)
         try:
             replayed = _apply_move(
                 state=replayed,
@@ -401,9 +500,47 @@ def _single_source_window_replacement(
             )
         except Exception:  # noqa: BLE001
             return None
+        current_loco_track = target_track
     if _state_equivalence_key(replayed) != _state_equivalence_key(post_state):
         return None
     return replacement
+
+
+def _is_promising_single_source_window(window: list[HookAction]) -> bool:
+    first = window[0]
+    stages_then_regrabs = any(
+        move.action_type == "DETACH" and move.target_track in STAGING_TRACKS
+        for move in window
+    ) and any(
+        move.action_type == "ATTACH" and move.source_track in STAGING_TRACKS
+        for move in window[1:]
+    )
+    splits_same_source = any(
+        move.action_type == "ATTACH" and move.source_track == first.source_track
+        for move in window[1:]
+    )
+    return stages_then_regrabs or splits_same_source
+
+
+def _changed_source_prefix(
+    *,
+    source_seq: list[str],
+    changed_vehicle_nos: set[str],
+) -> list[str] | None:
+    if not changed_vehicle_nos:
+        return None
+    positions = [
+        index
+        for index, vehicle_no in enumerate(source_seq)
+        if vehicle_no in changed_vehicle_nos
+    ]
+    if len(positions) != len(changed_vehicle_nos):
+        return None
+    prefix_size = max(positions) + 1
+    moved = source_seq[:prefix_size]
+    if set(moved) != changed_vehicle_nos:
+        return None
+    return list(moved)
 
 
 def _changed_vehicle_set(pre_state: ReplayState, post_state: ReplayState) -> set[str]:
@@ -443,6 +580,35 @@ def _final_detach_groups(
         groups.append((target, list(moved[start:index])))
         index = start
     return groups
+
+
+def _prefix_states(
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    plan: list[HookAction],
+) -> list[ReplayState | None]:
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    state: ReplayState | None = ReplayState.model_validate(initial_state.model_dump())
+    states: list[ReplayState | None] = [state]
+    for move in plan:
+        if state is None:
+            states.append(None)
+            continue
+        if move.action_type == "DETACH" and move.source_track != state.loco_track_name:
+            state = None
+            states.append(None)
+            continue
+        try:
+            state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+        except Exception:  # noqa: BLE001
+            state = None
+        states.append(state)
+    return states
 
 
 def _simulate(

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from fzed_shunting.domain.carry_order import remove_carried_tail_block
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_candidates_for_vehicle
+from fzed_shunting.domain.depot_spots import (
+    allocate_spots_for_block,
+    exact_spot_reservations,
+    spot_candidates_for_vehicle,
+)
+from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.goal_logic import goal_is_satisfied
 from fzed_shunting.solver.types import HookAction
@@ -42,8 +47,6 @@ def _locate_vehicle(state: ReplayState, vehicle_no: str) -> str:
 
 
 def _canonical_random_depot_vehicle_nos(plan_input: NormalizedPlanInput) -> frozenset[str]:
-    if any(vehicle.goal.target_mode == "SPOT" for vehicle in plan_input.vehicles):
-        return frozenset()
     return frozenset(
         vehicle.vehicle_no
         for vehicle in plan_input.vehicles
@@ -70,6 +73,13 @@ def _place_on_track(existing: list[str], new_vehicles: list[str]) -> list[str]:
     return list(new_vehicles) + existing
 
 
+def _order_end_node(track_code: str) -> str | None:
+    endpoints = TRACK_ENDPOINTS.get(track_code)
+    if not endpoints:
+        return None
+    return endpoints[0]
+
+
 def _apply_attach(
     *,
     state: ReplayState,
@@ -86,6 +96,7 @@ def _apply_attach(
     return ReplayState(
         track_sequences=next_track_sequences,
         loco_track_name=move.source_track,
+        loco_node=_order_end_node(move.source_track),
         weighed_vehicle_nos=set(state.weighed_vehicle_nos),
         spot_assignments=next_spot_assignments,
         loco_carry=state.loco_carry + tuple(move.vehicle_nos),
@@ -113,6 +124,7 @@ def _apply_detach(
         target_track=move.target_track,
         yard_mode=plan_input.yard_mode,
         occupied_spot_assignments=next_spot_assignments,
+        reserved_spot_codes=exact_spot_reservations(plan_input),
     )
     if new_spot_assignments is None:
         raise ValueError(
@@ -125,6 +137,7 @@ def _apply_detach(
     return ReplayState(
         track_sequences=next_track_sequences,
         loco_track_name=move.target_track,
+        loco_node=_order_end_node(move.target_track),
         weighed_vehicle_nos=next_weighed_vehicle_nos,
         spot_assignments=next_spot_assignments,
         loco_carry=next_carry,
@@ -143,12 +156,17 @@ def _state_key(
             if plan_input is not None
             else frozenset()
         )
+    reserved_spot_codes = (
+        exact_spot_reservations(plan_input)
+        if plan_input is not None
+        else frozenset()
+    )
     spot_items = tuple(
         (vehicle_no, spot_code)
         for vehicle_no, spot_code in sorted(state.spot_assignments.items())
         if not (
             vehicle_no in canonical_random_depot_vehicle_nos
-            and spot_code.isdigit()
+            and spot_code not in reserved_spot_codes
         )
     )
     return (
@@ -158,6 +176,7 @@ def _state_key(
             if seq
         ),
         state.loco_track_name,
+        state.loco_node,
         tuple(sorted(state.weighed_vehicle_nos)),
         spot_items,
         state.loco_carry,

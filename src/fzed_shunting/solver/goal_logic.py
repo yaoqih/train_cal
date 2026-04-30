@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block, spot_candidates_for_vehicle
+from fzed_shunting.domain.depot_spots import (
+    allocate_spots_for_block,
+    exact_spot_reservations,
+    spot_candidates_for_vehicle,
+)
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.verify.replay import ReplayState
 
@@ -27,6 +31,7 @@ def goal_can_use_fallback_now(
             target_track=track,
             yard_mode=plan_input.yard_mode,
             occupied_spot_assignments=occupied,
+            reserved_spot_codes=exact_spot_reservations(plan_input),
         ) is not None:
             return False
     return True
@@ -90,10 +95,18 @@ def goal_is_satisfied(
         return state.spot_assignments.get(vehicle.vehicle_no) == vehicle.goal.target_spot_code
     if vehicle.goal.target_area_code == "大库:RANDOM":
         assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, track_name, resolved_yard_mode)
+        return assigned_spot in spot_candidates_for_vehicle(
+            vehicle,
+            track_name,
+            resolved_yard_mode,
+        )
     if vehicle.goal.target_area_code in WORK_AREA_CODES:
         assigned_spot = state.spot_assignments.get(vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, track_name, resolved_yard_mode)
+        return assigned_spot in spot_candidates_for_vehicle(
+            vehicle,
+            track_name,
+            resolved_yard_mode,
+        )
     if vehicle.is_close_door and track_name == "存4北":
         final_seq = state.track_sequences.get("存4北", [])
         return vehicle.vehicle_no in final_seq and final_seq.index(vehicle.vehicle_no) >= 3

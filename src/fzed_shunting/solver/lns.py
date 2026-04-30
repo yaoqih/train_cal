@@ -137,7 +137,21 @@ def _improve_incumbent_result(
             start_state = snapshots[cut_index]
             if start_state.loco_carry:
                 continue
-            repair_input = _build_repair_plan_input(plan_input, start_state)
+            movable_vehicle_nos: set[str] = set()
+            if route_oracle is not None:
+                from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
+
+                route_blockage_plan = compute_route_blockage_plan(
+                    plan_input,
+                    start_state,
+                    route_oracle,
+                )
+                movable_vehicle_nos.update(route_blockage_plan.blocking_vehicle_nos)
+            repair_input = _build_repair_plan_input(
+                plan_input,
+                start_state,
+                movable_vehicle_nos=movable_vehicle_nos,
+            )
             per_call_budget = None
             if remaining is not None:
                 # Spread remaining time across expected remaining calls
@@ -363,7 +377,10 @@ def _plan_quality(
 def _build_repair_plan_input(
     plan_input: NormalizedPlanInput,
     snapshot: ReplayState,
+    *,
+    movable_vehicle_nos: set[str] | frozenset[str] | None = None,
 ) -> NormalizedPlanInput:
+    extra_movable_vehicle_nos = set(movable_vehicle_nos or set())
     reverse_spot_assignments = {
         spot_code: vehicle_no
         for vehicle_no, spot_code in snapshot.spot_assignments.items()
@@ -398,7 +415,11 @@ def _build_repair_plan_input(
             state=snapshot,
             plan_input=plan_input,
         )
-        if goal_satisfied and vehicle.vehicle_no not in movable_exact_spot_blockers:
+        if (
+            goal_satisfied
+            and vehicle.vehicle_no not in movable_exact_spot_blockers
+            and vehicle.vehicle_no not in extra_movable_vehicle_nos
+        ):
             frozen_goal = GoalSpec(
                 target_mode="TRACK",
                 target_track=current_track,
@@ -423,16 +444,28 @@ def _build_repair_plan_input(
     )
 
 
-def _spot_goal_satisfied(vehicle: NormalizedVehicle, snapshot: ReplayState) -> bool:
+def _spot_goal_satisfied(
+    vehicle: NormalizedVehicle,
+    snapshot: ReplayState,
+    plan_input: NormalizedPlanInput | None = None,
+) -> bool:
     assigned_spot = snapshot.spot_assignments.get(vehicle.vehicle_no)
     if vehicle.goal.target_mode == "SPOT":
         return assigned_spot == vehicle.goal.target_spot_code
     if vehicle.goal.target_area_code == "大库:RANDOM":
         current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, current_track, "NORMAL")
+        return assigned_spot in spot_candidates_for_vehicle(
+            vehicle,
+            current_track,
+            plan_input.yard_mode if plan_input is not None else "NORMAL",
+        )
     if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
         current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(vehicle, current_track, "NORMAL")
+        return assigned_spot in spot_candidates_for_vehicle(
+            vehicle,
+            current_track,
+            plan_input.yard_mode if plan_input is not None else "NORMAL",
+        )
     return True
 
 

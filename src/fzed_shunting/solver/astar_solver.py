@@ -61,6 +61,9 @@ BEAM_COMPLETE_SEED_MIN_BUDGET_RATIO = 0.20
 BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS = 100
 RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS = 8_000.0
 ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS = 20_000.0
+PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS = 20_000.0
+EARLY_ROUTE_RELEASE_COMPLETION_BUDGET_MS = 12_000.0
+EARLY_ROUTE_RELEASE_MIN_REMAINING_MS = 25_000.0
 LOCALIZED_RESUME_BUDGET_RATIO = 0.50
 LOCALIZED_RESUME_MIN_FULL_BEAM_MS = 500.0
 DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 4
@@ -68,6 +71,7 @@ RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC = 10
 RELAXED_RESCUE_MAX_FINAL_HEURISTIC = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
 NEAR_GOAL_PARTIAL_RESUME_MAX_BUDGET_MS = 60_000.0
 NEAR_GOAL_PARTIAL_RESUME_BUDGET_RATIO = 2.0 / 3.0
+MIN_CHILD_STAGE_BUDGET_MS = 1.0
 
 
 def solve_with_simple_astar(
@@ -173,21 +177,27 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        _ts = perf_counter()
-        elapsed_so_far_ms = (perf_counter() - started_at) * 1000
-        warm_budget = min(500.0, max(50.0, (time_budget_ms - elapsed_so_far_ms) * 0.05))
-        warm_result = _try_warm_start_completion(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            constructive_plan=constructive_seed.partial_plan,
-            master=master,
-            time_budget_ms=warm_budget,
-            enable_depot_late_scheduling=optimize_depot_late_in_search,
-            max_h=1,
-        )
-        if warm_result is not None:
-            constructive_seed = warm_result
-        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+        remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+        if remaining_ms is not None and remaining_ms > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            warm_budget = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                min(500.0, max(50.0, remaining_ms * 0.05)),
+            )
+            if warm_budget is not None and warm_budget > 0:
+                warm_result = _try_warm_start_completion(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    constructive_plan=constructive_seed.partial_plan,
+                    master=master,
+                    time_budget_ms=warm_budget,
+                    enable_depot_late_scheduling=optimize_depot_late_in_search,
+                    max_h=1,
+                )
+                if warm_result is not None:
+                    constructive_seed = warm_result
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Stage 0.6: partial-resume search. If constructive reached a later
     # empty-carry checkpoint but still stopped short of goal, continue search
@@ -199,24 +209,122 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        _ts = perf_counter()
-        elapsed_so_far_ms = (perf_counter() - started_at) * 1000
-        resume_budget = _partial_resume_budget_ms(
-            constructive_seed,
-            remaining_budget_ms=time_budget_ms - elapsed_so_far_ms,
-            max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+        remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+        if remaining_ms is not None and remaining_ms > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            route_blockage_pressure = _partial_route_blockage_pressure(
+                constructive_seed.partial_plan,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+            if (
+                route_blockage_pressure > 0
+                and remaining_ms >= EARLY_ROUTE_RELEASE_MIN_REMAINING_MS
+                and (_solver_result_final_heuristic(constructive_seed) or 0)
+                <= near_goal_partial_resume_max_final_heuristic
+            ):
+                early_route_tail_budget = min(
+                    EARLY_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+                    max(500.0, remaining_ms * 0.25),
+                )
+                route_tail_budget = _cap_child_stage_budget_ms(
+                    started_at,
+                    time_budget_ms,
+                    early_route_tail_budget,
+                )
+                if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
+                    route_tail_completion = _try_route_release_partial_completion(
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        partial_plan=constructive_seed.partial_plan,
+                        master=master,
+                        time_budget_ms=route_tail_budget,
+                    )
+                    if route_tail_completion is not None:
+                        constructive_seed = _shorter_complete_result(
+                            constructive_seed,
+                            route_tail_completion,
+                            plan_input=plan_input,
+                            initial_state=initial_state,
+                            master=master,
+                        )
+                remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+            resume_budget = _partial_resume_budget_ms(
+                constructive_seed,
+                remaining_budget_ms=remaining_ms or 0.0,
+                max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+            )
+            if (
+                route_blockage_pressure > 0
+                and remaining_ms is not None
+                and remaining_ms > PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS + 1_000.0
+            ):
+                reserve_budget = min(
+                    PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+                    max(5_000.0, remaining_ms * 0.25),
+                )
+                resume_budget = min(
+                    resume_budget,
+                    max(
+                        MIN_CHILD_STAGE_BUDGET_MS,
+                        remaining_ms - reserve_budget,
+                    ),
+                )
+            resume_budget = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                resume_budget,
+            )
+            if (
+                not constructive_seed.is_complete
+                and resume_budget is not None
+                and resume_budget > 0
+            ):
+                resume_result = _try_resume_partial_completion(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    constructive_plan=constructive_seed.partial_plan,
+                    master=master,
+                    time_budget_ms=resume_budget,
+                    enable_depot_late_scheduling=optimize_depot_late_in_search,
+                )
+                if resume_result is not None:
+                    constructive_seed = resume_result
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
+    if (
+        enable_constructive_seed
+        and enable_anytime_fallback
+        and solver_mode in {"exact", "beam"}
+        and constructive_seed is not None
+        and not constructive_seed.is_complete
+        and constructive_seed.partial_plan
+        and time_budget_ms is not None
+    ):
+        route_tail_budget = _cap_child_stage_budget_ms(
+            started_at,
+            time_budget_ms,
+            PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
         )
-        resume_result = _try_resume_partial_completion(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            constructive_plan=constructive_seed.partial_plan,
-            master=master,
-            time_budget_ms=resume_budget,
-            enable_depot_late_scheduling=optimize_depot_late_in_search,
-        )
-        if resume_result is not None:
-            constructive_seed = resume_result
-        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+        if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            route_tail_completion = _try_route_release_partial_completion(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                partial_plan=constructive_seed.partial_plan,
+                master=master,
+                time_budget_ms=route_tail_budget,
+            )
+            if route_tail_completion is not None:
+                constructive_seed = _shorter_complete_result(
+                    constructive_seed,
+                    route_tail_completion,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                )
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Stage 0.7: relaxed constructive rescue.  Strict anti-oscillation is a
     # better default for hook count, but some yard states need a late re-grab
@@ -232,51 +340,87 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        _ts = perf_counter()
-        relaxed_seed = _run_constructive_stage(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            master=master,
-            time_budget_ms=min(time_budget_ms, RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS),
-            enable_depot_late_scheduling=optimize_depot_late_in_search,
-            strict_staging_regrab=False,
-            budget_fraction=1.0,
+        relaxed_budget = _cap_child_stage_budget_ms(
+            started_at,
+            time_budget_ms,
+            RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS,
         )
-        if relaxed_seed is not None:
-            relaxed_candidate = relaxed_seed
-            relaxed_final_h = _solver_result_final_heuristic(relaxed_candidate)
-            if (
-                not relaxed_candidate.is_complete
-                and relaxed_candidate.partial_plan
-                and (
-                    relaxed_final_h is None
-                    or relaxed_final_h <= RELAXED_RESCUE_MAX_FINAL_HEURISTIC
+        if relaxed_budget is not None and relaxed_budget > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            relaxed_seed = _run_constructive_stage(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+                time_budget_ms=relaxed_budget,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
+                strict_staging_regrab=False,
+                budget_fraction=1.0,
+            )
+            if relaxed_seed is not None:
+                relaxed_candidate = relaxed_seed
+                relaxed_final_h = _solver_result_final_heuristic(relaxed_candidate)
+                if (
+                    not relaxed_candidate.is_complete
+                    and relaxed_candidate.partial_plan
+                    and (
+                        relaxed_final_h is None
+                        or relaxed_final_h <= max(
+                            RELAXED_RESCUE_MAX_FINAL_HEURISTIC,
+                            near_goal_partial_resume_max_final_heuristic,
+                        )
+                    )
+                ):
+                    relaxed_remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+                    if relaxed_remaining_ms is not None and relaxed_remaining_ms > 250:
+                        relaxed_resume_budget = _partial_resume_budget_ms(
+                            relaxed_candidate,
+                            remaining_budget_ms=relaxed_remaining_ms,
+                            max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+                        )
+                        relaxed_resume_budget = _cap_child_stage_budget_ms(
+                            started_at,
+                            time_budget_ms,
+                            relaxed_resume_budget,
+                        )
+                        relaxed_resume = _try_resume_partial_completion(
+                            plan_input=plan_input,
+                            initial_state=initial_state,
+                            constructive_plan=relaxed_candidate.partial_plan,
+                            master=master,
+                            time_budget_ms=relaxed_resume_budget,
+                            enable_depot_late_scheduling=optimize_depot_late_in_search,
+                        )
+                        if relaxed_resume is not None:
+                            relaxed_candidate = relaxed_resume
+                constructive_seed = _shorter_complete_result(
+                    constructive_seed,
+                    relaxed_candidate,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
                 )
-            ):
-                relaxed_remaining_ms = time_budget_ms - (perf_counter() - started_at) * 1000
-                if relaxed_remaining_ms > 250:
-                    relaxed_resume = _try_resume_partial_completion(
+                if (
+                    not constructive_seed.is_complete
+                    and relaxed_candidate.partial_plan
+                    and _partial_result_score(
+                        relaxed_candidate,
                         plan_input=plan_input,
                         initial_state=initial_state,
-                        constructive_plan=relaxed_candidate.partial_plan,
                         master=master,
-                        time_budget_ms=relaxed_remaining_ms,
-                        enable_depot_late_scheduling=optimize_depot_late_in_search,
                     )
-                    if relaxed_resume is not None:
-                        relaxed_candidate = relaxed_resume
-            constructive_seed = _shorter_complete_result(constructive_seed, relaxed_candidate)
-            if (
-                not constructive_seed.is_complete
-                and relaxed_candidate.partial_plan
-                and len(relaxed_candidate.partial_plan) > len(constructive_seed.partial_plan)
-            ):
-                constructive_seed = replace(
-                    constructive_seed,
-                    partial_plan=list(relaxed_candidate.partial_plan),
-                    partial_fallback_stage=relaxed_candidate.partial_fallback_stage,
-                )
-        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+                    < _partial_result_score(
+                        constructive_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                ):
+                    constructive_seed = replace(
+                        constructive_seed,
+                        partial_plan=list(relaxed_candidate.partial_plan),
+                        partial_fallback_stage=relaxed_candidate.partial_fallback_stage,
+                    )
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Stage 0.8: route-release constructive rescue. Some legal states are not
     # near-goal in the heuristic but are dominated by route blockers: staging
@@ -293,114 +437,190 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        _ts = perf_counter()
-        route_release_budget = min(
+        route_release_budget = _cap_child_stage_budget_ms(
+            started_at,
             time_budget_ms,
             ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS,
         )
-        route_release_seed = _run_constructive_stage(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            master=master,
-            time_budget_ms=route_release_budget,
-            enable_depot_late_scheduling=optimize_depot_late_in_search,
-            strict_staging_regrab=False,
-            route_release_bias=True,
-            budget_fraction=1.0,
-        )
-        if route_release_seed is not None:
-            if route_release_seed.is_complete:
-                route_release_seed = replace(
-                    route_release_seed,
-                    fallback_stage="constructive_route_release",
-                )
-            constructive_seed = _shorter_complete_result(
-                constructive_seed,
-                route_release_seed,
-            )
-            if (
-                not constructive_seed.is_complete
-                and route_release_seed.partial_plan
-                and len(route_release_seed.partial_plan) > len(constructive_seed.partial_plan)
-            ):
-                constructive_seed = replace(
-                    constructive_seed,
-                    partial_plan=list(route_release_seed.partial_plan),
-                    partial_fallback_stage=route_release_seed.partial_fallback_stage,
-                )
-        phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
-
-    result: SolverResult
-    if solver_mode == "lns":
-        _ts = perf_counter()
-        result = _solve_with_lns_result(
-            plan_input=plan_input,
-            initial_state=initial_state,
-            master=master,
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width,
-            debug_stats=debug_stats,
-            repair_passes=4,
-            solve_search_result=_solve_search_result,
-            enable_depot_late_scheduling=optimize_depot_late_in_search,
-        )
-        phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
-    else:
-        effective_heuristic_weight = heuristic_weight
-        exact_time_budget_ms: float | None = time_budget_ms
-        if (
-            solver_mode == "exact"
-            and enable_anytime_fallback
-            and time_budget_ms is not None
-        ):
-            exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
-        elif (
-            solver_mode == "beam"
-            and enable_anytime_fallback
-            and time_budget_ms is not None
-            and constructive_seed is not None
-            and constructive_seed.is_complete
-        ):
-            # Beam is the native primary search, so partial constructive cases
-            # keep the full budget.  Once constructive already has a valid
-            # short plan, beam is only a cheap optimiser; for long seeds it is
-            # the main hook-count compressor and must keep enough budget.
-            exact_time_budget_ms = _beam_complete_seed_budget_ms(
-                time_budget_ms=time_budget_ms,
-                constructive_seed=constructive_seed,
-            )
-        _ts = perf_counter()
-        try:
-            search_result = _solve_search_result(
+        if route_release_budget is not None and route_release_budget > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            route_release_seed = _run_constructive_stage(
                 plan_input=plan_input,
                 initial_state=initial_state,
                 master=master,
-                solver_mode=solver_mode,
-                heuristic_weight=effective_heuristic_weight,
+                time_budget_ms=route_release_budget,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
+                strict_staging_regrab=False,
+                route_release_bias=True,
+                budget_fraction=1.0,
+            )
+            if route_release_seed is not None:
+                if route_release_seed.is_complete:
+                    route_release_seed = replace(
+                        route_release_seed,
+                        fallback_stage="constructive_route_release",
+                    )
+                elif route_release_seed.partial_plan:
+                    route_release_remaining_ms = _remaining_wall_budget_ms(
+                        started_at,
+                        time_budget_ms,
+                    )
+                    if route_release_remaining_ms is not None and route_release_remaining_ms > 250:
+                        route_release_resume_budget = _partial_resume_budget_ms(
+                            route_release_seed,
+                            remaining_budget_ms=route_release_remaining_ms,
+                            max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+                        )
+                        route_release_resume_budget = _cap_child_stage_budget_ms(
+                            started_at,
+                            time_budget_ms,
+                            route_release_resume_budget,
+                        )
+                        route_release_resume = _try_resume_partial_completion(
+                            plan_input=plan_input,
+                            initial_state=initial_state,
+                            constructive_plan=route_release_seed.partial_plan,
+                            master=master,
+                            time_budget_ms=route_release_resume_budget,
+                            enable_depot_late_scheduling=optimize_depot_late_in_search,
+                        )
+                        if route_release_resume is not None:
+                            route_release_seed = route_release_resume
+                constructive_seed = _shorter_complete_result(
+                    constructive_seed,
+                    route_release_seed,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                )
+                if (
+                    not constructive_seed.is_complete
+                    and route_release_seed.partial_plan
+                    and _partial_result_score(
+                        route_release_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                    < _partial_result_score(
+                        constructive_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                ):
+                    constructive_seed = replace(
+                        constructive_seed,
+                        partial_plan=list(route_release_seed.partial_plan),
+                        partial_fallback_stage=route_release_seed.partial_fallback_stage,
+                    )
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+
+    result: SolverResult
+    if solver_mode == "lns":
+        lns_budget_ms = _cap_child_stage_budget_ms(started_at, time_budget_ms, time_budget_ms)
+        if lns_budget_ms is not None and lns_budget_ms <= 0 and constructive_seed is not None:
+            result = constructive_seed
+        else:
+            _ts = perf_counter()
+            result = _solve_with_lns_result(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+                heuristic_weight=heuristic_weight,
                 beam_width=beam_width,
                 debug_stats=debug_stats,
-                budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+                repair_passes=4,
+                solve_search_result=_solve_search_result,
                 enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
-            result = _shorter_complete_result(constructive_seed, search_result)
-        except ValueError:
-            if constructive_seed is None:
-                # No seed to fall back on; preserve the legacy "no solution" signal.
-                raise
-            # Constructive seed guarantees SLA — suppress raise, continue chain.
-            result = SolverResult(
-                plan=[],
-                expanded_nodes=0,
-                generated_nodes=0,
-                closed_nodes=0,
-                elapsed_ms=(perf_counter() - started_at) * 1000,
-                is_complete=False,
-                is_proven_optimal=False,
-                fallback_stage=solver_mode,
-                debug_stats=debug_stats,
+            phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
+    else:
+        effective_heuristic_weight = heuristic_weight
+        if _should_skip_primary_after_complete_rescue(
+            solver_mode=solver_mode,
+            constructive_seed=constructive_seed,
+        ):
+            result = constructive_seed  # type: ignore[assignment]
+        else:
+            exact_time_budget_ms: float | None = time_budget_ms
+            if (
+                solver_mode == "exact"
+                and enable_anytime_fallback
+                and time_budget_ms is not None
+            ):
+                exact_time_budget_ms = max(1.0, time_budget_ms * 0.20)
+            elif (
+                solver_mode == "beam"
+                and enable_anytime_fallback
+                and time_budget_ms is not None
+                and constructive_seed is not None
+                and constructive_seed.is_complete
+            ):
+                # Beam is the native primary search, so partial constructive cases
+                # keep the full budget.  Once constructive already has a valid
+                # short plan, beam is only a cheap optimiser; for long seeds it is
+                # the main hook-count compressor and must keep enough budget.
+                exact_time_budget_ms = _beam_complete_seed_budget_ms(
+                    time_budget_ms=time_budget_ms,
+                    constructive_seed=constructive_seed,
+                )
+            exact_time_budget_ms = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                exact_time_budget_ms,
             )
-        phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
-        if solver_mode == "exact" and enable_anytime_fallback and not result.is_proven_optimal:
+            if exact_time_budget_ms is not None and exact_time_budget_ms <= 0:
+                result = constructive_seed or _empty_budget_result(
+                    solver_mode=solver_mode,
+                    started_at=started_at,
+                    debug_stats=debug_stats,
+                )
+            else:
+                _ts = perf_counter()
+                try:
+                    search_result = _solve_search_result(
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                        solver_mode=solver_mode,
+                        heuristic_weight=effective_heuristic_weight,
+                        beam_width=beam_width,
+                        debug_stats=debug_stats,
+                        budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
+                        enable_depot_late_scheduling=optimize_depot_late_in_search,
+                        enable_structural_diversity=solver_mode == "beam",
+                    )
+                    result = _shorter_complete_result(
+                        constructive_seed,
+                        search_result,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                except ValueError:
+                    if constructive_seed is None:
+                        # No seed to fall back on; preserve the legacy "no solution" signal.
+                        raise
+                    # Constructive seed guarantees SLA — suppress raise, continue chain.
+                    result = SolverResult(
+                        plan=[],
+                        expanded_nodes=0,
+                        generated_nodes=0,
+                        closed_nodes=0,
+                        elapsed_ms=(perf_counter() - started_at) * 1000,
+                        is_complete=False,
+                        is_proven_optimal=False,
+                        fallback_stage=solver_mode,
+                        debug_stats=debug_stats,
+                    )
+                phase_timings["exact_ms"] = (perf_counter() - _ts) * 1000
+        if (
+            solver_mode == "exact"
+            and enable_anytime_fallback
+            and not result.is_proven_optimal
+            and _has_child_stage_budget(started_at, time_budget_ms)
+        ):
             _ts = perf_counter()
             chain_incumbent = result
             if (
@@ -434,16 +654,29 @@ def solve_with_simple_astar_result(
                 solve_search_result=_solve_search_result,
                 enable_depot_late_scheduling=optimize_depot_late_in_search,
             )
-            result = _shorter_complete_result(result, chain_result)
+            result = _shorter_complete_result(
+                result,
+                chain_result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
             phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
-        if solver_mode == "beam" and beam_width is not None:
+        if (
+            solver_mode == "beam"
+            and beam_width is not None
+            and not _should_skip_primary_after_complete_rescue(
+                solver_mode=solver_mode,
+                constructive_seed=constructive_seed,
+            )
+            and _has_child_stage_budget(started_at, time_budget_ms)
+        ):
             _ts = perf_counter()
             improved = result
-            _lns_remaining_ms = (
-                max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000)
-                if time_budget_ms is not None else None
-            )
+            _lns_remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
             for _ in range(BEAM_POST_REPAIR_MAX_ROUNDS):
+                if _lns_remaining_ms is not None and _lns_remaining_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+                    break
                 candidate = _improve_incumbent_result(
                     plan_input=plan_input,
                     initial_state=initial_state,
@@ -466,13 +699,18 @@ def solve_with_simple_astar_result(
                 ):
                     break
                 improved = candidate
+                _lns_remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
             result = improved
             phase_timings["lns_ms"] = (perf_counter() - _ts) * 1000
             # If beam search found no plan, run the anytime fallback chain.
             # When the constructive seed is partial, pass an empty incumbent so
             # the chain's early-exit guard (`if current.plan: break`) doesn't
             # short-circuit immediately.
-            if not result.is_complete and enable_anytime_fallback:
+            if (
+                not result.is_complete
+                and enable_anytime_fallback
+                and _has_child_stage_budget(started_at, time_budget_ms)
+            ):
                 _ts = perf_counter()
                 chain_incumbent = (
                     SolverResult(
@@ -490,7 +728,7 @@ def solve_with_simple_astar_result(
                     and not constructive_seed.is_complete
                     else (constructive_seed if constructive_seed is not None else result)
                 )
-                result = _anytime_run_fallback_chain(
+                chain_result = _anytime_run_fallback_chain(
                     plan_input=plan_input,
                     initial_state=initial_state,
                     master=master,
@@ -504,17 +742,69 @@ def solve_with_simple_astar_result(
                     solve_search_result=_solve_search_result,
                     enable_depot_late_scheduling=optimize_depot_late_in_search,
                 )
+                result = _shorter_complete_result(
+                    result,
+                    chain_result,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                )
                 phase_timings["anytime_ms"] = (perf_counter() - _ts) * 1000
 
     if not result.is_complete and constructive_seed is not None:
         if constructive_seed.is_complete:
             result = constructive_seed
-        elif constructive_seed.partial_plan:
+        elif (
+            constructive_seed.partial_plan
+            and _partial_result_score(
+                constructive_seed,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+            < _partial_result_score(
+                result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+        ):
             result = replace(
                 result,
                 partial_plan=list(constructive_seed.partial_plan),
                 partial_fallback_stage=constructive_seed.partial_fallback_stage,
+                debug_stats=constructive_seed.debug_stats,
             )
+
+    if (
+        enable_anytime_fallback
+        and not result.is_complete
+        and result.partial_plan
+        and _has_child_stage_budget(started_at, time_budget_ms)
+    ):
+        route_tail_budget = _cap_child_stage_budget_ms(
+            started_at,
+            time_budget_ms,
+            PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+        )
+        if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
+            _ts = perf_counter()
+            route_tail_completion = _try_route_release_partial_completion(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                partial_plan=result.partial_plan,
+                master=master,
+                time_budget_ms=route_tail_budget,
+            )
+            if route_tail_completion is not None:
+                result = _shorter_complete_result(
+                    result,
+                    route_tail_completion,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    master=master,
+                )
+            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Post-search LNS polish: on fallback-stage plans (non-exact), spend any
     # remaining budget compressing hook count via destroy/repair. Exact plans
@@ -646,16 +936,17 @@ def solve_with_simple_astar_result(
         )
         phase_timings["verify_ms"] = (perf_counter() - _ts) * 1000
 
+    total_elapsed_ms = (perf_counter() - started_at) * 1000
     telemetry = _build_telemetry(
         plan_input=plan_input,
         result=result,
         phase_timings=phase_timings,
-        total_ms=(perf_counter() - started_at) * 1000,
+        total_ms=total_elapsed_ms,
         time_budget_ms=time_budget_ms,
         node_budget=node_budget,
     )
     emit_telemetry(telemetry)
-    return replace(result, telemetry=telemetry)
+    return replace(result, elapsed_ms=total_elapsed_ms, telemetry=telemetry)
 
 
 def _compress_complete_plan(
@@ -819,6 +1110,64 @@ def _beam_complete_seed_budget_ms(
     return min(time_budget_ms, max(1.0, time_budget_ms * ratio))
 
 
+def _should_skip_primary_after_complete_rescue(
+    *,
+    solver_mode: str,
+    constructive_seed: SolverResult | None,
+) -> bool:
+    if solver_mode != "beam" or constructive_seed is None or not constructive_seed.is_complete:
+        return False
+    return constructive_seed.fallback_stage in {
+        "constructive_partial_resume",
+        "constructive_warm_start",
+        "constructive_route_release",
+        "constructive_route_release_tail",
+    }
+
+
+def _remaining_wall_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:
+    if time_budget_ms is None:
+        return None
+    return max(0.0, time_budget_ms - (perf_counter() - started_at) * 1000)
+
+
+def _cap_child_stage_budget_ms(
+    started_at: float,
+    time_budget_ms: float | None,
+    requested_budget_ms: float | None,
+) -> float | None:
+    remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+    if remaining_ms is None:
+        return requested_budget_ms
+    if requested_budget_ms is None:
+        return remaining_ms
+    return min(max(0.0, requested_budget_ms), remaining_ms)
+
+
+def _has_child_stage_budget(started_at: float, time_budget_ms: float | None) -> bool:
+    remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+    return remaining_ms is None or remaining_ms > MIN_CHILD_STAGE_BUDGET_MS
+
+
+def _empty_budget_result(
+    *,
+    solver_mode: str,
+    started_at: float,
+    debug_stats: dict[str, Any] | None,
+) -> SolverResult:
+    return SolverResult(
+        plan=[],
+        expanded_nodes=0,
+        generated_nodes=0,
+        closed_nodes=0,
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+        is_complete=False,
+        is_proven_optimal=False,
+        fallback_stage=solver_mode,
+        debug_stats=debug_stats,
+    )
+
+
 def _partial_resume_budget_ms(
     seed: SolverResult,
     *,
@@ -838,6 +1187,10 @@ def _partial_resume_budget_ms(
 def _shorter_complete_result(
     incumbent: SolverResult | None,
     candidate: SolverResult | None,
+    *,
+    plan_input: NormalizedPlanInput | None = None,
+    initial_state: ReplayState | None = None,
+    master: MasterData | None = None,
 ) -> SolverResult:
     if candidate is None:
         if incumbent is None:
@@ -846,6 +1199,18 @@ def _shorter_complete_result(
     if incumbent is None:
         return candidate
     if not candidate.is_complete:
+        if not incumbent.is_complete and _partial_result_score(
+            candidate,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+        ) < _partial_result_score(
+            incumbent,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+        ):
+            return candidate
         return incumbent
     if not incumbent.is_complete:
         return candidate
@@ -856,6 +1221,69 @@ def _shorter_complete_result(
     ):
         return candidate
     return incumbent
+
+
+def _partial_result_score(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput | None = None,
+    initial_state: ReplayState | None = None,
+    master: MasterData | None = None,
+) -> tuple[int, int, int, int, int, int]:
+    stats = result.debug_stats or {}
+    structural = stats.get("partial_structural_metrics") or {}
+    route_blockage = stats.get("partial_route_blockage_plan") or {}
+    if (
+        result.partial_plan
+        and (not structural or not route_blockage)
+        and plan_input is not None
+        and initial_state is not None
+    ):
+        final_state = _replay_solver_moves(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            plan=result.partial_plan,
+        )
+        if final_state is not None:
+            if not structural:
+                structural = compute_structural_metrics(plan_input, final_state).to_dict()
+            if not route_blockage and master is not None:
+                route_blockage = compute_route_blockage_plan(
+                    plan_input,
+                    final_state,
+                    RouteOracle(master),
+                ).to_dict()
+    unfinished = _optional_int(structural.get("unfinished_count"))
+    blockage = _optional_int(route_blockage.get("total_blockage_pressure"))
+    staging_debt = _optional_int(structural.get("staging_debt_count"))
+    capacity_overflow = _optional_int(structural.get("capacity_overflow_track_count"))
+    return (
+        unfinished if unfinished is not None else 10**9,
+        blockage if blockage is not None else 10**9,
+        staging_debt if staging_debt is not None else 10**9,
+        capacity_overflow if capacity_overflow is not None else 10**9,
+        -len(result.partial_plan),
+        _stage_rank(result.partial_fallback_stage or result.fallback_stage),
+    )
+
+
+def _stage_rank(stage: str | None) -> int:
+    if stage is None:
+        return 10
+    if "beam" in stage:
+        return 0
+    if "constructive" in stage:
+        return 1
+    return 5
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _solver_result_final_heuristic(result: SolverResult) -> float | None:
@@ -1041,6 +1469,7 @@ def _try_resume_partial_completion(
 
     if not constructive_plan:
         return None
+    started_at = perf_counter()
     vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
     state = initial_state
     resumed_prefix: list[HookAction] = []
@@ -1063,26 +1492,17 @@ def _try_resume_partial_completion(
     if not checkpoints:
         return None
 
-    last_checkpoint = checkpoints[-1]
-    last_result = _try_resume_from_checkpoint(
-        plan_input=plan_input,
-        checkpoint_prefix=last_checkpoint[2],
-        checkpoint_state=last_checkpoint[3],
-        master=master,
-        time_budget_ms=time_budget_ms,
-        enable_depot_late_scheduling=enable_depot_late_scheduling,
-    )
-    if last_result is not None:
-        return last_result
-
     ranked_checkpoints = [
         checkpoint
         for checkpoint in sorted(checkpoints)[:PARTIAL_RESUME_MAX_CHECKPOINTS]
-        if checkpoint is not last_checkpoint
     ]
-    per_checkpoint_budget = max(250.0, time_budget_ms / max(1, len(ranked_checkpoints)))
-
-    for _unfinished_count, _negative_prefix_len, checkpoint_prefix, checkpoint_state in ranked_checkpoints:
+    best_partial: SolverResult | None = None
+    for index, (_unfinished_count, _negative_prefix_len, checkpoint_prefix, checkpoint_state) in enumerate(ranked_checkpoints):
+        remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if remaining_budget_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+            break
+        remaining_attempts = len(ranked_checkpoints) - index
+        per_checkpoint_budget = remaining_budget_ms / max(1, remaining_attempts)
         checkpoint_result = _try_resume_from_checkpoint(
             plan_input=plan_input,
             checkpoint_prefix=checkpoint_prefix,
@@ -1091,9 +1511,27 @@ def _try_resume_partial_completion(
             time_budget_ms=per_checkpoint_budget,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
-        if checkpoint_result is not None:
+        if checkpoint_result is None:
+            continue
+        if checkpoint_result.is_complete:
             return checkpoint_result
-    return None
+        if checkpoint_result.partial_plan and (
+            best_partial is None
+            or _partial_result_score(
+                checkpoint_result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+            < _partial_result_score(
+                best_partial,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+        ):
+            best_partial = checkpoint_result
+    return best_partial
 
 
 def _try_resume_from_checkpoint(
@@ -1135,8 +1573,24 @@ def _try_resume_from_checkpoint(
             )
         except ValueError:
             localized_completion = None
-    if localized_completion is None or not localized_completion.is_complete:
+    if localized_completion is None:
         return None
+    if not localized_completion.is_complete:
+        if not localized_completion.partial_plan:
+            return None
+        return SolverResult(
+            plan=[],
+            expanded_nodes=localized_completion.expanded_nodes,
+            generated_nodes=localized_completion.generated_nodes,
+            closed_nodes=localized_completion.closed_nodes,
+            elapsed_ms=localized_completion.elapsed_ms,
+            is_complete=False,
+            is_proven_optimal=False,
+            fallback_stage="constructive_partial_resume",
+            partial_plan=checkpoint_prefix + list(localized_completion.partial_plan),
+            partial_fallback_stage="constructive_partial_resume",
+            debug_stats=localized_completion.debug_stats,
+        )
     return SolverResult(
         plan=checkpoint_prefix + list(localized_completion.plan),
         expanded_nodes=localized_completion.expanded_nodes,
@@ -1148,6 +1602,117 @@ def _try_resume_from_checkpoint(
         fallback_stage="constructive_partial_resume",
         debug_stats=localized_completion.debug_stats,
     )
+
+
+def _try_route_release_partial_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    partial_plan: list[HookAction],
+    master: MasterData | None,
+    time_budget_ms: float,
+) -> SolverResult | None:
+    if master is None or not partial_plan:
+        return None
+    from fzed_shunting.io.normalize_input import NormalizedVehicle
+    from fzed_shunting.solver.constructive import solve_constructive
+
+    vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
+    state = initial_state
+    completion_prefix: list[HookAction] = []
+    completion_state: ReplayState | None = None
+    try:
+        replayed_prefix: list[HookAction] = []
+        for move in partial_plan:
+            state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+            replayed_prefix.append(move)
+            if not state.loco_carry and not _is_goal(plan_input, state):
+                completion_prefix = list(replayed_prefix)
+                completion_state = state
+    except Exception:  # noqa: BLE001
+        return None
+    if completion_state is None:
+        return None
+
+    route_oracle = RouteOracle(master)
+    route_blockage_plan = compute_route_blockage_plan(
+        plan_input,
+        completion_state,
+        route_oracle,
+    )
+    if route_blockage_plan.total_blockage_pressure <= 0:
+        return None
+
+    try:
+        completion = solve_constructive(
+            plan_input,
+            completion_state,
+            master=master,
+            max_iterations=1500,
+            time_budget_ms=time_budget_ms,
+            strict_staging_regrab=False,
+            route_release_bias=True,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not completion.reached_goal:
+        return None
+    combined_plan = list(completion_prefix) + list(completion.plan)
+    result = SolverResult(
+        plan=combined_plan,
+        expanded_nodes=completion.iterations,
+        generated_nodes=completion.iterations,
+        closed_nodes=0,
+        elapsed_ms=completion.elapsed_ms,
+        is_complete=True,
+        is_proven_optimal=False,
+        fallback_stage="constructive_route_release_tail",
+        debug_stats=dict(completion.debug_stats or {}),
+    )
+    try:
+        return _attach_verification(
+            result,
+            plan_input=plan_input,
+            master=master,
+            initial_state=initial_state,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _partial_route_blockage_pressure(
+    partial_plan: list[HookAction],
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+) -> int:
+    if master is None or not partial_plan:
+        return 0
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    state = initial_state
+    try:
+        for move in partial_plan:
+            state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+    except Exception:  # noqa: BLE001
+        return 0
+    if state.loco_carry:
+        return 0
+    return compute_route_blockage_plan(
+        plan_input,
+        state,
+        RouteOracle(master),
+    ).total_blockage_pressure
 
 
 def _try_localized_resume_completion(
@@ -1175,7 +1740,19 @@ def _try_localized_resume_completion(
     if purity.unfinished_count > LOCALIZED_RESUME_MAX_UNFINISHED:
         return None
 
-    localized_input = _build_repair_plan_input(plan_input, initial_state)
+    movable_vehicle_nos: set[str] = set()
+    if master is not None:
+        route_blockage_plan = compute_route_blockage_plan(
+            plan_input,
+            initial_state,
+            RouteOracle(master),
+        )
+        movable_vehicle_nos.update(route_blockage_plan.blocking_vehicle_nos)
+    localized_input = _build_repair_plan_input(
+        plan_input,
+        initial_state,
+        movable_vehicle_nos=movable_vehicle_nos,
+    )
     exact_completion: SolverResult | None = None
     if purity.unfinished_count <= 2:
         exact_budget_ms = min(5_000.0, max(500.0, time_budget_ms * 0.5))

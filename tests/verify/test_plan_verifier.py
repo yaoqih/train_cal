@@ -421,7 +421,7 @@ def test_plan_verifier_rejects_hook_with_three_heavy_vehicles():
     assert any("重车" in error for error in report.errors)
 
 
-def test_plan_verifier_accepts_cun4nan_as_temporary_staging_not_final_goal():
+def test_plan_verifier_rejects_cun4nan_staging_when_source_remainder_blocks_route():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -512,8 +512,10 @@ def test_plan_verifier_accepts_cun4nan_as_temporary_staging_not_final_goal():
         ],
     )
 
-    assert report.is_valid is True
-    assert report.errors == []
+    assert report.is_valid is False
+    hook2 = next(item for item in report.hook_reports if item.hook_no == 2)
+    assert hook2.blocking_tracks == ["存5北"]
+    assert any("interference" in error.lower() for error in hook2.errors)
 
 
 def test_plan_verifier_rejects_heavy_equivalent_and_l1_overflow_together():

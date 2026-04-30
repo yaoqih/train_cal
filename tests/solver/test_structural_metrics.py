@@ -113,6 +113,22 @@ def test_structural_metrics_counts_front_blocker_pressure():
     assert metrics.front_blocker_by_track == {"存5北": 1}
 
 
+def test_structural_metrics_counts_satisfied_front_vehicle_blocking_unfinished_tail():
+    normalized, initial = _normalize(
+        _payload(
+            [
+                _vehicle("DONE", "存5北", "存5北", order=1),
+                _vehicle("SEEK", "存5北", "机库", order=2),
+            ]
+        )
+    )
+
+    metrics = compute_structural_metrics(normalized, initial)
+
+    assert metrics.front_blocker_count == 1
+    assert metrics.front_blocker_by_track == {"存5北": 1}
+
+
 def test_structural_metrics_counts_goal_track_blockers_and_capacity_debt():
     normalized, initial = _normalize(
         _payload(
@@ -391,4 +407,3 @@ def test_random_depot_candidate_targets_prefer_less_loaded_same_preference_track
     targets = _candidate_targets(["R"], normalized, state, vehicle_by_no)
 
     assert targets.index("修2库内") < targets.index("修1库内")
-

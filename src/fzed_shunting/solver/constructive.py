@@ -44,8 +44,10 @@ from fzed_shunting.solver.route_blockage import (
     RouteBlockagePlan,
     compute_route_blockage_plan,
     route_blockage_release_score,
+    route_release_continuation_bonus,
+    route_release_focus_after_move,
 )
-from fzed_shunting.solver.state import _state_key
+from fzed_shunting.solver.state import _is_goal, _state_key
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
@@ -259,6 +261,9 @@ def _greedy_forward(
     initial_key = _state_key(state, plan_input)
     recent_state_keys.append(initial_key)
     recent_state_key_set.add(initial_key)
+    route_release_focus_tracks: frozenset[str] = frozenset()
+    route_release_focus_bonus = 0
+    route_release_focus_ttl = 0
     stats: dict[str, int] = {
         "tier0_goal_detach": 0,
         "tier1_attach_progress": 0,
@@ -296,6 +301,58 @@ def _greedy_forward(
             stuck_reason=f"{stuck_reason}; rewound to empty-carry checkpoint",
             final_heuristic=last_safe_heuristic,
         )
+
+    def _has_forced_attach_horizon_drop(probe_state: ReplayState) -> bool:
+        if probe_state.loco_carry:
+            return False
+        base_heuristic = state_heuristic(probe_state)
+        first_moves = generate_real_hook_moves(
+            plan_input,
+            probe_state,
+            master=master,
+            route_oracle=route_oracle,
+        )
+        if not first_moves or any(move.action_type != "ATTACH" for move in first_moves):
+            return False
+        if route_release_bias and route_oracle is not None:
+            route_blockage_plan = compute_route_blockage_plan(
+                plan_input,
+                probe_state,
+                route_oracle,
+            )
+            if any(
+                _route_blockage_release_score(
+                    move=first_move,
+                    route_blockage_plan=route_blockage_plan,
+                )
+                > 0
+                for first_move in first_moves
+            ):
+                return True
+        for first_move in first_moves:
+            first_state = _apply_move(
+                state=probe_state,
+                move=first_move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+            if state_heuristic(first_state) < base_heuristic:
+                return True
+            for second_move in generate_real_hook_moves(
+                plan_input,
+                first_state,
+                master=master,
+                route_oracle=route_oracle,
+            ):
+                second_state = _apply_move(
+                    state=first_state,
+                    move=second_move,
+                    plan_input=plan_input,
+                    vehicle_by_no=vehicle_by_no,
+                )
+                if state_heuristic(second_state) < base_heuristic:
+                    return True
+        return False
 
     for iteration in range(max_iterations):
         if _is_goal(plan_input, state):
@@ -345,14 +402,13 @@ def _greedy_forward(
             for track, seq in state.track_sequences.items()
             if seq
         }
-        scored: list[tuple[tuple, int, HookAction, bool]] = []
+        scored: list[tuple[tuple, int, HookAction, bool, bool]] = []
         current_heuristic = state_heuristic(state)
         route_blockage_plan = (
             compute_route_blockage_plan(
                 plan_input,
                 state,
                 route_oracle,
-                blocked_source_tracks=_route_blockage_focus_source_tracks(state),
             )
             if route_release_bias
             else None
@@ -365,6 +421,7 @@ def _greedy_forward(
                 vehicle_by_no=vehicle_by_no,
             )
             next_heuristic = state_heuristic(next_state)
+            repeats_recent_state = _state_key(next_state, plan_input) in recent_state_key_set
             score, tier = _score_native_move(
                 move=move,
                 state=state,
@@ -376,17 +433,28 @@ def _greedy_forward(
                 goal_tracks_needed=goal_tracks_needed,
                 satisfied_by_track=satisfied_by_track,
                 recent_moves=recent_moves,
-                repeats_recent_state=_state_key(next_state, plan_input) in recent_state_key_set,
+                repeats_recent_state=repeats_recent_state,
                 strict_staging_regrab=strict_staging_regrab,
                 route_blockage_plan=route_blockage_plan,
+                route_oracle=route_oracle,
+                route_blockage_parking_pressure=_route_blockage_parking_pressure(
+                    move=move,
+                    state=state,
+                    next_state=next_state,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                ),
+                route_release_focus_tracks=route_release_focus_tracks
+                if route_release_focus_ttl > 0
+                else frozenset(),
+                route_release_focus_bonus=route_release_focus_bonus,
+                defer_extra_attach_for_satisfied_carry=route_release_bias,
             )
             is_inverse = _is_inverse_of_recent(move, recent_moves)
-            scored.append((score, tier, move, is_inverse))
+            scored.append((score, tier, move, is_inverse, repeats_recent_state))
         scored.sort(key=lambda entry: entry[0])
 
-        # Apply non-inverse preference to the pool (retain existing behavior).
-        non_inverse_pool = [entry for entry in scored if not entry[3]]
-        pool = non_inverse_pool if non_inverse_pool else scored
+        pool = _candidate_selection_pool(scored)
 
         step_idx = len(plan)
         alt_idx = alternatives.get(step_idx, 0)
@@ -397,7 +465,7 @@ def _greedy_forward(
                 final_heuristic=state_heuristic(state),
             )
 
-        chosen_score, chosen_tier, chosen_move, _is_inv = pool[alt_idx]
+        chosen_score, chosen_tier, chosen_move, _is_inv, _repeats = pool[alt_idx]
 
         tier_key = f"tier{chosen_tier}_" + _TIER_NAMES[min(chosen_tier, 6)]
         stats[tier_key] = stats.get(tier_key, 0) + 1
@@ -407,6 +475,17 @@ def _greedy_forward(
             move=chosen_move,
             plan_input=plan_input,
             vehicle_by_no=vehicle_by_no,
+        )
+        (
+            route_release_focus_tracks,
+            route_release_focus_bonus,
+            route_release_focus_ttl,
+        ) = route_release_focus_after_move(
+            prior_focus_tracks=route_release_focus_tracks,
+            prior_focus_bonus=route_release_focus_bonus,
+            prior_focus_ttl=route_release_focus_ttl,
+            move=chosen_move,
+            route_blockage_plan=route_blockage_plan,
         )
         plan.append(chosen_move)
         recent_moves.append(
@@ -437,6 +516,9 @@ def _greedy_forward(
         else:
             stale_rounds += 1
         if stale_rounds >= stuck_threshold:
+            if _has_forced_attach_horizon_drop(state):
+                stale_rounds = 0
+                continue
             return _build_partial_result(
                 iterations=iteration + 1,
                 stuck_reason=f"heuristic stale for {stuck_threshold} regressive rounds",
@@ -547,6 +629,21 @@ def _is_inverse_of_recent(
         if len(overlap) * 2 >= min(len(move_vehicles), len(prev_set)):
             return True
     return False
+
+
+def _candidate_selection_pool(
+    scored: list[tuple[tuple, int, HookAction, bool, bool]],
+) -> list[tuple[tuple, int, HookAction, bool, bool]]:
+    clean_pool = [entry for entry in scored if not entry[3] and not entry[4]]
+    if clean_pool:
+        return clean_pool
+    non_repeat_pool = [entry for entry in scored if not entry[4]]
+    if non_repeat_pool:
+        return non_repeat_pool
+    non_inverse_pool = [entry for entry in scored if not entry[3]]
+    if non_inverse_pool:
+        return non_inverse_pool
+    return scored
 
 
 def _score_move(
@@ -688,6 +785,11 @@ def _score_native_move(
     repeats_recent_state: bool = False,
     strict_staging_regrab: bool = True,
     route_blockage_plan: RouteBlockagePlan | None = None,
+    route_oracle: RouteOracle | None = None,
+    route_blockage_parking_pressure: int = 0,
+    route_release_focus_tracks: frozenset[str] | set[str] | None = None,
+    route_release_focus_bonus: int = 0,
+    defer_extra_attach_for_satisfied_carry: bool = False,
 ) -> tuple[tuple, int]:
     improves_heuristic = next_heuristic < current_heuristic
     future_detach_groups = (
@@ -772,6 +874,11 @@ def _score_native_move(
         plan_input=plan_input,
         vehicle_by_no=vehicle_by_no,
     )
+    carrying_satisfied_clearance_block = _carry_is_satisfied_at_loco_track(
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
     close_door_sequence_debt = _close_door_sequence_debt(
         move=move,
         state=state,
@@ -782,7 +889,42 @@ def _score_native_move(
         move=move,
         route_blockage_plan=route_blockage_plan,
     )
+    route_release_continuation = route_release_continuation_bonus(
+        state=state,
+        move=move,
+        focus_tracks=route_release_focus_tracks,
+        focus_bonus=route_release_focus_bonus,
+    )
+    route_blockage_pressure_delta = _route_blockage_pressure_delta(
+        plan_input=plan_input,
+        state=next_state,
+        route_oracle=route_oracle,
+        route_blockage_plan=route_blockage_plan,
+    )
+    current_track_blockage_pressure = 0
+    if route_blockage_plan is not None:
+        current_track_blockage_fact = route_blockage_plan.facts_by_blocking_track.get(
+            state.loco_track_name
+        )
+        if current_track_blockage_fact is not None:
+            current_track_blockage_pressure = current_track_blockage_fact.blockage_count
     clears_route_blocker = route_blockage_release > 0 and move.action_type == "ATTACH"
+    reparks_current_route_blocker = (
+        move.action_type == "DETACH"
+        and bool(state.loco_carry)
+        and move.target_track == state.loco_track_name
+        and route_blockage_parking_pressure > 0
+    )
+    goal_detach_onto_active_route_blocker = (
+        move.action_type == "DETACH"
+        and is_goal_detach
+        and bool(state.loco_carry)
+        and move.target_track == state.loco_track_name
+        and route_blockage_plan is not None
+        and state.loco_track_name in route_blockage_plan.facts_by_blocking_track
+        and carrying_satisfied_clearance_block
+    )
+    continues_route_release = route_release_continuation > 0
     preferred_violation_delta = 0
     if move.action_type == "DETACH":
         for vehicle_no in move.vehicle_nos:
@@ -798,6 +940,8 @@ def _score_native_move(
     elif move.action_type == "DETACH" and is_goal_detach:
         tier = 1
     elif exposes_committed_carry:
+        tier = 2
+    elif continues_route_release:
         tier = 2
     elif clears_route_blocker:
         tier = 2
@@ -819,7 +963,25 @@ def _score_native_move(
         tier = 6
     if (consumes_close_door_pushers or traps_close_door_behind_pushers) and tier < 5:
         tier = 5
-
+    if (
+        carrying_satisfied_clearance_block
+        and defer_extra_attach_for_satisfied_carry
+        and move.action_type == "ATTACH"
+        and not supports_close_door_push
+        and tier < 5
+    ):
+        tier = 5
+    if reparks_current_route_blocker and tier < 5:
+        tier = 5
+    if goal_detach_onto_active_route_blocker and tier < 5:
+        tier = 5
+    if (
+        move.action_type == "DETACH"
+        and route_blockage_pressure_delta > 0
+        and not _is_goal(plan_input, next_state)
+        and tier < 5
+    ):
+        tier = 5
     burial_depth = _move_burial_depth(
         move=move,
         state=state,
@@ -836,6 +998,13 @@ def _score_native_move(
     )
     if is_regrabbing_unfinished_staging and tier < 5:
         tier = 5
+    route_blockage_parking_penalty = (
+        max(route_blockage_parking_pressure, current_track_blockage_pressure)
+        if goal_detach_onto_active_route_blocker
+        else route_blockage_parking_pressure
+        if is_staging_detach or reparks_current_route_blocker
+        else 0
+    )
 
     score = (
         tier,
@@ -844,8 +1013,11 @@ def _score_native_move(
         1 if consumes_close_door_pushers or traps_close_door_behind_pushers else 0,
         close_door_sequence_debt,
         0 if preferred_violation_delta < 0 else 1 if preferred_violation_delta == 0 else 2,
+        -route_release_continuation,
         0 if route_blockage_plan is None else -route_blockage_release,
+        route_blockage_pressure_delta,
         future_detach_groups,
+        route_blockage_parking_penalty,
         next_heuristic,
         next_purity.preferred_violation_count,
         next_structure.goal_track_blocker_count,
@@ -862,6 +1034,130 @@ def _score_native_move(
         move.target_track,
     )
     return score, tier
+
+
+def _route_blockage_pressure_delta(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle | None,
+    route_blockage_plan: RouteBlockagePlan | None,
+) -> int:
+    if route_oracle is None or route_blockage_plan is None:
+        return 0
+    next_plan = compute_route_blockage_plan(plan_input, state, route_oracle)
+    return next_plan.total_blockage_pressure - route_blockage_plan.total_blockage_pressure
+
+
+def _carry_is_satisfied_at_loco_track(
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if not state.loco_carry:
+        return False
+    for vehicle_no in state.loco_carry:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return False
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=state.loco_track_name,
+            state=state,
+            plan_input=plan_input,
+        ):
+            return False
+    return True
+
+
+def _route_blockage_parking_pressure(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    next_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle | None,
+) -> int:
+    if move.action_type != "DETACH" or route_oracle is None:
+        return 0
+    target_track = move.target_track
+    before = _route_blockage_pressure_on_track(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        blocking_track=target_track,
+    )
+    after = _route_blockage_pressure_on_track(
+        plan_input=plan_input,
+        state=next_state,
+        route_oracle=route_oracle,
+        blocking_track=target_track,
+    )
+    if move.target_track == state.loco_track_name and state.loco_carry:
+        return after
+    return max(0, after - before)
+
+
+def _route_blockage_pressure_on_track(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    blocking_track: str,
+) -> int:
+    if not state.track_sequences.get(blocking_track):
+        return 0
+    pressure = 0
+    track_by_vehicle = {
+        vehicle_no: track_name
+        for track_name, seq in state.track_sequences.items()
+        for vehicle_no in seq
+    }
+    for vehicle in plan_input.vehicles:
+        source_track = track_by_vehicle.get(vehicle.vehicle_no)
+        if source_track is None and vehicle.vehicle_no in state.loco_carry:
+            source_track = state.loco_track_name
+        if source_track is None:
+            continue
+        if goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            continue
+        if source_track != state.loco_track_name:
+            access_result = route_oracle.validate_loco_access(
+                loco_track=state.loco_track_name,
+                target_track=source_track,
+                occupied_track_sequences=state.track_sequences,
+                loco_node=state.loco_node,
+            )
+            if (
+                blocking_track != source_track
+                and blocking_track in access_result.blocking_tracks
+            ):
+                pressure += 1
+        for target_track in goal_effective_allowed_tracks(
+            vehicle,
+            state=state,
+            plan_input=plan_input,
+        ):
+            if target_track == source_track:
+                continue
+            path_tracks = route_oracle.resolve_path_tracks_for_endpoint_constraints(
+                source_track,
+                target_track,
+                occupied_track_sequences=state.track_sequences,
+                source_node=state.loco_node if source_track == state.loco_track_name else None,
+                target_node=route_oracle.order_end_node(target_track),
+            )
+            if path_tracks is None:
+                continue
+            if blocking_track in path_tracks[1:-1]:
+                pressure += 1
+    return pressure
 
 
 def _route_blockage_focus_source_tracks(state: ReplayState) -> set[str]:

@@ -25,6 +25,13 @@ from fzed_shunting.solver.move_generator import (
 )
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.result import SolverResult
+from fzed_shunting.solver.route_blockage import (
+    RouteBlockagePlan,
+    compute_route_blockage_plan,
+    route_blockage_release_score,
+    route_release_continuation_bonus,
+    route_release_focus_after_move,
+)
 from fzed_shunting.solver.state import (
     _apply_move,
     _canonical_random_depot_vehicle_nos,
@@ -54,6 +61,12 @@ class QueueItem:
         default=(0, 0, 0, 0, 0, 0),
         compare=False,
     )
+    route_release_focus_tracks: frozenset[str] = field(
+        default_factory=frozenset,
+        compare=False,
+    )
+    route_release_focus_bonus: int = field(default=0, compare=False)
+    route_release_focus_ttl: int = field(default=0, compare=False)
 
 
 def _solve_search_result(
@@ -164,6 +177,11 @@ def _solve_search_result(
             vehicle_by_no=vehicle_by_no,
             route_oracle=route_oracle,
         )
+        route_blockage_plan = (
+            compute_route_blockage_plan(plan_input, current.state, route_oracle)
+            if route_oracle is not None
+            else None
+        )
         moves = generate_real_hook_moves(
             plan_input,
             current.state,
@@ -200,12 +218,46 @@ def _solve_search_result(
                 state=current.state,
                 move=move,
                 blocking_goal_targets_by_source=blocking_goal_targets_by_source,
+                route_blockage_plan=route_blockage_plan,
+                route_release_focus_tracks=(
+                    current.route_release_focus_tracks
+                    if current.route_release_focus_ttl > 0
+                    else frozenset()
+                ),
+                route_release_focus_bonus=current.route_release_focus_bonus,
             )
             blocker_bonus += _carry_exposure_bonus(
                 move=move,
                 state=current.state,
                 plan_input=plan_input,
                 vehicle_by_no=vehicle_by_no,
+            )
+            next_focus_tracks, next_focus_bonus, next_focus_ttl = route_release_focus_after_move(
+                prior_focus_tracks=current.route_release_focus_tracks,
+                prior_focus_bonus=current.route_release_focus_bonus,
+                prior_focus_ttl=current.route_release_focus_ttl,
+                move=move,
+                route_blockage_plan=route_blockage_plan,
+            )
+            route_release_regression_penalty = _route_release_regression_penalty(
+                state=next_state,
+                route_oracle=route_oracle,
+                focus_tracks=next_focus_tracks,
+                focus_ttl=next_focus_ttl,
+            )
+            route_release_regression_penalty += _route_release_repark_penalty(
+                move=move,
+                state=current.state,
+                next_state=next_state,
+                plan_input=plan_input,
+                route_oracle=route_oracle,
+                route_blockage_plan=route_blockage_plan,
+                focus_tracks=(
+                    current.route_release_focus_tracks
+                    if current.route_release_focus_ttl > 0
+                    else frozenset()
+                ),
+                focus_ttl=current.route_release_focus_ttl,
             )
             neg_depot_index_sum = 0
             if enable_depot_late_scheduling and solver_mode == "exact":
@@ -225,6 +277,7 @@ def _solve_search_result(
                         cost=cost,
                         heuristic=heuristic,
                         blocker_bonus=blocker_bonus,
+                        route_release_regression_penalty=route_release_regression_penalty,
                         solver_mode=solver_mode,
                         heuristic_weight=heuristic_weight,
                         neg_depot_index_sum=neg_depot_index_sum,
@@ -240,6 +293,9 @@ def _solve_search_result(
                     plan=next_plan,
                     cost=cost,
                     structural_key=_beam_structural_key(next_plan, next_state),
+                    route_release_focus_tracks=next_focus_tracks,
+                    route_release_focus_bonus=next_focus_bonus,
+                    route_release_focus_ttl=next_focus_ttl,
                 ),
             )
             generated_nodes += 1
@@ -253,6 +309,8 @@ def _solve_search_result(
                 enable_structural_diversity=enable_structural_diversity,
             )
     if best_goal_plan is None:
+        if debug_stats is not None and best_partial_score is not None:
+            debug_stats["search_best_partial_score"] = list(best_partial_score)
         if budget_exhausted:
             return SolverResult(
                 plan=[],
@@ -287,25 +345,28 @@ def _priority(
     cost: int,
     heuristic: int,
     blocker_bonus: int = 0,
+    route_release_regression_penalty: int = 0,
     solver_mode: str,
     heuristic_weight: float,
     neg_depot_index_sum: int = 0,
     purity_metrics: tuple[int, int, int] = (0, 0, 0),
 ) -> tuple:
     if solver_mode == "beam":
-        beam_heuristic_credit = 1 if blocker_bonus > 0 else 0
-        adjusted_heuristic = heuristic - beam_heuristic_credit
         return (
-            cost + adjusted_heuristic,
+            route_release_regression_penalty,
+            0 if blocker_bonus > 0 else 1,
+            cost + heuristic,
             cost,
             neg_depot_index_sum,
-            adjusted_heuristic,
+            heuristic,
             purity_metrics,
             -blocker_bonus,
             heuristic,
         )
     if solver_mode in ("weighted", "real_hook"):
         return (
+            route_release_regression_penalty,
+            0 if blocker_bonus > 0 else 1,
             cost + heuristic_weight * heuristic,
             cost,
             neg_depot_index_sum,
@@ -314,6 +375,7 @@ def _priority(
             -blocker_bonus,
         )
     return (
+        route_release_regression_penalty,
         cost + heuristic,
         cost,
         neg_depot_index_sum,
@@ -323,25 +385,121 @@ def _priority(
     )
 
 
+def _route_release_regression_penalty(
+    *,
+    state: ReplayState,
+    route_oracle: RouteOracle | None,
+    focus_tracks: frozenset[str] | set[str],
+    focus_ttl: int,
+) -> int:
+    if route_oracle is None or focus_ttl <= 0 or not focus_tracks:
+        return 0
+    penalty = 0
+    for focus_track in focus_tracks:
+        if focus_track == state.loco_track_name:
+            continue
+        access_result = route_oracle.validate_loco_access(
+            loco_track=state.loco_track_name,
+            target_track=focus_track,
+            occupied_track_sequences=state.track_sequences,
+            loco_node=state.loco_node,
+        )
+        if not access_result.is_valid:
+            penalty += max(1, len(access_result.blocking_tracks))
+    return penalty * max(1, focus_ttl)
+
+
+def _route_release_repark_penalty(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    next_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle | None,
+    route_blockage_plan: RouteBlockagePlan | None,
+    focus_tracks: frozenset[str] | set[str],
+    focus_ttl: int,
+) -> int:
+    if (
+        route_oracle is None
+        or route_blockage_plan is None
+        or focus_ttl <= 0
+        or not focus_tracks
+        or move.action_type != "DETACH"
+        or not state.loco_carry
+    ):
+        return 0
+    if move.target_track not in route_blockage_plan.facts_by_blocking_track:
+        return 0
+    before_pressure = route_blockage_plan.total_blockage_pressure
+    after_plan = compute_route_blockage_plan(plan_input, next_state, route_oracle)
+    after_pressure = after_plan.total_blockage_pressure
+    if after_pressure <= 0:
+        return 0
+    blocked_focus_tracks = _blocked_focus_tracks(
+        state=next_state,
+        route_oracle=route_oracle,
+        focus_tracks=focus_tracks,
+    )
+    if not blocked_focus_tracks:
+        return 0
+    return max(1, after_pressure + max(0, after_pressure - before_pressure)) * max(1, focus_ttl)
+
+
+def _blocked_focus_tracks(
+    *,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    focus_tracks: frozenset[str] | set[str],
+) -> set[str]:
+    blocked: set[str] = set()
+    for focus_track in focus_tracks:
+        if focus_track == state.loco_track_name:
+            continue
+        access_result = route_oracle.validate_loco_access(
+            loco_track=state.loco_track_name,
+            target_track=focus_track,
+            occupied_track_sequences=state.track_sequences,
+            loco_node=state.loco_node,
+        )
+        if not access_result.is_valid:
+            blocked.add(focus_track)
+    return blocked
+
+
 def _blocking_goal_target_bonus(
     *,
     state: ReplayState,
     move: HookAction,
     blocking_goal_targets_by_source: dict[str, set[str]],
+    route_blockage_plan: RouteBlockagePlan | None = None,
+    route_release_focus_tracks: frozenset[str] | set[str] | None = None,
+    route_release_focus_bonus: int = 0,
 ) -> int:
+    route_release_bonus = route_blockage_release_score(
+        source_track=move.source_track,
+        vehicle_nos=move.vehicle_nos,
+        route_blockage_plan=route_blockage_plan,
+    )
+    continuation_bonus = route_release_continuation_bonus(
+        state=state,
+        move=move,
+        focus_tracks=route_release_focus_tracks,
+        focus_bonus=route_release_focus_bonus,
+    )
     blocking_targets = blocking_goal_targets_by_source.get(move.source_track)
     if not blocking_targets:
-        return 0
+        return route_release_bonus + continuation_bonus
     source_seq = state.track_sequences.get(move.source_track, [])
-    if len(move.vehicle_nos) != len(source_seq):
-        return 0
+    if not move.vehicle_nos:
+        return route_release_bonus + continuation_bonus
     if tuple(source_seq[: len(move.vehicle_nos)]) != tuple(move.vehicle_nos):
-        return 0
+        return route_release_bonus + continuation_bonus
     if move.action_type == "ATTACH":
-        return len(blocking_targets)
+        return len(blocking_targets) + route_release_bonus + continuation_bonus
     if move.target_track not in blocking_targets:
-        return 0
-    return len(blocking_targets)
+        return route_release_bonus + continuation_bonus
+    return len(blocking_targets) + route_release_bonus + continuation_bonus
 
 
 def _carry_exposure_bonus(

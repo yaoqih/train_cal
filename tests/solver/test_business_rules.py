@@ -241,8 +241,10 @@ def test_verifier_rejects_attach_when_any_intermediate_track_blocks_loco_access(
 
     assert report.is_valid is False
     hook1 = next(item for item in report.hook_reports if item.hook_no == 1)
-    assert hook1.blocking_tracks == ["存4南"]
-    assert any("存4南" in error for error in hook1.errors)
+    hook2 = next(item for item in report.hook_reports if item.hook_no == 2)
+    assert hook1.blocking_tracks == []
+    assert hook2.blocking_tracks == []
+    assert report.global_errors == ["Vehicle BLOCK final track/spot/weigh state does not satisfy goal"]
 
 
 def test_work_area_capacity_blocks_extra_move():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block
+from fzed_shunting.domain.depot_spots import allocate_spots_for_block, exact_spot_reservations
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.capacity_release import (
     CapacityReleasePlan,
@@ -156,6 +156,7 @@ def _candidate_tracks_for_vehicle(
                 target_track=track_name,
                 yard_mode=plan_input.yard_mode,
                 occupied_spot_assignments=state.spot_assignments,
+                reserved_spot_codes=exact_spot_reservations(plan_input),
             )
             is not None
         )

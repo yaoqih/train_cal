@@ -439,6 +439,70 @@ def test_recover_no_solution_results_only_replaces_successful_retries(tmp_path: 
     assert results[1] == initial_results[1]
 
 
+def test_recover_no_solution_results_keeps_best_failed_retry_partial(tmp_path: Path):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": False,
+            "error": "no solution within budget",
+            "partial_hook_count": 20,
+            "debug_stats": {
+                "partial_structural_metrics": {"unfinished_count": 8},
+                "partial_route_blockage_plan": {"total_blockage_pressure": 4},
+            },
+        },
+    ]
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001, ARG001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001, ARG001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001, ARG001
+        **_kwargs,  # noqa: ANN003
+    ):
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": False,
+                "error": "no solution within budget",
+                "partial_hook_count": 77,
+                "debug_stats": {
+                    "partial_structural_metrics": {"unfinished_count": 2},
+                    "partial_route_blockage_plan": {"total_blockage_pressure": 1},
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=8,
+            initial_results=initial_results,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert results[0]["solved"] is False
+    assert results[0]["partial_hook_count"] == 77
+    assert results[0]["recovery_beam_width"] == 8
+    assert results[0]["debug_stats"]["partial_structural_metrics"]["unfinished_count"] == 2
+    assert results[0]["debug_stats"]["partial_route_blockage_plan"]["total_blockage_pressure"] == 1
+
+
 def test_recover_no_solution_results_retries_progressively_until_success(tmp_path: Path):
     scenario = tmp_path / "validation_a.json"
     scenario.write_text("{}", encoding="utf-8")
@@ -503,6 +567,66 @@ def test_recover_no_solution_results_retries_progressively_until_success(tmp_pat
     assert calls == [8, 16, 24]
     assert results[0]["solved"] is True
     assert results[0]["recovery_beam_width"] == 24
+
+
+def test_recover_no_solution_results_limits_wide_retry_parallelism(tmp_path: Path):
+    scenarios = [
+        tmp_path / f"validation_{idx}.json"
+        for idx in range(3)
+    ]
+    for scenario in scenarios:
+        scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {"scenario": scenario.name, "solved": False, "error": "no solution within budget", "debug_stats": {}}
+        for scenario in scenarios
+    ]
+    calls: list[tuple[int | None, int, list[str]]] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        master_dir,  # noqa: ANN001, ARG001
+        scenario_paths,  # noqa: ANN001
+        solver,  # noqa: ANN001, ARG001
+        beam_width,  # noqa: ANN001
+        heuristic_weight,  # noqa: ANN001, ARG001
+        timeout_seconds,  # noqa: ANN001, ARG001
+        max_workers,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append((beam_width, max_workers, [path.name for path in scenario_paths]))
+        return [
+            {
+                "scenario": path.name,
+                "solved": False,
+                "error": "no solution within budget",
+                "debug_stats": {},
+            }
+            for path in scenario_paths
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=scenarios,
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=8,
+            retry_no_solution_beam_width=24,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [
+        (8, 8, [scenario.name for scenario in scenarios]),
+        (16, 4, [scenario.name for scenario in scenarios]),
+        (24, 2, [scenario.name for scenario in scenarios]),
+    ]
 
 
 def test_recover_no_solution_results_continues_after_pathological_success(tmp_path: Path):

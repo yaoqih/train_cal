@@ -5,13 +5,19 @@ from copy import deepcopy
 from pydantic import BaseModel, Field
 
 from fzed_shunting.domain.carry_order import remove_carried_tail_block
-from fzed_shunting.domain.depot_spots import allocate_spots_for_block, build_initial_spot_assignments
+from fzed_shunting.domain.depot_spots import (
+    allocate_spots_for_block,
+    build_initial_spot_assignments,
+    exact_spot_reservations,
+)
+from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 
 
 class ReplayState(BaseModel):
     track_sequences: dict[str, list[str]] = Field(default_factory=dict)
     loco_track_name: str
+    loco_node: str | None = None
     weighed_vehicle_nos: set[str] = Field(default_factory=set)
     spot_assignments: dict[str, str] = Field(default_factory=dict)
     loco_carry: tuple[str, ...] = ()
@@ -20,6 +26,13 @@ class ReplayState(BaseModel):
 class ReplayResult(BaseModel):
     snapshots: list[ReplayState]
     final_state: ReplayState
+
+
+def _order_end_node(track_code: str) -> str | None:
+    endpoints = TRACK_ENDPOINTS.get(track_code)
+    if not endpoints:
+        return None
+    return endpoints[0]
 
 
 def build_initial_state(plan_input: NormalizedPlanInput) -> ReplayState:
@@ -33,6 +46,7 @@ def build_initial_state(plan_input: NormalizedPlanInput) -> ReplayState:
     return ReplayState(
         track_sequences=ordered,
         loco_track_name=plan_input.loco_track_name,
+        loco_node=_order_end_node(plan_input.loco_track_name),
         weighed_vehicle_nos=set(),
         spot_assignments=build_initial_spot_assignments(plan_input),
     )
@@ -50,6 +64,7 @@ def replay_plan(
         if plan_input is not None
         else {}
     )
+    reserved_spot_codes = exact_spot_reservations(plan_input) if plan_input is not None else None
     for hook in hook_plan:
         action_type = hook.get("actionType")
         if not action_type:
@@ -65,6 +80,7 @@ def replay_plan(
                 state.spot_assignments.pop(vehicle_no, None)
             state.loco_carry = state.loco_carry + tuple(vehicle_nos)
             state.loco_track_name = source
+            state.loco_node = _order_end_node(source)
         elif action_type == "DETACH":
             source = hook["sourceTrack"]
             if source != state.loco_track_name:
@@ -83,6 +99,7 @@ def replay_plan(
                     target_track=target,
                     yard_mode=plan_input.yard_mode,
                     occupied_spot_assignments=state.spot_assignments,
+                    reserved_spot_codes=reserved_spot_codes,
                 )
                 if new_spot_assignments is None:
                     raise ValueError(
@@ -90,6 +107,7 @@ def replay_plan(
                     )
                 state.spot_assignments.update(new_spot_assignments)
             state.loco_track_name = target
+            state.loco_node = _order_end_node(target)
             if target == "机库":
                 state.weighed_vehicle_nos.update(vehicle_nos)
         else:

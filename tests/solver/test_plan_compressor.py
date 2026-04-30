@@ -64,6 +64,42 @@ def _three_vehicle_payload() -> dict:
     }
 
 
+def _three_vehicle_non_staging_buffer_payload() -> dict:
+    payload = _three_vehicle_payload()
+    payload["trackInfo"].append({"trackName": "存5北", "trackDistance": 367})
+    return payload
+
+
+def _split_source_payload() -> dict:
+    return {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 113},
+            {"trackName": "存2", "trackDistance": 113},
+            {"trackName": "存3", "trackDistance": 113},
+            {"trackName": "临1", "trackDistance": 113},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存1",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": target_track,
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, (vehicle_no, target_track) in enumerate(
+                [("A", "存2"), ("B", "存2"), ("C", "存3"), ("D", "存3")],
+                start=1,
+            )
+        ],
+        "locoTrackName": "机库",
+    }
+
+
 def _nine_vehicle_payload() -> dict:
     vehicle_specs = []
     for offset, group in enumerate((("A", "B", "C"), ("D", "E", "F"), ("G", "H", "I"))):
@@ -212,6 +248,33 @@ def _same_target_order_free_payload() -> dict:
     }
 
 
+def _depot_area_equivalent_payload() -> dict:
+    return {
+        "trackInfo": [
+            {"trackName": "修1库内", "trackDistance": 89.4},
+            {"trackName": "修2库内", "trackDistance": 91.1},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "AREA",
+                "targetTrack": "大库",
+                "targetAreaCode": "大库:RANDOM",
+                "targetSpotCode": "",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+
+
 def test_compressor_removes_redundant_round_trip_window():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_payload("存1"), master)
@@ -264,6 +327,33 @@ def test_compressor_continues_until_multiple_independent_windows_removed():
     result = compress_plan(normalized, initial, plan, master=master)
 
     assert result.accepted_rewrite_count == 3
+    assert result.compressed_plan == []
+
+
+def test_compressor_removes_goal_equivalent_window_when_verifier_accepts_candidate():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_depot_area_equivalent_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="修1库内",
+            target_track="修1库内",
+            vehicle_nos=["A"],
+            path_tracks=["修1库内"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="修1库内",
+            target_track="修2库内",
+            vehicle_nos=["A"],
+            path_tracks=["修1库内", "修1库外", "渡11", "渡12", "修2库外", "修2库内"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
     assert result.compressed_plan == []
 
 
@@ -360,18 +450,274 @@ def test_compressor_rebuilds_single_source_window_to_final_prefixes():
         ),
         HookAction(
             source_track="临1",
-            target_track="存2",
-            vehicle_nos=["A"],
-            path_tracks=["临1", "渡3", "存2"],
+            target_track="存3",
+            vehicle_nos=["B", "C"],
+            path_tracks=["临1", "渡3", "存3"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="存2",
-            target_track="存3",
-            vehicle_nos=["B", "C"],
-            path_tracks=["存2", "存3"],
+            source_track="存3",
+            target_track="存2",
+            vehicle_nos=["A"],
+            path_tracks=["存3", "存2"],
             action_type="DETACH",
         ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
+    assert [
+        (move.action_type, move.target_track, move.vehicle_nos)
+        for move in result.compressed_plan
+    ] == [
+        ("ATTACH", "存1", ["A", "B", "C"]),
+        ("DETACH", "存3", ["B", "C"]),
+        ("DETACH", "存2", ["A"]),
+    ]
+
+
+def test_compressor_keeps_legacy_single_source_rebuild_without_staging():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_three_vehicle_non_staging_buffer_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A", "B", "C"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存5北",
+            vehicle_nos=["A", "B", "C"],
+            path_tracks=["存1", "存5北"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["A", "B", "C"],
+            path_tracks=["存5北"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="存3",
+            vehicle_nos=["B", "C"],
+            path_tracks=["存5北", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存3",
+            target_track="存2",
+            vehicle_nos=["A"],
+            path_tracks=["存3", "存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
+    assert [
+        (move.action_type, move.target_track, move.vehicle_nos)
+        for move in result.compressed_plan
+    ] == [
+        ("ATTACH", "存1", ["A", "B", "C"]),
+        ("DETACH", "存3", ["B", "C"]),
+        ("DETACH", "存2", ["A"]),
+    ]
+
+
+def test_compressor_rebuilds_split_same_source_prefix_window():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_split_source_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="临1",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1", "临1"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["C", "D"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存3",
+            vehicle_nos=["C", "D"],
+            path_tracks=["存1", "临1", "渡3", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="临1",
+            target_track="临1",
+            vehicle_nos=["A", "B"],
+            path_tracks=["临1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="临1",
+            target_track="存2",
+            vehicle_nos=["A", "B"],
+            path_tracks=["临1", "渡3", "存2"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count == 1
+    assert [
+        (move.action_type, move.target_track, move.vehicle_nos)
+        for move in result.compressed_plan
+    ] == [
+        ("ATTACH", "存1", ["A", "B", "C", "D"]),
+        ("DETACH", "存3", ["C", "D"]),
+        ("DETACH", "存2", ["A", "B"]),
+    ]
+
+
+def test_compressor_rebuilds_wider_single_source_window_with_interleaved_detour():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 160},
+            {"trackName": "存2", "trackDistance": 160},
+            {"trackName": "存3", "trackDistance": 160},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "临1", "trackDistance": 160},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北" if vehicle_no == "X" else "存1",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": target_track,
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, (vehicle_no, target_track) in enumerate(
+                [
+                    ("A", "存3"),
+                    ("B", "存3"),
+                    ("C", "存2"),
+                    ("D", "存4北"),
+                    ("E", "存4北"),
+                    ("X", "存5北"),
+                ],
+                start=1,
+            )
+        ],
+        "locoTrackName": "存1",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存3",
+            vehicle_nos=["A", "B"],
+            path_tracks=["存1", "临1", "渡3", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["X"],
+            path_tracks=["存5北"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="临1",
+            vehicle_nos=["X"],
+            path_tracks=["存5北", "渡1", "渡2", "临1"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="临1",
+            target_track="临1",
+            vehicle_nos=["X"],
+            path_tracks=["临1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="临1",
+            target_track="存5北",
+            vehicle_nos=["X"],
+            path_tracks=["临1", "渡2", "渡1", "存5北"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["C"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存2",
+            vehicle_nos=["C"],
+            path_tracks=["存1", "渡7", "存2"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["D", "E"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存4北",
+            vehicle_nos=["D", "E"],
+            path_tracks=["存1", "临1", "渡2", "渡1", "存4北"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+
+    assert result.accepted_rewrite_count >= 1
+    assert [
+        (move.action_type, move.target_track, move.vehicle_nos)
+        for move in result.compressed_plan
+    ] == [
+        ("ATTACH", "存1", ["A", "B", "C", "D", "E"]),
+        ("DETACH", "存4北", ["D", "E"]),
+        ("DETACH", "存2", ["C"]),
+        ("DETACH", "存3", ["A", "B"]),
     ]
 
 

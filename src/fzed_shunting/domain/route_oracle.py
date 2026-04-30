@@ -192,6 +192,8 @@ class RouteOracle:
         occupied_track_sequences: dict[str, list[str]] | None = None,
         expected_path_tracks: list[str] | None = None,
         route: ResolvedRoute | None = None,
+        source_node: str | None = None,
+        target_node: str | None = None,
     ) -> PathValidationResult:
         errors: list[str] = []
         blocking_tracks: list[str] = []
@@ -205,9 +207,15 @@ class RouteOracle:
             return PathValidationResult(is_valid=True)
 
         if expected_path_tracks is None:
-            expected_path_tracks = self.resolve_path_tracks(source_track, target_track)
+            expected_path_tracks = self.resolve_clear_path_tracks(
+                source_track,
+                target_track,
+                occupied_track_sequences=occupied_track_sequences,
+                source_node=source_node,
+                target_node=target_node,
+            )
         if expected_path_tracks is None:
-            errors.append(f"No track path mapping for {source_track} -> {target_track}")
+            errors.append(f"No clear track path mapping for {source_track} -> {target_track}")
             return PathValidationResult(is_valid=False, errors=errors)
         if path_tracks != expected_path_tracks:
             errors.append(
@@ -215,7 +223,11 @@ class RouteOracle:
             )
 
         if route is None:
-            route = self.resolve_route(source_track, target_track)
+            route = self.resolve_route_for_path_tracks(
+                path_tracks,
+                source_node=source_node,
+                target_node=target_node,
+            )
         if route is None:
             errors.append(f"No route mapping for {source_track} -> {target_track}")
             return PathValidationResult(is_valid=False, errors=errors)
@@ -224,11 +236,12 @@ class RouteOracle:
             occupied_track_sequences is not None
             and self.master.business_rules.require_clear_intermediate_path_tracks
         ):
-            blocking_tracks = [
-                track_code
-                for track_code in path_tracks[1:-1]
-                if occupied_track_sequences.get(track_code)
-            ]
+            blocking_tracks = self._blocking_tracks_for_path(
+                path_tracks,
+                occupied_track_sequences=occupied_track_sequences,
+                source_node=source_node,
+                target_node=target_node,
+            )
             for track_code in blocking_tracks:
                 errors.append(
                     f"Route interference on intermediate track {track_code}: "
@@ -249,7 +262,7 @@ class RouteOracle:
         reverse_branch_codes: list[str] = []
         required_reverse_clearance_m = train_length_m + self.master.business_rules.loco_length_m
         reverse_branch_codes = self._resolve_reverse_branch_codes(
-            path_tracks=expected_path_tracks,
+            path_tracks=path_tracks,
             route=route,
         )
         for reverse_branch in reverse_branch_codes:
@@ -280,6 +293,7 @@ class RouteOracle:
         target_track: str,
         occupied_track_sequences: dict[str, list[str]] | None = None,
         carried_train_length_m: float = 0.0,
+        loco_node: str | None = None,
     ) -> PathValidationResult:
         """Validate whether the locomotive can reach a hook endpoint.
 
@@ -290,13 +304,60 @@ class RouteOracle:
         The endpoint may contain the vehicles being attached, so only
         intermediate tracks can block access.
         """
-        path_tracks = self.resolve_path_tracks(loco_track, target_track)
+        source_node = loco_node
+        target_node = (
+            self._order_end_node(target_track)
+            if occupied_track_sequences is not None
+            and occupied_track_sequences.get(target_track)
+            else None
+        )
+        path_tracks = self.resolve_clear_path_tracks(
+            loco_track,
+            target_track,
+            occupied_track_sequences=occupied_track_sequences,
+            source_node=source_node,
+            target_node=target_node,
+        )
         if path_tracks is None:
+            blocking_tracks: list[str] = []
+            default_path_tracks = self.resolve_path_tracks_for_endpoint_constraints(
+                loco_track,
+                target_track,
+                occupied_track_sequences=occupied_track_sequences,
+                source_node=source_node,
+                target_node=target_node,
+            )
+            if default_path_tracks is None:
+                default_path_tracks = self.resolve_path_tracks(loco_track, target_track)
+            if (
+                default_path_tracks is not None
+                and occupied_track_sequences is not None
+                and self.master.business_rules.require_clear_intermediate_path_tracks
+            ):
+                blocking_tracks = self._blocking_tracks_for_path(
+                    default_path_tracks,
+                    occupied_track_sequences=occupied_track_sequences,
+                    source_node=source_node,
+                    target_node=target_node,
+                )
+            errors = [
+                f"No clear locomotive access path mapping for {loco_track} -> {target_track}"
+            ]
+            errors.extend(
+                f"Route interference on intermediate track {track_code}: "
+                f"{occupied_track_sequences.get(track_code, [])}"
+                for track_code in blocking_tracks
+            )
             return PathValidationResult(
                 is_valid=False,
-                errors=[f"No locomotive access path mapping for {loco_track} -> {target_track}"],
+                blocking_tracks=blocking_tracks,
+                errors=errors,
             )
-        route = self.resolve_route(loco_track, target_track)
+        route = self.resolve_route_for_path_tracks(
+            path_tracks,
+            source_node=source_node,
+            target_node=target_node,
+        )
         if route is None and loco_track != target_track:
             return PathValidationResult(
                 is_valid=False,
@@ -310,7 +371,115 @@ class RouteOracle:
             occupied_track_sequences=occupied_track_sequences,
             expected_path_tracks=path_tracks,
             route=route,
+            source_node=source_node,
+            target_node=target_node,
         )
+
+    def resolve_route_for_path_tracks(
+        self,
+        path_tracks: list[str],
+        *,
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> ResolvedRoute | None:
+        if not path_tracks:
+            return None
+        if len(path_tracks) == 1:
+            return ResolvedRoute(branch_codes=[], total_length_m=0.0, uses_l1=False)
+        route = self._resolve_route_for_concrete_track_path(
+            path_tracks,
+            source_node=source_node,
+            target_node=target_node,
+        )
+        if route is not None:
+            return route
+        return self.resolve_route(path_tracks[0], path_tracks[-1])
+
+    def resolve_clear_path_tracks(
+        self,
+        source_track: str,
+        target_track: str,
+        *,
+        occupied_track_sequences: dict[str, list[str]] | None,
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> list[str] | None:
+        if (
+            occupied_track_sequences is None
+            or not self.master.business_rules.require_clear_intermediate_path_tracks
+        ):
+            return self.resolve_path_tracks(source_track, target_track)
+        if source_track == target_track:
+            return [source_track]
+        if source_track not in self._track_endpoints or target_track not in self._track_endpoints:
+            return None
+
+        queue: list[tuple[float, str, list[str]]] = [(0.0, source_track, [source_track])]
+        best: dict[str, float] = {source_track: 0.0}
+        while queue:
+            cost, track_code, path_tracks = heappop(queue)
+            if track_code == target_track:
+                return path_tracks
+            if cost > best.get(track_code, float("inf")) + 1e-9:
+                continue
+            for next_track in self._track_graph.get(track_code, []):
+                next_track_info = self.master.tracks.get(next_track)
+                if next_track_info is None:
+                    continue
+                candidate_path = path_tracks + [next_track]
+                if self._blocking_tracks_for_path(
+                    candidate_path,
+                    occupied_track_sequences=occupied_track_sequences,
+                    source_node=source_node,
+                    target_node=target_node if next_track == target_track else None,
+                ):
+                    continue
+                next_cost = cost + next_track_info.effective_length_m
+                if next_cost >= best.get(next_track, float("inf")) - 1e-9:
+                    continue
+                best[next_track] = next_cost
+                heappush(queue, (next_cost, next_track, candidate_path))
+        return None
+
+    def resolve_path_tracks_for_endpoint_constraints(
+        self,
+        source_track: str,
+        target_track: str,
+        *,
+        occupied_track_sequences: dict[str, list[str]] | None = None,
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> list[str] | None:
+        if source_track == target_track:
+            return [source_track]
+        if source_track not in self._track_endpoints or target_track not in self._track_endpoints:
+            return None
+        queue: list[tuple[float, str, list[str]]] = [(0.0, source_track, [source_track])]
+        best: dict[str, float] = {source_track: 0.0}
+        while queue:
+            cost, track_code, path_tracks = heappop(queue)
+            if track_code == target_track:
+                return path_tracks
+            if cost > best.get(track_code, float("inf")) + 1e-9:
+                continue
+            for next_track in self._track_graph.get(track_code, []):
+                next_track_info = self.master.tracks.get(next_track)
+                if next_track_info is None:
+                    continue
+                candidate_path = path_tracks + [next_track]
+                if self._path_endpoint_blockers(
+                    candidate_path,
+                    occupied_track_sequences=occupied_track_sequences,
+                    source_node=source_node,
+                    target_node=target_node if next_track == target_track else None,
+                ):
+                    continue
+                next_cost = cost + next_track_info.effective_length_m
+                if next_cost >= best.get(next_track, float("inf")) - 1e-9:
+                    continue
+                best[next_track] = next_cost
+                heappush(queue, (next_cost, next_track, candidate_path))
+        return None
 
     def resolve_route(self, source_track: str, target_track: str) -> ResolvedRoute | None:
         cache_key = (source_track, target_track)
@@ -354,6 +523,147 @@ class RouteOracle:
         self._route_cache[cache_key] = best_route
         return best_route
 
+    def _resolve_route_for_concrete_track_path(
+        self,
+        path_tracks: list[str],
+        *,
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> ResolvedRoute | None:
+        if not path_tracks:
+            return None
+        if len(path_tracks) == 1:
+            return ResolvedRoute(branch_codes=[], total_length_m=0.0, uses_l1=False)
+        shared_nodes: list[str] = []
+        for first_track, second_track in zip(path_tracks, path_tracks[1:]):
+            shared_node = self._shared_endpoint(first_track, second_track)
+            if shared_node is None:
+                return None
+            shared_nodes.append(shared_node)
+
+        branch_codes: list[str] = []
+        total_length_m = 0.0
+        source_meta = self._track_route_meta.get(path_tracks[0])
+        if source_meta is None:
+            return None
+        total_length_m = self._append_branch(
+            branch_codes,
+            source_meta.terminal_branch,
+            total_length_m,
+        )
+        current_node = self._route_node_for_track_endpoint(
+            path_tracks[0],
+            source_node or shared_nodes[0],
+        )
+        if current_node is None:
+            return None
+        source_exit_node = self._route_node_for_track_endpoint(path_tracks[0], shared_nodes[0])
+        if source_exit_node is None:
+            return None
+        total_length_m = self._append_node_path(
+            branch_codes,
+            current_node,
+            source_exit_node,
+            total_length_m,
+        )
+        current_node = source_exit_node
+
+        for index in range(1, len(path_tracks) - 1):
+            track_code = path_tracks[index]
+            entry_node = self._route_node_for_track_endpoint(track_code, shared_nodes[index - 1])
+            exit_node = self._route_node_for_track_endpoint(track_code, shared_nodes[index])
+            if entry_node is None or exit_node is None:
+                return None
+            total_length_m = self._append_node_path(
+                branch_codes,
+                current_node,
+                entry_node,
+                total_length_m,
+            )
+            total_length_m = self._append_node_path(
+                branch_codes,
+                entry_node,
+                exit_node,
+                total_length_m,
+            )
+            current_node = exit_node
+
+        target_track = path_tracks[-1]
+        target_meta = self._track_route_meta.get(target_track)
+        if target_meta is None:
+            return None
+        target_entry_node = self._route_node_for_track_endpoint(target_track, shared_nodes[-1])
+        if target_entry_node is None:
+            return None
+        total_length_m = self._append_node_path(
+            branch_codes,
+            current_node,
+            target_entry_node,
+            total_length_m,
+        )
+        if target_node is not None:
+            target_exit_node = self._route_node_for_track_endpoint(target_track, target_node)
+            if target_exit_node is None:
+                return None
+            total_length_m = self._append_node_path(
+                branch_codes,
+                target_entry_node,
+                target_exit_node,
+                total_length_m,
+            )
+        total_length_m = self._append_branch(
+            branch_codes,
+            target_meta.terminal_branch,
+            total_length_m,
+        )
+        uses_l1 = any(self._branch_uses_l1(branch) for branch in branch_codes)
+        return ResolvedRoute(
+            branch_codes=branch_codes,
+            total_length_m=total_length_m,
+            uses_l1=uses_l1,
+        )
+
+    def _route_node_for_track_endpoint(
+        self,
+        track_code: str,
+        endpoint_node: str,
+    ) -> str | None:
+        track_meta = self._track_route_meta.get(track_code)
+        if track_meta is None:
+            return None
+        if endpoint_node in track_meta.connection_nodes:
+            return endpoint_node
+        track_endpoints = self._track_endpoints.get(track_code, ())
+        if endpoint_node in track_endpoints:
+            endpoint_index = track_endpoints.index(endpoint_node)
+            if endpoint_index < len(track_meta.connection_nodes):
+                return track_meta.connection_nodes[endpoint_index]
+        if len(track_meta.connection_nodes) == 1:
+            return track_meta.connection_nodes[0]
+        if track_meta.terminal_branch is not None:
+            branch_endpoints = self._branch_endpoints.get(track_meta.terminal_branch)
+            if branch_endpoints is not None:
+                for branch_endpoint in branch_endpoints:
+                    if branch_endpoint in track_meta.connection_nodes:
+                        return branch_endpoint
+        return None
+
+    def _append_node_path(
+        self,
+        branch_codes: list[str],
+        source_node: str,
+        target_node: str,
+        total_length_m: float,
+    ) -> float:
+        if source_node == target_node:
+            return total_length_m
+        middle = self._shortest_path(source_node, target_node)
+        if middle is None:
+            return total_length_m
+        for branch in middle:
+            total_length_m = self._append_branch(branch_codes, branch, total_length_m)
+        return total_length_m
+
     def resolve_path_tracks(self, source_track: str, target_track: str) -> list[str] | None:
         cache_key = (source_track, target_track)
         if cache_key in self._path_track_cache:
@@ -385,6 +695,109 @@ class RouteOracle:
                 heappush(queue, (next_cost, next_track, path_tracks + [next_track]))
         self._path_track_cache[cache_key] = None
         return None
+
+    def _blocking_tracks_for_path(
+        self,
+        path_tracks: list[str],
+        *,
+        occupied_track_sequences: dict[str, list[str]],
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if len(path_tracks) <= 1:
+            return blockers
+        for track_code in path_tracks[1:-1]:
+            if occupied_track_sequences.get(track_code):
+                blockers.append(track_code)
+        source_track = path_tracks[0]
+        if source_node is not None and occupied_track_sequences.get(source_track):
+            exit_node = self._shared_endpoint(source_track, path_tracks[1])
+            if exit_node is None or exit_node != source_node:
+                blockers.append(source_track)
+        target_track = path_tracks[-1]
+        if target_node is not None and occupied_track_sequences.get(target_track):
+            entry_node = self._shared_endpoint(path_tracks[-2], target_track)
+            if entry_node is None or entry_node != target_node:
+                blockers.append(target_track)
+        elif target_node is not None and self._target_endpoint_requires_direct_entry(
+            target_track,
+            target_node,
+        ):
+            entry_node = self._shared_endpoint(path_tracks[-2], target_track)
+            if entry_node is None or entry_node != target_node:
+                blockers.append(target_track)
+        return list(dict.fromkeys(blockers))
+
+    def _path_endpoint_blockers(
+        self,
+        path_tracks: list[str],
+        *,
+        occupied_track_sequences: dict[str, list[str]] | None = None,
+        source_node: str | None = None,
+        target_node: str | None = None,
+    ) -> list[str]:
+        if len(path_tracks) <= 1:
+            return []
+        blockers: list[str] = []
+        if (
+            source_node is not None
+            and occupied_track_sequences is not None
+            and occupied_track_sequences.get(path_tracks[0])
+        ):
+            source_track = path_tracks[0]
+            exit_node = self._shared_endpoint(source_track, path_tracks[1])
+            if exit_node is None or exit_node != source_node:
+                blockers.append(source_track)
+        if (
+            target_node is not None
+            and occupied_track_sequences is not None
+            and occupied_track_sequences.get(path_tracks[-1])
+        ):
+            target_track = path_tracks[-1]
+            entry_node = self._shared_endpoint(path_tracks[-2], target_track)
+            if entry_node is None or entry_node != target_node:
+                blockers.append(target_track)
+        elif target_node is not None:
+            target_track = path_tracks[-1]
+            if self._target_endpoint_requires_direct_entry(target_track, target_node):
+                entry_node = self._shared_endpoint(path_tracks[-2], target_track)
+                if entry_node is None or entry_node != target_node:
+                    blockers.append(target_track)
+        return blockers
+
+    def _target_endpoint_requires_direct_entry(
+        self,
+        track_code: str,
+        endpoint_node: str,
+    ) -> bool:
+        track_meta = self._track_route_meta.get(track_code)
+        if track_meta is None:
+            return True
+        return endpoint_node not in track_meta.connection_nodes
+
+    def order_end_node(self, track_code: str) -> str | None:
+        return self._order_end_node(track_code)
+
+    def track_has_node(self, track_code: str, node: str | None) -> bool:
+        return node is not None and node in self._track_endpoints.get(track_code, ())
+
+    def path_entry_node(self, path_tracks: list[str]) -> str | None:
+        if len(path_tracks) < 2:
+            return self._order_end_node(path_tracks[0]) if path_tracks else None
+        return self._shared_endpoint(path_tracks[-2], path_tracks[-1])
+
+    def _shared_endpoint(self, first_track: str, second_track: str) -> str | None:
+        first = set(self._track_endpoints.get(first_track, ()))
+        second = set(self._track_endpoints.get(second_track, ()))
+        shared = sorted(first & second)
+        return shared[0] if shared else None
+
+    def _order_end_node(self, track_code: str) -> str | None:
+        endpoints = self._track_endpoints.get(track_code)
+        if not endpoints:
+            return None
+        return endpoints[0]
 
     def _build_graph(self) -> dict[str, list[tuple[str, str, float]]]:
         graph: dict[str, list[tuple[str, str, float]]] = {}

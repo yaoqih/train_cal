@@ -131,10 +131,28 @@ def _run_anytime_fallback_chain(
         except ValueError:
             continue
         if not candidate.is_complete:
+            if _partial_candidate_score(candidate) < _partial_candidate_score(current):
+                current = replace(candidate, fallback_stage=stage_name)
             continue
         if not current.is_complete or len(candidate.plan) < len(current.plan):
             current = replace(candidate, fallback_stage=stage_name)
     return current
+
+
+def _partial_candidate_score(result: SolverResult) -> tuple[float, int]:
+    if result.is_complete:
+        return (float("-inf"), -len(result.plan))
+    score = None
+    if result.debug_stats is not None:
+        score = result.debug_stats.get("search_best_partial_score")
+    if isinstance(score, (list, tuple)) and len(score) >= 3:
+        try:
+            return (float(score[0]), int(score[1]))
+        except (TypeError, ValueError):
+            pass
+    if not result.partial_plan:
+        return (float("inf"), 0)
+    return (float("inf") - 1, -len(result.partial_plan))
 
 
 def _remaining_budget_ms(started_at: float, time_budget_ms: float | None) -> float | None:

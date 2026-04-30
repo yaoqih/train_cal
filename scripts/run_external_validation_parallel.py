@@ -428,7 +428,11 @@ def recover_no_solution_results(
             beam_width=retry_beam_width,
             heuristic_weight=heuristic_weight,
             timeout_seconds=timeout_seconds,
-            max_workers=max_workers,
+            max_workers=_retry_max_workers(
+                base_beam_width=beam_width,
+                retry_beam_width=retry_beam_width,
+                max_workers=max_workers,
+            ),
             time_budget_ms=retry_time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
@@ -437,12 +441,17 @@ def recover_no_solution_results(
             ),
         )
         for retry_result in retry_results:
+            current = merged_results[retry_result["scenario"]]
             if not retry_result.get("solved"):
+                retry_failed = dict(retry_result)
+                retry_failed["recovery_beam_width"] = retry_beam_width
+                retry_failed["recovery_time_budget_ms"] = retry_time_budget_ms
+                if _failed_retry_is_better_partial(retry_failed, current):
+                    merged_results[retry_result["scenario"]] = retry_failed
                 continue
             recovered = dict(retry_result)
             recovered["recovery_beam_width"] = retry_beam_width
             recovered["recovery_time_budget_ms"] = retry_time_budget_ms
-            current = merged_results[retry_result["scenario"]]
             if (
                 not current.get("solved")
                 or int(recovered.get("hook_count", 10**9))
@@ -454,12 +463,45 @@ def recover_no_solution_results(
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
 
 
+def _failed_retry_is_better_partial(candidate: dict[str, Any], incumbent: dict[str, Any]) -> bool:
+    if incumbent.get("solved"):
+        return False
+    candidate_score = _failed_partial_score(candidate)
+    incumbent_score = _failed_partial_score(incumbent)
+    return candidate_score < incumbent_score
+
+
+def _failed_partial_score(result: dict[str, Any]) -> tuple[int, int, int]:
+    debug_stats = result.get("debug_stats") or {}
+    structural = debug_stats.get("partial_structural_metrics") or {}
+    route_blockage = debug_stats.get("partial_route_blockage_plan") or {}
+    unfinished = _as_int(structural.get("unfinished_count"))
+    blockage = _as_int(route_blockage.get("total_blockage_pressure"))
+    partial_hooks = _as_int(result.get("partial_hook_count"))
+    return (
+        unfinished if unfinished is not None else 10**9,
+        blockage if blockage is not None else 10**9,
+        -(partial_hooks if partial_hooks is not None else -1),
+    )
+
+
 def _should_continue_recovery_after_success(result: dict[str, Any]) -> bool:
     shape = (result.get("debug_stats") or {}).get("plan_shape_metrics") or {}
     return validation_recovery_should_continue_after_success(
         hook_count=_as_int(result.get("hook_count")),
         max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
     )
+
+
+def _retry_max_workers(
+    *,
+    base_beam_width: int,
+    retry_beam_width: int,
+    max_workers: int,
+) -> int:
+    if retry_beam_width <= base_beam_width:
+        return max(1, max_workers)
+    return max(1, int(max_workers * base_beam_width / retry_beam_width))
 
 
 def _as_int(value: Any) -> int | None:

@@ -242,6 +242,321 @@ def test_route_oracle_rejects_loco_access_when_generic_intermediate_track_is_blo
     assert any("B" in error for error in result.errors)
 
 
+def test_route_oracle_loco_access_uses_clear_alternate_path_when_shortest_path_is_blocked():
+    master = MasterData(
+        tracks={
+            "A": Track(
+                code="A",
+                name="A",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("A0", "J1"),
+                connection_nodes=("J1",),
+                terminal_branch="A0-J1",
+            ),
+            "B": Track(
+                code="B",
+                name="B",
+                track_type="RUNNING",
+                effective_length_m=10.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J2"),
+                connection_nodes=("J1", "J2"),
+            ),
+            "C": Track(
+                code="C",
+                name="C",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J3"),
+                connection_nodes=("J1", "J3"),
+            ),
+            "D": Track(
+                code="D",
+                name="D",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J3", "J2"),
+                connection_nodes=("J3", "J2"),
+            ),
+            "E": Track(
+                code="E",
+                name="E",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("J2", "E0"),
+                connection_nodes=("J2",),
+                terminal_branch="J2-E0",
+            ),
+        },
+        physical_routes={
+            "A0-J1": PhysicalRoute(
+                code="A0-J1",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="A0",
+                right_node="J1",
+            ),
+            "J1-J2": PhysicalRoute(
+                code="J1-J2",
+                total_length_m=10.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J2",
+            ),
+            "J1-J3": PhysicalRoute(
+                code="J1-J3",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J3",
+            ),
+            "J3-J2": PhysicalRoute(
+                code="J3-J2",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J3",
+                right_node="J2",
+            ),
+            "J2-E0": PhysicalRoute(
+                code="J2-E0",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="J2",
+                right_node="E0",
+            ),
+        },
+    )
+    oracle = RouteOracle(master)
+
+    assert oracle.resolve_path_tracks("A", "E") == ["A", "B", "E"]
+
+    result = oracle.validate_loco_access(
+        loco_track="A",
+        target_track="E",
+        occupied_track_sequences={"B": ["BLOCK"]},
+    )
+
+    assert result.is_valid is True
+    assert result.blocking_tracks == []
+
+
+def test_route_oracle_allows_loco_to_cross_empty_source_from_current_endpoint():
+    master = MasterData(
+        tracks={
+            "A": Track(
+                code="A",
+                name="A",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("A0", "J1"),
+                connection_nodes=("J1",),
+                terminal_branch="A0-J1",
+            ),
+            "B": Track(
+                code="B",
+                name="B",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J2"),
+                connection_nodes=("J1", "J2"),
+            ),
+            "C": Track(
+                code="C",
+                name="C",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("J2", "C0"),
+                connection_nodes=("J2",),
+                terminal_branch="J2-C0",
+            ),
+        },
+        physical_routes={
+            "A0-J1": PhysicalRoute(
+                code="A0-J1",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="A0",
+                right_node="J1",
+            ),
+            "J1-J2": PhysicalRoute(
+                code="J1-J2",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J2",
+            ),
+            "J2-C0": PhysicalRoute(
+                code="J2-C0",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="J2",
+                right_node="C0",
+            ),
+        },
+    )
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="A",
+        target_track="C",
+        occupied_track_sequences={},
+        loco_node="A0",
+    )
+
+    assert result.is_valid is True
+
+
+def test_route_oracle_rejects_loco_crossing_occupied_source_from_current_endpoint():
+    master = MasterData(
+        tracks={
+            "A": Track(
+                code="A",
+                name="A",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("A0", "J1"),
+                connection_nodes=("J1",),
+                terminal_branch="A0-J1",
+            ),
+            "B": Track(
+                code="B",
+                name="B",
+                track_type="RUNNING",
+                effective_length_m=20.0,
+                allow_parking=False,
+                allows_final_destination=False,
+                endpoint_nodes=("J1", "J2"),
+                connection_nodes=("J1", "J2"),
+            ),
+            "C": Track(
+                code="C",
+                name="C",
+                track_type="STORAGE",
+                effective_length_m=80.0,
+                allow_parking=True,
+                allows_final_destination=True,
+                endpoint_nodes=("J2", "C0"),
+                connection_nodes=("J2",),
+                terminal_branch="J2-C0",
+            ),
+        },
+        physical_routes={
+            "A0-J1": PhysicalRoute(
+                code="A0-J1",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="A0",
+                right_node="J1",
+            ),
+            "J1-J2": PhysicalRoute(
+                code="J1-J2",
+                total_length_m=20.0,
+                status="已确认",
+                left_node="J1",
+                right_node="J2",
+            ),
+            "J2-C0": PhysicalRoute(
+                code="J2-C0",
+                total_length_m=40.0,
+                status="已确认",
+                left_node="J2",
+                right_node="C0",
+            ),
+        },
+    )
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="A",
+        target_track="C",
+        occupied_track_sequences={"A": ["PARKED"]},
+        loco_node="A0",
+    )
+
+    assert result.is_valid is False
+    assert result.blocking_tracks == ["A"]
+
+
+def test_route_oracle_rejects_leaving_single_access_track_when_loco_is_behind_parked_cars():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="存5南",
+        target_track="调棚",
+        occupied_track_sequences={
+            "存5南": ["PARKED"],
+            "渡9": ["BLOCK-SOUTH"],
+            "临4": ["BLOCK-SOUTH"],
+            "机棚": ["BLOCK-SOUTH"],
+            "机北": ["BLOCK-SOUTH"],
+            "渡5": ["BLOCK-SOUTH"],
+            "渡4": ["BLOCK-SOUTH"],
+            "调北": ["BLOCK-SOUTH"],
+        },
+        loco_node=oracle.order_end_node("存5南"),
+    )
+
+    assert result.is_valid is False
+    assert "调北" in result.blocking_tracks
+    assert "存5南" not in result.blocking_tracks
+
+
+def test_route_oracle_allows_leaving_occupied_source_from_clear_order_end():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="存5南",
+        target_track="调棚",
+        occupied_track_sequences={"存5南": ["PARKED"]},
+        loco_node=oracle.order_end_node("存5南"),
+    )
+
+    assert result.is_valid is True
+    assert "存5南" not in result.blocking_tracks
+
+
+def test_route_oracle_rejects_access_when_all_clear_paths_have_occupied_intermediate_tracks():
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+
+    result = oracle.validate_loco_access(
+        loco_track="存5南",
+        target_track="调棚",
+        occupied_track_sequences={
+            "存5南": ["PARKED"],
+            "临4": ["BLOCK-L14"],
+            "机棚": ["BLOCK-Z1-L8"],
+            "机北": ["BLOCK-Z1"],
+            "调北": ["BLOCK-L7"],
+        },
+        loco_node=oracle.order_end_node("存5南"),
+    )
+
+    assert result.is_valid is False
+    assert "存5南" not in result.blocking_tracks
+    assert result.blocking_tracks == ["调北"]
+
+
 def test_route_oracle_allows_blocked_intermediate_track_when_clear_path_rule_is_disabled():
     master = MasterData(
         tracks={

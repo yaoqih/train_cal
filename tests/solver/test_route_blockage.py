@@ -68,6 +68,40 @@ def test_route_blockage_plan_reports_occupied_intermediate_goal_corridor():
     assert fact.source_tracks == ["临4"]
 
 
+def test_route_blockage_plan_reports_blocked_loco_access_to_unfinished_source():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5南", "trackDistance": 156.0},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "临2", "trackDistance": 62.9},
+            ],
+            "vehicleInfo": [
+                {
+                    **_vehicle("SEEK", "存5南", "修4库内"),
+                    "isSpotting": "405",
+                },
+                _vehicle("BLOCK", "存5北", "存5北"),
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    state = build_initial_state(normalized)
+
+    plan = compute_route_blockage_plan(normalized, state, RouteOracle(master))
+
+    fact = plan.facts_by_blocking_track["存5北"]
+    assert fact.blocking_vehicle_nos == ["BLOCK"]
+    assert fact.blocked_vehicle_nos == ["SEEK"]
+    assert fact.source_tracks == ["存5南"]
+    assert fact.target_tracks == ["修4库内"]
+
+
 def test_route_blockage_plan_pressure_drops_when_blocking_track_is_attached():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_corridor_payload(), master)
@@ -89,7 +123,7 @@ def test_route_blockage_plan_pressure_drops_when_blocking_track_is_attached():
     )
     after = compute_route_blockage_plan(normalized, next_state, RouteOracle(master))
 
-    assert before.total_blockage_pressure == 1
+    assert before.total_blockage_pressure == 2
     assert after.total_blockage_pressure == 0
 
 
@@ -141,7 +175,7 @@ def test_route_blockage_release_score_reports_fact_pressure_only():
         source_track="存5南",
         vehicle_nos=["BLOCK"],
         route_blockage_plan=route_blockage_plan,
-    ) == 1
+    ) == 2
     assert route_blockage_release_score(
         source_track="临4",
         vehicle_nos=["SEEK"],

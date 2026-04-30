@@ -574,8 +574,8 @@ def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
     assert view.comparison_summary["externalHookCount"] == 2
     assert view.comparison_summary["externalIsValid"] is False
     assert view.comparison_summary["failedHookNos"] == [2]
-    assert view.comparison_summary["solverHookCount"] is None
-    assert "No solution found" in view.comparison_summary["solverError"]
+    assert view.comparison_summary["solverHookCount"] == 2
+    assert view.comparison_summary["solverError"] is None
 
 
 def test_build_demo_view_model_computes_external_plan_comparison_summary():

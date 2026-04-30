@@ -6,7 +6,12 @@ from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.state import _vehicle_track_lookup
+from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
+
+
+ROUTE_RELEASE_CONTINUATION_BONUS = 8
+ROUTE_RELEASE_FOCUS_TTL = 3
 
 
 @dataclass(frozen=True)
@@ -37,10 +42,18 @@ class RouteBlockagePlan:
             vehicle_nos.update(fact.blocked_vehicle_nos)
         return sorted(vehicle_nos)
 
+    @property
+    def blocking_vehicle_nos(self) -> list[str]:
+        vehicle_nos: set[str] = set()
+        for fact in self.facts_by_blocking_track.values():
+            vehicle_nos.update(fact.blocking_vehicle_nos)
+        return sorted(vehicle_nos)
+
     def to_dict(self) -> dict:
         return {
             "total_blockage_pressure": self.total_blockage_pressure,
             "blocked_vehicle_nos": self.blocked_vehicle_nos,
+            "blocking_vehicle_nos": self.blocking_vehicle_nos,
             "facts_by_blocking_track": {
                 track: fact.to_dict()
                 for track, fact in sorted(self.facts_by_blocking_track.items())
@@ -75,14 +88,51 @@ def compute_route_blockage_plan(
             plan_input=plan_input,
         ):
             continue
-        for target_track in goal_effective_allowed_tracks(
+        target_tracks = goal_effective_allowed_tracks(
             vehicle,
             state=state,
             plan_input=plan_input,
-        ):
+        )
+        if source_track != state.loco_track_name:
+            access_result = route_oracle.validate_loco_access(
+                loco_track=state.loco_track_name,
+                target_track=source_track,
+                occupied_track_sequences=state.track_sequences,
+                loco_node=state.loco_node,
+            )
+            if not access_result.is_valid:
+                target_label = next(
+                    (track for track in target_tracks if track != source_track),
+                    source_track,
+                )
+                for blocking_track in access_result.blocking_tracks:
+                    if blocking_track == source_track:
+                        continue
+                    blocking_vehicle_nos = list(state.track_sequences.get(blocking_track, []))
+                    if not blocking_vehicle_nos:
+                        continue
+                    builder = fact_builders.setdefault(
+                        blocking_track,
+                        _RouteBlockageFactBuilder(blocking_track=blocking_track),
+                    )
+                    builder.add(
+                        blocking_vehicle_nos=blocking_vehicle_nos,
+                        blocked_vehicle_no=vehicle.vehicle_no,
+                        source_track=source_track,
+                        target_track=target_label,
+                    )
+        for target_track in target_tracks:
             if target_track == source_track:
                 continue
-            path_tracks = route_oracle.resolve_path_tracks(source_track, target_track)
+            path_tracks = route_oracle.resolve_path_tracks_for_endpoint_constraints(
+                source_track,
+                target_track,
+                occupied_track_sequences=state.track_sequences,
+                source_node=state.loco_node if source_track == state.loco_track_name else None,
+                target_node=route_oracle.order_end_node(target_track),
+            )
+            if path_tracks is None:
+                path_tracks = route_oracle.resolve_path_tracks(source_track, target_track)
             if path_tracks is None:
                 continue
             for blocking_track in path_tracks[1:-1]:
@@ -129,6 +179,51 @@ def route_blockage_release_score(
     if source_release_fraction <= 0.0:
         return 0
     return max(1, round(fact.blockage_count * source_release_fraction))
+
+
+def route_release_continuation_bonus(
+    *,
+    state: ReplayState,
+    move: HookAction,
+    focus_tracks: frozenset[str] | set[str] | None,
+    focus_bonus: int,
+) -> int:
+    if not focus_tracks or move.action_type != "ATTACH" or state.loco_carry:
+        return 0
+    if move.source_track not in focus_tracks or not move.vehicle_nos:
+        return 0
+    source_seq = state.track_sequences.get(move.source_track, [])
+    if tuple(source_seq[: len(move.vehicle_nos)]) != tuple(move.vehicle_nos):
+        return 0
+    return max(ROUTE_RELEASE_CONTINUATION_BONUS, focus_bonus + 2)
+
+
+def route_release_focus_after_move(
+    *,
+    prior_focus_tracks: frozenset[str] | set[str],
+    prior_focus_bonus: int,
+    prior_focus_ttl: int,
+    move: HookAction,
+    route_blockage_plan: RouteBlockagePlan | None,
+) -> tuple[frozenset[str], int, int]:
+    if route_blockage_plan is not None and move.action_type == "ATTACH":
+        fact = route_blockage_plan.facts_by_blocking_track.get(move.source_track)
+        if fact is not None:
+            moved = set(move.vehicle_nos)
+            if moved and moved & set(fact.blocking_vehicle_nos):
+                return (
+                    frozenset(fact.source_tracks),
+                    fact.blockage_count,
+                    max(ROUTE_RELEASE_FOCUS_TTL, len(fact.blocking_vehicle_nos) + 1),
+                )
+    if prior_focus_ttl <= 0 or not prior_focus_tracks:
+        return frozenset(), 0, 0
+    if move.action_type == "ATTACH" and move.source_track in prior_focus_tracks:
+        return frozenset(), 0, 0
+    ttl = prior_focus_ttl - 1
+    if ttl <= 0:
+        return frozenset(), 0, 0
+    return frozenset(prior_focus_tracks), prior_focus_bonus, ttl
 
 
 @dataclass
