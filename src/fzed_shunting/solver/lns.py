@@ -14,6 +14,7 @@ from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.state import _is_goal, _locate_vehicle
 from fzed_shunting.solver.types import HookAction
+from fzed_shunting.solver.capacity_release import compute_capacity_release_plan
 from fzed_shunting.verify.replay import ReplayState, replay_plan
 
 
@@ -386,6 +387,14 @@ def _build_repair_plan_input(
         for vehicle_no, spot_code in snapshot.spot_assignments.items()
     }
     movable_exact_spot_blockers: set[str] = set()
+    movable_front_blockers = _front_blocking_satisfied_vehicle_nos(
+        plan_input=plan_input,
+        snapshot=snapshot,
+    )
+    movable_capacity_release_front = _capacity_release_front_vehicle_nos(
+        plan_input=plan_input,
+        snapshot=snapshot,
+    )
     for vehicle in plan_input.vehicles:
         current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
         if goal_is_satisfied(
@@ -418,6 +427,8 @@ def _build_repair_plan_input(
         if (
             goal_satisfied
             and vehicle.vehicle_no not in movable_exact_spot_blockers
+            and vehicle.vehicle_no not in movable_front_blockers
+            and vehicle.vehicle_no not in movable_capacity_release_front
             and vehicle.vehicle_no not in extra_movable_vehicle_nos
         ):
             frozen_goal = GoalSpec(
@@ -442,6 +453,48 @@ def _build_repair_plan_input(
             "loco_track_name": snapshot.loco_track_name,
         }
     )
+
+
+def _capacity_release_front_vehicle_nos(
+    *,
+    plan_input: NormalizedPlanInput,
+    snapshot: ReplayState,
+) -> set[str]:
+    release_plan = compute_capacity_release_plan(plan_input, snapshot)
+    movable: set[str] = set()
+    for fact in release_plan.facts_by_track.values():
+        if fact.release_pressure_length <= 1e-9:
+            continue
+        movable.update(fact.front_release_vehicle_nos)
+    return movable
+
+
+def _front_blocking_satisfied_vehicle_nos(
+    *,
+    plan_input: NormalizedPlanInput,
+    snapshot: ReplayState,
+) -> set[str]:
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    blockers: set[str] = set()
+    for track, seq in snapshot.track_sequences.items():
+        prefix: list[str] = []
+        for vehicle_no in seq:
+            vehicle = vehicle_by_no.get(vehicle_no)
+            current_satisfied = (
+                vehicle is not None
+                and goal_is_satisfied(
+                    vehicle,
+                    track_name=track,
+                    state=snapshot,
+                    plan_input=plan_input,
+                )
+            )
+            if not current_satisfied:
+                if prefix:
+                    blockers.update(prefix)
+                break
+            prefix.append(vehicle_no)
+    return blockers
 
 
 def _spot_goal_satisfied(

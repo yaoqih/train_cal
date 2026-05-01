@@ -682,6 +682,7 @@ def test_recover_no_solution_results_continues_after_pathological_success(tmp_pa
             retry_no_solution_beam_width=16,
             initial_results=initial_results,
             time_budget_ms=30_000,
+            improve_pathological_success=True,
         )
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
@@ -751,6 +752,7 @@ def test_recover_no_solution_results_retries_pathological_initial_success(tmp_pa
             retry_no_solution_beam_width=16,
             initial_results=initial_results,
             time_budget_ms=30_000,
+            improve_pathological_success=True,
         )
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
@@ -758,6 +760,52 @@ def test_recover_no_solution_results_retries_pathological_initial_success(tmp_pa
     assert calls == [8]
     assert results[0]["hook_count"] == 102
     assert results[0]["recovery_beam_width"] == 8
+
+
+def test_recover_no_solution_results_does_not_retry_pathological_success_by_default(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": True,
+            "hook_count": 1009,
+            "is_valid": True,
+            "debug_stats": {
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 210,
+                }
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        calls.append(kwargs["beam_width"])
+        return []
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == []
+    assert results[0] == initial_results[0]
 
 
 def test_recover_no_solution_results_does_not_retry_high_hook_low_churn_success(tmp_path: Path):
@@ -934,9 +982,15 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
         heuristic_weight,  # noqa: ANN001, ARG001
         timeout_seconds,  # noqa: ANN001, ARG001
         max_workers,  # noqa: ANN001, ARG001
+        near_goal_partial_resume_max_final_heuristic=None,  # noqa: ANN001
         **_kwargs,  # noqa: ANN003
     ):
-        calls.append(("run", [path.name for path in scenario_paths], beam_width))
+        calls.append((
+            "run",
+            [path.name for path in scenario_paths],
+            beam_width,
+            near_goal_partial_resume_max_final_heuristic,
+        ))
         return [{"scenario": "validation_single.json", "solved": True}]
 
     def fake_recover_no_solution_results(
@@ -970,6 +1024,8 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
             timeout_seconds=60,
             scenario=scenario,
             retry_no_solution_beam_width=12,
+            improve_pathological_success=False,
+            near_goal_partial_resume_max_final_heuristic=10,
             worker=False,
         )
         module.run_parallel_scenarios = fake_run_parallel_scenarios
@@ -981,6 +1037,52 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
         module.recover_no_solution_results = original_recover_no_solution_results
 
     assert calls == [
-        ("run", ["validation_single.json"], 8),
+        ("run", ["validation_single.json"], 8, 10),
         ("recover", ["validation_single.json"], 12),
     ]
+
+
+def test_main_leaves_initial_run_on_solver_default_near_goal_threshold(tmp_path: Path):
+    scenario = tmp_path / "validation_single.json"
+    scenario.write_text("{}", encoding="utf-8")
+    captured: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        near_goal_partial_resume_max_final_heuristic=None,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        captured.append(near_goal_partial_resume_max_final_heuristic)
+        return [{"scenario": "validation_single.json", "solved": True}]
+
+    def fake_recover_no_solution_results(**kwargs):  # noqa: ANN003
+        return kwargs["initial_results"]
+
+    original_parse_args = module.parse_args
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    original_recover_no_solution_results = module.recover_no_solution_results
+    try:
+        module.parse_args = lambda: module.argparse.Namespace(
+            input_dir=Path("ignored"),
+            output_dir=tmp_path / "out",
+            master_dir=Path("data/master"),
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            max_workers=2,
+            timeout_seconds=60,
+            scenario=scenario,
+            retry_no_solution_beam_width=0,
+            improve_pathological_success=False,
+            near_goal_partial_resume_max_final_heuristic=None,
+            worker=False,
+        )
+        module.run_parallel_scenarios = fake_run_parallel_scenarios
+        module.recover_no_solution_results = fake_recover_no_solution_results
+        module.main()
+    finally:
+        module.parse_args = original_parse_args
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+        module.recover_no_solution_results = original_recover_no_solution_results
+
+    assert captured == [None]

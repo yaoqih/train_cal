@@ -17,6 +17,8 @@ from fzed_shunting.solver.astar_solver import (
     _build_repair_plan_input,
     _candidate_repair_cut_points,
     _try_localized_resume_completion,
+    _try_direct_blocked_tail_completion_from_state,
+    _try_route_blockage_tail_clearance_completion,
     _try_route_release_partial_completion,
     _try_resume_partial_completion,
     _try_resume_from_checkpoint,
@@ -2461,6 +2463,7 @@ def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable(
             {"trackName": "修2库内", "trackDistance": 151.7},
             {"trackName": "修3库内", "trackDistance": 151.7},
             {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "存4北", "trackDistance": 317.8},
             {"trackName": "临1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
@@ -2483,7 +2486,7 @@ def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable(
                 "vehicleNo": "SEEK_ROUTE",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "存4北",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
@@ -2510,6 +2513,247 @@ def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable(
         "修3库内",
         "修4库内",
     }
+
+
+def test_build_repair_plan_input_keeps_satisfied_front_blocker_movable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "临1", "trackDistance": 81.4},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SAT_FRONT",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEEP_NEED",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    snapshot = build_initial_state(normalized)
+
+    localized = _build_repair_plan_input(normalized, snapshot)
+    goals = {vehicle.vehicle_no: vehicle.goal for vehicle in localized.vehicles}
+
+    assert goals["SAT_FRONT"].target_area_code == "大库:RANDOM"
+    assert set(goals["SAT_FRONT"].allowed_target_tracks) == {
+        "修1库内",
+        "修2库内",
+        "修3库内",
+        "修4库内",
+    }
+    assert goals["DEEP_NEED"].target_track == "存4北"
+
+
+def test_build_repair_plan_input_keeps_capacity_release_front_movable():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "修1库内", "trackDistance": 40.0},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "存2", "trackDistance": 100.0},
+            {"trackName": "临1", "trackDistance": 81.4},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SAT_FRONT",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SAT_BACK",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存2",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "INBOUND",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "targetMode": "TRACK",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    snapshot = build_initial_state(normalized)
+
+    localized = _build_repair_plan_input(normalized, snapshot)
+    goals = {vehicle.vehicle_no: vehicle.goal for vehicle in localized.vehicles}
+
+    assert goals["SAT_FRONT"].target_area_code == "大库:RANDOM"
+    assert set(goals["SAT_FRONT"].allowed_target_tracks) == {
+        "修1库内",
+        "修2库内",
+        "修3库内",
+        "修4库内",
+    }
+    assert goals["INBOUND"].target_track == "修1库内"
+
+
+def test_route_blockage_tail_clearance_moves_blockers_off_route_before_resume():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "存5南", "trackDistance": 156.0},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "ROUTE_BLOCK_A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "ROUTE_BLOCK_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SETTLED_A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SETTLED_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5南",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5南",
+                "order": "3",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DEEP_DEPOT",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "存5北",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    initial = build_initial_state(normalized)
+
+    route_blockage_plan = compute_route_blockage_plan(
+        normalized,
+        initial,
+        RouteOracle(master),
+    )
+    result = _try_route_blockage_tail_clearance_completion(
+        plan_input=normalized,
+        initial_state=initial,
+        partial_plan=[],
+        master=master,
+        time_budget_ms=10_000.0,
+    )
+
+    assert "存5北" in route_blockage_plan.facts_by_blocking_track
+    assert result is not None
+    assert result.is_complete
+    assert result.verification_report is not None
+    assert result.verification_report.is_valid
+    assert any(
+        move.action_type == "DETACH"
+        and move.source_track == "存5北"
+        and set(move.vehicle_nos) == {"ROUTE_BLOCK_A", "ROUTE_BLOCK_B"}
+        and move.target_track not in {"存5北", "存5南"}
+        for move in result.plan
+    )
+    replay = replay_plan(
+        initial,
+        [
+            {
+                "hookNo": idx,
+                "actionType": item.action_type,
+                "sourceTrack": item.source_track,
+                "targetTrack": item.target_track,
+                "vehicleNos": item.vehicle_nos,
+                "pathTracks": item.path_tracks,
+            }
+            for idx, item in enumerate(result.plan, start=1)
+        ],
+    )
+    assert replay.final_state.track_sequences["存5北"] == [
+        "ROUTE_BLOCK_A",
+        "ROUTE_BLOCK_B",
+    ]
+    assert replay.final_state.track_sequences["存5南"] == ["SETTLED_A", "SETTLED_B"]
 
 
 def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
@@ -2771,6 +3015,102 @@ def test_partial_resume_reallocates_budget_after_last_checkpoint_miss():
     ]
 
 
+def test_partial_resume_tries_route_blockage_tail_after_checkpoint_partial():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存4北", "trackDistance": 317.8},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "RB_TAIL",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    constructive_plan = [
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["RB_TAIL"],
+            path_tracks=["存5北"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="机库",
+            vehicle_nos=["RB_TAIL"],
+            path_tracks=["存5北", "机库"],
+            action_type="DETACH",
+        ),
+    ]
+    checkpoint_partial = SolverResult(
+        plan=[],
+        expanded_nodes=3,
+        generated_nodes=5,
+        closed_nodes=2,
+        elapsed_ms=10.0,
+        is_complete=False,
+        fallback_stage="constructive_partial_resume",
+        partial_plan=list(constructive_plan),
+        partial_fallback_stage="constructive_partial_resume",
+        debug_stats={"partial_route_blockage_plan": {"total_blockage_pressure": 1}},
+    )
+    tail_complete = SolverResult(
+        plan=[
+            *constructive_plan,
+            HookAction(
+                source_track="机库",
+                target_track="存4北",
+                vehicle_nos=["RB_TAIL"],
+                path_tracks=["机库", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=4,
+        generated_nodes=6,
+        closed_nodes=3,
+        elapsed_ms=12.0,
+        is_complete=True,
+        fallback_stage="route_blockage_tail_clearance",
+    )
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._try_resume_from_checkpoint",
+        return_value=checkpoint_partial,
+    ):
+        with patch(
+            "fzed_shunting.solver.astar_solver._try_route_blockage_tail_clearance_completion",
+            return_value=tail_complete,
+        ) as tail_clearance:
+            result = _try_resume_partial_completion(
+                plan_input=normalized,
+                initial_state=initial,
+                constructive_plan=constructive_plan,
+                master=master,
+                time_budget_ms=10_000.0,
+                enable_depot_late_scheduling=False,
+            )
+
+    assert result is tail_complete
+    assert tail_clearance.call_args.kwargs["initial_state"] is initial
+    assert tail_clearance.call_args.kwargs["partial_plan"] == checkpoint_partial.partial_plan
+
+
 def test_resume_from_checkpoint_returns_prefixed_partial_when_tail_search_improves():
     prefix = [
         HookAction(
@@ -2826,6 +3166,298 @@ def test_resume_from_checkpoint_returns_prefixed_partial_when_tail_search_improv
     assert result.partial_fallback_stage == "constructive_partial_resume"
 
 
+def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_returning_partial():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "存5南", "trackDistance": 156.0},
+                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "修1库内", "trackDistance": 151.7},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "CHECK_BLOCK",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5南",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "CHECK_SEEK",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "修1库内",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "临1",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "CHECK_OTHER",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "机库",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "存5北",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    prefix = [
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["CHECK_BLOCK"],
+            path_tracks=["存5北"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["CHECK_BLOCK"],
+            path_tracks=["存5北"],
+            action_type="DETACH",
+        ),
+    ]
+    partial_suffix = [
+        HookAction(
+            source_track="临1",
+            target_track="临1",
+            vehicle_nos=["CHECK_OTHER"],
+            path_tracks=["临1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="临1",
+            target_track="临1",
+            vehicle_nos=["CHECK_OTHER"],
+            path_tracks=["临1"],
+            action_type="DETACH",
+        ),
+    ]
+    localized_partial = SolverResult(
+        plan=[],
+        expanded_nodes=3,
+        generated_nodes=4,
+        closed_nodes=2,
+        elapsed_ms=10.0,
+        is_complete=False,
+        fallback_stage="beam",
+        partial_plan=partial_suffix,
+        partial_fallback_stage="beam",
+    )
+    tail_result = SolverResult(
+        plan=[
+            *prefix,
+            *partial_suffix,
+            HookAction(
+                source_track="存5南",
+                target_track="修1库内",
+                vehicle_nos=["CHECK_SEEK"],
+                path_tracks=["存5南", "修1库内"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=5,
+        generated_nodes=6,
+        closed_nodes=5,
+        elapsed_ms=20.0,
+        is_complete=True,
+        fallback_stage="route_blockage_tail_clearance",
+    )
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._try_localized_resume_completion",
+        return_value=localized_partial,
+    ):
+        with patch(
+            "fzed_shunting.solver.astar_solver.compute_route_blockage_plan",
+            return_value=SimpleNamespace(total_blockage_pressure=1),
+        ):
+            with patch(
+                "fzed_shunting.solver.astar_solver._try_route_blockage_tail_clearance_from_state",
+                return_value=tail_result,
+            ) as tail_clearance:
+                result = _try_resume_from_checkpoint(
+                    plan_input=normalized,
+                    checkpoint_prefix=prefix,
+                    checkpoint_state=initial,
+                    original_initial_state=initial,
+                    master=master,
+                    time_budget_ms=10_000.0,
+                    enable_depot_late_scheduling=False,
+                )
+
+    assert result is tail_result
+    tail_kwargs = tail_clearance.call_args.kwargs
+    assert tail_kwargs["original_initial_state"] is initial
+    assert tail_kwargs["prefix_plan"] == prefix + partial_suffix
+    assert tail_kwargs["state"].loco_carry == ()
+    assert tail_kwargs["state"].track_sequences["临1"] == ["CHECK_OTHER"]
+
+
+def test_direct_blocked_tail_completion_uses_native_suffix_when_restoring_carry_requires_search():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5南", "trackDistance": 156.0},
+                {"trackName": "存3", "trackDistance": 258.5},
+                {"trackName": "修3库内", "trackDistance": 151.7},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5南",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "RESTORE_A",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5南",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5南",
+                    "order": "2",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "RESTORE_B",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5南",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5南",
+                    "order": "3",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "RESTORE_DEPOT",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "大库",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "存5南",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    attach_all = HookAction(
+        source_track="存5南",
+        target_track="存5南",
+        vehicle_nos=["RESTORE_A", "RESTORE_B", "RESTORE_DEPOT"],
+        path_tracks=["存5南"],
+        action_type="ATTACH",
+    )
+    detach_depot = HookAction(
+        source_track="存5南",
+        target_track="修3库内",
+        vehicle_nos=["RESTORE_DEPOT"],
+        path_tracks=["存5南", "修3库内"],
+        action_type="DETACH",
+    )
+    searched_suffix = [
+        HookAction(
+            source_track="修3库内",
+            target_track="存3",
+            vehicle_nos=["RESTORE_B"],
+            path_tracks=["修3库内", "存3"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存3",
+            target_track="存5南",
+            vehicle_nos=["RESTORE_A"],
+            path_tracks=["存3", "存5南"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存3",
+            target_track="存3",
+            vehicle_nos=["RESTORE_B"],
+            path_tracks=["存3"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存3",
+            target_track="存5南",
+            vehicle_nos=["RESTORE_B"],
+            path_tracks=["存3", "存5南"],
+            action_type="DETACH",
+        ),
+    ]
+
+    suffix_result = SolverResult(
+        plan=searched_suffix,
+        expanded_nodes=7,
+        generated_nodes=9,
+        closed_nodes=5,
+        elapsed_ms=12.0,
+        is_complete=True,
+        fallback_stage="beam",
+    )
+    initial_blockage = SimpleNamespace(
+        facts_by_blocking_track={
+            "存5北": SimpleNamespace(
+                blocking_track="存5北",
+                blocked_vehicle_nos=["RESTORE_DEPOT"],
+                target_tracks=["修3库内"],
+                blockage_count=1,
+            )
+        }
+    )
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._find_generated_move",
+        side_effect=[attach_all, detach_depot, None],
+    ):
+        with patch(
+            "fzed_shunting.solver.astar_solver._solve_search_result",
+            return_value=suffix_result,
+        ) as search:
+            with patch(
+                "fzed_shunting.solver.astar_solver._attach_verification",
+                side_effect=lambda result, **_kwargs: result,
+            ):
+                result = _try_direct_blocked_tail_completion_from_state(
+                    plan_input=normalized,
+                    original_initial_state=initial,
+                    prefix_plan=[],
+                    clearing_plan=[],
+                    state=initial,
+                    initial_blockage=initial_blockage,
+                    master=master,
+                    time_budget_ms=5_000.0,
+                    expanded_nodes=1,
+                    generated_nodes=2,
+                    enable_depot_late_scheduling=False,
+                )
+
+    assert result is not None
+    assert result.is_complete
+    assert result.plan == [attach_all, detach_depot, *searched_suffix]
+    assert search.call_args.kwargs["initial_state"].loco_carry == ("RESTORE_A", "RESTORE_B")
+
+
 def test_route_release_tail_completion_solves_blocked_partial_tail():
     master = load_master_data(DATA_DIR)
     payload = json.loads(
@@ -2845,7 +3477,7 @@ def test_route_release_tail_completion_solves_blocked_partial_tail():
         master=master,
         solver_mode="beam",
         beam_width=8,
-        time_budget_ms=30_000,
+        time_budget_ms=55_000,
         verify=False,
         enable_anytime_fallback=True,
         near_goal_partial_resume_max_final_heuristic=10,
@@ -3504,6 +4136,114 @@ def test_beam_mode_keeps_primary_search_budget_when_anytime_fallback_enabled():
     assert 29_900.0 <= seen_budgets[0] <= 30_000.0
 
 
+def test_beam_mode_preserves_primary_budget_after_failed_partial_resumes():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "PRIMARY_RESERVE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_seed = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["PRIMARY_RESERVE"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            )
+        ],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={"final_heuristic": 2},
+    )
+    completed = SolverResult(
+        plan=[
+            *partial_seed.partial_plan,
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["PRIMARY_RESERVE"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="beam",
+    )
+    clock = {"now": 0.0}
+    primary_budgets: list[float | None] = []
+
+    def spend_child_budget(*, time_budget_ms, **_kwargs):
+        clock["now"] += time_budget_ms / 1000.0
+        return None
+
+    def fake_search(*args, **kwargs):
+        primary_budgets.append(kwargs["budget"].time_budget_ms)
+        return completed
+
+    with patch("fzed_shunting.solver.astar_solver.perf_counter", side_effect=lambda: clock["now"]):
+        with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
+            with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._try_resume_partial_completion",
+                    side_effect=spend_child_budget,
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._try_route_release_partial_completion",
+                        side_effect=spend_child_budget,
+                    ):
+                        with patch("fzed_shunting.solver.astar_solver._solve_search_result", side_effect=fake_search):
+                            with patch(
+                                "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                                side_effect=lambda **kwargs: kwargs["incumbent"],
+                            ):
+                                result = solve_with_simple_astar_result(
+                                    normalized,
+                                    initial,
+                                    master=master,
+                                    solver_mode="beam",
+                                    beam_width=8,
+                                    time_budget_ms=30_000.0,
+                                    enable_anytime_fallback=True,
+                                    verify=False,
+                                )
+
+    assert primary_budgets
+    assert primary_budgets[0] >= 10_000.0
+    assert result.is_complete is True
+    assert result.fallback_stage == "beam"
+
+
 def test_beam_mode_caps_primary_search_when_constructive_seed_is_complete():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -3924,6 +4664,7 @@ def test_beam_mode_does_not_spend_primary_budget_after_partial_resume_succeeds()
                             time_budget_ms=30_000.0,
                             enable_anytime_fallback=True,
                             verify=False,
+                            near_goal_partial_resume_max_final_heuristic=10,
                         )
 
     search.assert_not_called()
@@ -4241,6 +4982,7 @@ def test_solver_resumes_relaxed_constructive_partial_when_primary_paths_fail():
                             time_budget_ms=30_000.0,
                             enable_anytime_fallback=True,
                             verify=False,
+                            near_goal_partial_resume_max_final_heuristic=10,
                         )
 
     assert calls[0][0] is True
@@ -4480,7 +5222,7 @@ def test_relaxed_constructive_resume_budget_is_capped_to_near_goal_limit():
                         )
 
     assert len(resume_budgets) == 1
-    assert 59_000.0 <= resume_budgets[0] <= 60_000.0
+    assert 54_000.0 <= resume_budgets[0] <= 55_000.0
 
 
 def test_solver_tries_route_release_constructive_when_regular_partials_stall():
@@ -4593,12 +5335,132 @@ def test_solver_tries_route_release_constructive_when_regular_partials_stall():
                             time_budget_ms=30_000.0,
                             enable_anytime_fallback=True,
                             verify=False,
+                            near_goal_partial_resume_max_final_heuristic=10,
                         )
 
     assert calls == [(True, False), (False, False), (False, True)]
     assert result.is_complete is True
     assert result.plan == route_release_complete.plan
     assert result.fallback_stage == "constructive_route_release"
+
+
+def test_default_solver_caps_route_release_portfolio_before_primary_beam():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "PRIMARY_FIRST",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["PRIMARY_FIRST"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[partial_move],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={"final_heuristic": 9},
+    )
+    beam_result = SolverResult(
+        plan=[
+            partial_move,
+            HookAction(
+                source_track="存5北",
+                target_track="存4北",
+                vehicle_nos=["PRIMARY_FIRST"],
+                path_tracks=["存5北", "存4北"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="beam",
+    )
+    calls: list[str] = []
+    primary_budgets: list[float | None] = []
+    clock = {"now": 0.0}
+
+    def fake_constructive_stage(
+        *,
+        strict_staging_regrab=True,
+        route_release_bias=False,
+        time_budget_ms=None,
+        **_kwargs,
+    ):
+        calls.append(
+            "route_release"
+            if route_release_bias
+            else ("relaxed" if not strict_staging_regrab else "constructive")
+        )
+        if not strict_staging_regrab and time_budget_ms is not None:
+            clock["now"] += time_budget_ms / 1000.0
+        return partial
+
+    def fake_search(*args, **kwargs):
+        calls.append("beam")
+        primary_budgets.append(kwargs["budget"].time_budget_ms)
+        return beam_result
+
+    with patch("fzed_shunting.solver.astar_solver.perf_counter", side_effect=lambda: clock["now"]):
+        with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", side_effect=fake_constructive_stage):
+            with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+                with patch("fzed_shunting.solver.astar_solver._partial_route_blockage_pressure", return_value=8):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._try_route_release_partial_completion",
+                        return_value=None,
+                    ):
+                        with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", return_value=None):
+                            with patch("fzed_shunting.solver.astar_solver._solve_search_result", side_effect=fake_search):
+                                with patch(
+                                    "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                                    side_effect=lambda **kwargs: kwargs["incumbent"],
+                                ):
+                                    result = solve_with_simple_astar_result(
+                                        normalized,
+                                        initial,
+                                        master=master,
+                                        solver_mode="beam",
+                                        beam_width=8,
+                                        time_budget_ms=55_000.0,
+                                        enable_anytime_fallback=True,
+                                        verify=False,
+                                    )
+
+    assert calls[:4] == ["constructive", "relaxed", "route_release", "beam"]
+    assert primary_budgets and 34_000.0 <= primary_budgets[0] <= 35_000.0
+    assert result.is_complete is True
+    assert result.fallback_stage == "beam"
 
 
 def test_solver_resumes_route_release_partial_before_primary_beam():
@@ -4810,7 +5672,7 @@ def test_beam_mode_gives_near_goal_constructive_partial_enough_resume_budget():
 
     def fake_resume(*, time_budget_ms, **_kwargs):
         resume_budgets.append(time_budget_ms)
-        return resumed if time_budget_ms >= 59_000.0 else None
+        return resumed if time_budget_ms >= 54_000.0 else None
 
     with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=partial_seed):
         with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
@@ -4842,7 +5704,7 @@ def test_beam_mode_gives_near_goal_constructive_partial_enough_resume_budget():
                             verify=False,
                         )
 
-    assert 59_000.0 <= resume_budgets[0] <= 60_000.0
+    assert 54_000.0 <= resume_budgets[0] <= 55_000.0
     assert result.is_complete is True
     assert result.plan == resumed.plan
     assert result.fallback_stage == "constructive_partial_resume"
@@ -5478,13 +6340,8 @@ def test_solver_tries_route_release_tail_on_final_selected_partial():
         fallback_stage="constructive_route_release_tail",
     )
     tail_inputs: list[list[HookAction]] = []
-    route_tail_call_count = 0
 
     def fake_route_tail(*, partial_plan, **_kwargs):
-        nonlocal route_tail_call_count
-        route_tail_call_count += 1
-        if route_tail_call_count == 1:
-            return None
         tail_inputs.append(list(partial_plan))
         return completed
 
@@ -5528,6 +6385,111 @@ def test_solver_tries_route_release_tail_on_final_selected_partial():
     assert tail_inputs == [[move]]
     assert result.is_complete is True
     assert result.fallback_stage == "constructive_route_release_tail"
+
+
+def test_solver_tries_near_goal_resume_on_final_selected_partial_without_route_blockage():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "TAIL_NO_ROUTE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "机库",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["TAIL_NO_ROUTE"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    selected_partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        fallback_stage="beam",
+        partial_plan=[move],
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {"unfinished_count": 1},
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+        },
+    )
+    completed = SolverResult(
+        plan=[
+            move,
+            HookAction(
+                source_track="存5北",
+                target_track="机库",
+                vehicle_nos=["TAIL_NO_ROUTE"],
+                path_tracks=["存5北", "机库"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="constructive_partial_resume",
+    )
+    resumed_partials: list[list[HookAction]] = []
+
+    def fake_resume(*, constructive_plan, **_kwargs):
+        resumed_partials.append(list(constructive_plan))
+        return completed
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=None):
+        with patch("fzed_shunting.solver.astar_solver._solve_search_result", return_value=selected_partial):
+            with patch(
+                "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                side_effect=lambda **kwargs: kwargs["incumbent"],
+            ):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._anytime_run_fallback_chain",
+                    side_effect=lambda **kwargs: kwargs["incumbent"],
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._try_route_release_partial_completion",
+                        return_value=None,
+                    ):
+                        with patch(
+                            "fzed_shunting.solver.astar_solver._try_resume_partial_completion",
+                            side_effect=fake_resume,
+                        ):
+                            result = solve_with_simple_astar_result(
+                                normalized,
+                                initial,
+                                master=master,
+                                solver_mode="beam",
+                                beam_width=8,
+                                time_budget_ms=30_000.0,
+                                verify=False,
+                            )
+
+    assert resumed_partials == [[move]]
+    assert result.is_complete is True
+    assert result.fallback_stage == "constructive_partial_resume"
 
 
 def test_route_release_tail_rewinds_to_latest_empty_carry_checkpoint():

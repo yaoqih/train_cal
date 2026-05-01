@@ -57,11 +57,13 @@ BEAM_POST_REPAIR_PASSES = 1
 BEAM_POST_REPAIR_MAX_ROUNDS = 1
 LOCALIZED_RESUME_MAX_UNFINISHED = 16
 PARTIAL_RESUME_MAX_CHECKPOINTS = 6
+PARTIAL_ROUTE_RELEASE_MAX_CHECKPOINTS = 3
 BEAM_COMPLETE_SEED_MIN_BUDGET_RATIO = 0.20
 BEAM_COMPLETE_SEED_FULL_BUDGET_HOOKS = 100
+BEAM_INCOMPLETE_SEED_PRIMARY_MIN_BUDGET_MS = 35_000.0
 RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS = 8_000.0
 ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS = 20_000.0
-PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS = 20_000.0
+PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS = 30_000.0
 EARLY_ROUTE_RELEASE_COMPLETION_BUDGET_MS = 12_000.0
 EARLY_ROUTE_RELEASE_MIN_REMAINING_MS = 25_000.0
 LOCALIZED_RESUME_BUDGET_RATIO = 0.50
@@ -72,6 +74,8 @@ RELAXED_RESCUE_MAX_FINAL_HEURISTIC = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_
 NEAR_GOAL_PARTIAL_RESUME_MAX_BUDGET_MS = 60_000.0
 NEAR_GOAL_PARTIAL_RESUME_BUDGET_RATIO = 2.0 / 3.0
 MIN_CHILD_STAGE_BUDGET_MS = 1.0
+ROUTE_BLOCKAGE_TAIL_CLEARANCE_MAX_CLEARING_HOOKS = 12
+ROUTE_BLOCKAGE_TAIL_CLEARANCE_MIN_COMPLETION_BUDGET_MS = 250.0
 
 
 def solve_with_simple_astar(
@@ -146,6 +150,13 @@ def solve_with_simple_astar_result(
         and time_budget_ms is None
         and node_budget is None
     )
+    reserve_primary_for_partial_rescue = (
+        near_goal_partial_resume_max_final_heuristic
+        <= DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+    )
+    allow_deep_pre_primary_route_release = not reserve_primary_for_partial_rescue
+    attempted_resume_partial_keys: set[tuple] = set()
+    attempted_route_tail_partial_keys: set[tuple] = set()
 
     # Stage 0: constructive baseline (always returns a plan — SLA safety net).
     # Run for both "exact" and "beam" so beam search has a fallback when the
@@ -180,10 +191,12 @@ def solve_with_simple_astar_result(
         remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
         if remaining_ms is not None and remaining_ms > MIN_CHILD_STAGE_BUDGET_MS:
             _ts = perf_counter()
-            warm_budget = _cap_child_stage_budget_ms(
+            warm_budget = _cap_pre_primary_child_stage_budget_ms(
                 started_at,
                 time_budget_ms,
                 min(500.0, max(50.0, remaining_ms * 0.05)),
+                solver_mode=solver_mode,
+                reserve_primary=reserve_primary_for_partial_rescue,
             )
             if warm_budget is not None and warm_budget > 0:
                 warm_result = _try_warm_start_completion(
@@ -223,15 +236,18 @@ def solve_with_simple_astar_result(
                 and remaining_ms >= EARLY_ROUTE_RELEASE_MIN_REMAINING_MS
                 and (_solver_result_final_heuristic(constructive_seed) or 0)
                 <= near_goal_partial_resume_max_final_heuristic
+                and reserve_primary_for_partial_rescue
             ):
-                early_route_tail_budget = min(
-                    EARLY_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
-                    max(500.0, remaining_ms * 0.25),
-                )
+                route_tail_signature = _partial_plan_signature(constructive_seed.partial_plan)
+                attempted_route_tail_partial_keys.add(route_tail_signature)
                 route_tail_budget = _cap_child_stage_budget_ms(
                     started_at,
                     time_budget_ms,
-                    early_route_tail_budget,
+                    _route_release_tail_budget_ms(
+                        remaining_budget_ms=remaining_ms,
+                        solver_mode=solver_mode,
+                        reserve_primary=reserve_primary_for_partial_rescue,
+                    ),
                 )
                 if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
                     route_tail_completion = _try_route_release_partial_completion(
@@ -271,16 +287,22 @@ def solve_with_simple_astar_result(
                         remaining_ms - reserve_budget,
                     ),
                 )
-            resume_budget = _cap_child_stage_budget_ms(
+            resume_budget = _cap_pre_primary_child_stage_budget_ms(
                 started_at,
                 time_budget_ms,
                 resume_budget,
+                solver_mode=solver_mode,
+                reserve_primary=reserve_primary_for_partial_rescue,
             )
             if (
                 not constructive_seed.is_complete
                 and resume_budget is not None
                 and resume_budget > 0
+                and route_blockage_pressure <= 0
             ):
+                attempted_resume_partial_keys.add(
+                    _partial_plan_signature(constructive_seed.partial_plan)
+                )
                 resume_result = _try_resume_partial_completion(
                     plan_input=plan_input,
                     initial_state=initial_state,
@@ -302,29 +324,45 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        route_tail_budget = _cap_child_stage_budget_ms(
-            started_at,
-            time_budget_ms,
-            PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+        route_blockage_pressure = _partial_route_blockage_pressure(
+            constructive_seed.partial_plan,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
         )
-        if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
-            _ts = perf_counter()
-            route_tail_completion = _try_route_release_partial_completion(
-                plan_input=plan_input,
-                initial_state=initial_state,
-                partial_plan=constructive_seed.partial_plan,
-                master=master,
-                time_budget_ms=route_tail_budget,
+        if route_blockage_pressure > 0:
+            route_tail_signature = _partial_plan_signature(constructive_seed.partial_plan)
+            route_tail_budget = _cap_pre_primary_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+                solver_mode=solver_mode,
+                reserve_primary=reserve_primary_for_partial_rescue,
             )
-            if route_tail_completion is not None:
-                constructive_seed = _shorter_complete_result(
-                    constructive_seed,
-                    route_tail_completion,
-                    plan_input=plan_input,
-                    initial_state=initial_state,
-                    master=master,
-                )
-            phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+            if (
+                allow_deep_pre_primary_route_release
+                and route_tail_budget is not None
+                and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS
+            ):
+                if route_tail_signature not in attempted_route_tail_partial_keys:
+                    attempted_route_tail_partial_keys.add(route_tail_signature)
+                    _ts = perf_counter()
+                    route_tail_completion = _try_route_release_partial_completion(
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        partial_plan=constructive_seed.partial_plan,
+                        master=master,
+                        time_budget_ms=route_tail_budget,
+                    )
+                    if route_tail_completion is not None:
+                        constructive_seed = _shorter_complete_result(
+                            constructive_seed,
+                            route_tail_completion,
+                            plan_input=plan_input,
+                            initial_state=initial_state,
+                            master=master,
+                        )
+                    phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Stage 0.7: relaxed constructive rescue.  Strict anti-oscillation is a
     # better default for hook count, but some yard states need a late re-grab
@@ -340,10 +378,12 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        relaxed_budget = _cap_child_stage_budget_ms(
+        relaxed_budget = _cap_pre_primary_child_stage_budget_ms(
             started_at,
             time_budget_ms,
             RELAXED_CONSTRUCTIVE_RETRY_BUDGET_MS,
+            solver_mode=solver_mode,
+            reserve_primary=reserve_primary_for_partial_rescue,
         )
         if relaxed_budget is not None and relaxed_budget > MIN_CHILD_STAGE_BUDGET_MS:
             _ts = perf_counter()
@@ -377,10 +417,15 @@ def solve_with_simple_astar_result(
                             remaining_budget_ms=relaxed_remaining_ms,
                             max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
                         )
-                        relaxed_resume_budget = _cap_child_stage_budget_ms(
+                        relaxed_resume_budget = _cap_pre_primary_child_stage_budget_ms(
                             started_at,
                             time_budget_ms,
                             relaxed_resume_budget,
+                            solver_mode=solver_mode,
+                            reserve_primary=reserve_primary_for_partial_rescue,
+                        )
+                        attempted_resume_partial_keys.add(
+                            _partial_plan_signature(relaxed_candidate.partial_plan)
                         )
                         relaxed_resume = _try_resume_partial_completion(
                             plan_input=plan_input,
@@ -437,10 +482,12 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
     ):
-        route_release_budget = _cap_child_stage_budget_ms(
+        route_release_budget = _cap_pre_primary_child_stage_budget_ms(
             started_at,
             time_budget_ms,
             ROUTE_RELEASE_CONSTRUCTIVE_RETRY_BUDGET_MS,
+            solver_mode=solver_mode,
+            reserve_primary=reserve_primary_for_partial_rescue,
         )
         if route_release_budget is not None and route_release_budget > MIN_CHILD_STAGE_BUDGET_MS:
             _ts = perf_counter()
@@ -471,10 +518,15 @@ def solve_with_simple_astar_result(
                             remaining_budget_ms=route_release_remaining_ms,
                             max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
                         )
-                        route_release_resume_budget = _cap_child_stage_budget_ms(
+                        route_release_resume_budget = _cap_pre_primary_child_stage_budget_ms(
                             started_at,
                             time_budget_ms,
                             route_release_resume_budget,
+                            solver_mode=solver_mode,
+                            reserve_primary=reserve_primary_for_partial_rescue,
+                        )
+                        attempted_resume_partial_keys.add(
+                            _partial_plan_signature(route_release_seed.partial_plan)
                         )
                         route_release_resume = _try_resume_partial_completion(
                             plan_input=plan_input,
@@ -782,29 +834,128 @@ def solve_with_simple_astar_result(
         and result.partial_plan
         and _has_child_stage_budget(started_at, time_budget_ms)
     ):
-        route_tail_budget = _cap_child_stage_budget_ms(
-            started_at,
-            time_budget_ms,
-            PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
-        )
-        if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
-            _ts = perf_counter()
-            route_tail_completion = _try_route_release_partial_completion(
+        partial_has_route_pressure = (
+            _partial_result_route_blockage_pressure(
+                result,
                 plan_input=plan_input,
                 initial_state=initial_state,
-                partial_plan=result.partial_plan,
                 master=master,
-                time_budget_ms=route_tail_budget,
             )
-            if route_tail_completion is not None:
+            > 0
+        )
+        if (
+            not result.is_complete
+            and partial_has_route_pressure
+            and _has_child_stage_budget(started_at, time_budget_ms)
+        ):
+            route_tail_budget = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+            )
+            if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
+                _ts = perf_counter()
+                route_tail_completion = _try_route_blockage_tail_clearance_completion(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    partial_plan=result.partial_plan,
+                    master=master,
+                    time_budget_ms=route_tail_budget,
+                    enable_depot_late_scheduling=optimize_depot_late_in_search,
+                )
+                if route_tail_completion is None:
+                    route_tail_completion = _try_route_release_partial_completion(
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        partial_plan=result.partial_plan,
+                        master=master,
+                        time_budget_ms=route_tail_budget,
+                        enable_depot_late_scheduling=optimize_depot_late_in_search,
+                    )
+                if route_tail_completion is not None:
+                    result = _shorter_complete_result(
+                        result,
+                        route_tail_completion,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+        if (
+            not result.is_complete
+            and not partial_has_route_pressure
+            and _partial_plan_signature(result.partial_plan)
+            not in attempted_resume_partial_keys
+            and _partial_result_is_near_goal(
+                result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+            )
+        ):
+            near_goal_resume_budget = _partial_resume_budget_ms(
+                result,
+                remaining_budget_ms=_remaining_wall_budget_ms(started_at, time_budget_ms) or 0.0,
+                max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+            )
+            near_goal_resume_budget = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                near_goal_resume_budget,
+            )
+            if near_goal_resume_budget is None or near_goal_resume_budget <= MIN_CHILD_STAGE_BUDGET_MS:
+                near_goal_resume_budget = None
+        else:
+            near_goal_resume_budget = None
+        if near_goal_resume_budget is not None:
+            _ts = perf_counter()
+            attempted_resume_partial_keys.add(
+                _partial_plan_signature(result.partial_plan)
+            )
+            resume_completion = _try_resume_partial_completion(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                constructive_plan=result.partial_plan,
+                master=master,
+                time_budget_ms=near_goal_resume_budget,
+                enable_depot_late_scheduling=optimize_depot_late_in_search,
+            )
+            if resume_completion is not None:
                 result = _shorter_complete_result(
                     result,
-                    route_tail_completion,
+                    resume_completion,
                     plan_input=plan_input,
                     initial_state=initial_state,
                     master=master,
                 )
             phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
+        if (
+            not result.is_complete
+            and not partial_has_route_pressure
+            and _has_child_stage_budget(started_at, time_budget_ms)
+        ):
+            route_tail_budget = _cap_child_stage_budget_ms(
+                started_at,
+                time_budget_ms,
+                PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+            )
+            if route_tail_budget is not None and route_tail_budget > MIN_CHILD_STAGE_BUDGET_MS:
+                _ts = perf_counter()
+                route_tail_completion = _try_route_release_partial_completion(
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                    partial_plan=result.partial_plan,
+                    master=master,
+                    time_budget_ms=route_tail_budget,
+                )
+                if route_tail_completion is not None:
+                    result = _shorter_complete_result(
+                        result,
+                        route_tail_completion,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                phase_timings["constructive_ms"] += (perf_counter() - _ts) * 1000
 
     # Post-search LNS polish: on fallback-stage plans (non-exact), spend any
     # remaining budget compressing hook count via destroy/repair. Exact plans
@@ -1144,6 +1295,66 @@ def _cap_child_stage_budget_ms(
     return min(max(0.0, requested_budget_ms), remaining_ms)
 
 
+def _cap_pre_primary_child_stage_budget_ms(
+    started_at: float,
+    time_budget_ms: float | None,
+    requested_budget_ms: float | None,
+    *,
+    solver_mode: str,
+    reserve_primary: bool = True,
+) -> float | None:
+    capped_budget = _cap_child_stage_budget_ms(
+        started_at,
+        time_budget_ms,
+        requested_budget_ms,
+    )
+    if (
+        not reserve_primary
+        or solver_mode != "beam"
+        or time_budget_ms is None
+        or capped_budget is None
+    ):
+        return capped_budget
+    reserve_ms = min(time_budget_ms, BEAM_INCOMPLETE_SEED_PRIMARY_MIN_BUDGET_MS)
+    remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
+    if remaining_ms is None:
+        return capped_budget
+    spendable_ms = max(0.0, remaining_ms - reserve_ms)
+    return min(capped_budget, spendable_ms)
+
+
+def _route_release_tail_budget_ms(
+    *,
+    remaining_budget_ms: float,
+    solver_mode: str,
+    reserve_primary: bool,
+) -> float:
+    remaining_budget_ms = max(0.0, remaining_budget_ms)
+    spendable_ms = remaining_budget_ms
+    if reserve_primary and solver_mode == "beam":
+        spendable_ms = max(
+            0.0,
+            remaining_budget_ms - BEAM_INCOMPLETE_SEED_PRIMARY_MIN_BUDGET_MS,
+        )
+    return min(
+        EARLY_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+        max(500.0, spendable_ms),
+    )
+
+
+def _partial_plan_signature(plan: list[HookAction]) -> tuple:
+    return tuple(
+        (
+            move.action_type,
+            move.source_track,
+            move.target_track,
+            tuple(move.vehicle_nos),
+            tuple(move.path_tracks),
+        )
+        for move in plan
+    )
+
+
 def _has_child_stage_budget(started_at: float, time_budget_ms: float | None) -> bool:
     remaining_ms = _remaining_wall_budget_ms(started_at, time_budget_ms)
     return remaining_ms is None or remaining_ms > MIN_CHILD_STAGE_BUDGET_MS
@@ -1291,6 +1502,55 @@ def _solver_result_final_heuristic(result: SolverResult) -> float | None:
         return None
     value = result.debug_stats.get("final_heuristic")
     return float(value) if value is not None else None
+
+
+def _partial_result_is_near_goal(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+) -> bool:
+    stats = result.debug_stats or {}
+    structural = stats.get("partial_structural_metrics") or {}
+    unfinished = _optional_int(structural.get("unfinished_count"))
+    if unfinished is not None:
+        return unfinished <= LOCALIZED_RESUME_MAX_UNFINISHED
+    final_state = _replay_solver_moves(
+        plan_input=plan_input,
+        initial_state=initial_state,
+        plan=result.partial_plan,
+    )
+    if final_state is None:
+        return False
+    purity = compute_state_purity(plan_input, final_state)
+    return purity.unfinished_count <= LOCALIZED_RESUME_MAX_UNFINISHED
+
+
+def _partial_result_route_blockage_pressure(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+) -> int:
+    route_blockage = (result.debug_stats or {}).get("partial_route_blockage_plan") or {}
+    pressure = _optional_int(route_blockage.get("total_blockage_pressure"))
+    if pressure is not None:
+        return pressure
+    if master is None:
+        return 0
+    final_state = _replay_solver_moves(
+        plan_input=plan_input,
+        initial_state=initial_state,
+        plan=result.partial_plan,
+    )
+    if final_state is None:
+        return 0
+    return compute_route_blockage_plan(
+        plan_input,
+        final_state,
+        RouteOracle(master),
+    ).total_blockage_pressure
 
 
 def _run_constructive_stage(
@@ -1473,7 +1733,7 @@ def _try_resume_partial_completion(
     vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
     state = initial_state
     resumed_prefix: list[HookAction] = []
-    checkpoints: list[tuple[int, int, list[HookAction], ReplayState]] = []
+    checkpoints: list[tuple[tuple[int, int, int, int], int, list[HookAction], ReplayState]] = []
     try:
         for move in constructive_plan:
             state = _apply_move(state=state, move=move, plan_input=plan_input, vehicle_by_no=vehicle_by_no)
@@ -1507,6 +1767,7 @@ def _try_resume_partial_completion(
             plan_input=plan_input,
             checkpoint_prefix=checkpoint_prefix,
             checkpoint_state=checkpoint_state,
+            original_initial_state=initial_state,
             master=master,
             time_budget_ms=per_checkpoint_budget,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
@@ -1515,6 +1776,29 @@ def _try_resume_partial_completion(
             continue
         if checkpoint_result.is_complete:
             return checkpoint_result
+        route_tail_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if (
+            checkpoint_result.partial_plan
+            and master is not None
+            and route_tail_budget_ms > ROUTE_BLOCKAGE_TAIL_CLEARANCE_MIN_COMPLETION_BUDGET_MS
+            and _partial_result_route_blockage_pressure(
+                checkpoint_result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            )
+            > 0
+        ):
+            route_tail_completion = _try_route_blockage_tail_clearance_completion(
+                plan_input=plan_input,
+                initial_state=initial_state,
+                partial_plan=checkpoint_result.partial_plan,
+                master=master,
+                time_budget_ms=route_tail_budget_ms,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+            )
+            if route_tail_completion is not None:
+                return route_tail_completion
         if checkpoint_result.partial_plan and (
             best_partial is None
             or _partial_result_score(
@@ -1539,6 +1823,7 @@ def _try_resume_from_checkpoint(
     plan_input: NormalizedPlanInput,
     checkpoint_prefix: list[HookAction],
     checkpoint_state: ReplayState,
+    original_initial_state: ReplayState | None = None,
     master: MasterData | None,
     time_budget_ms: float,
     enable_depot_late_scheduling: bool,
@@ -1559,6 +1844,14 @@ def _try_resume_from_checkpoint(
         remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
         if remaining_budget_ms < LOCALIZED_RESUME_MIN_FULL_BEAM_MS:
             return None
+        full_beam_budget_ms = remaining_budget_ms
+        if master is not None:
+            reserved_tail_budget_ms = min(
+                PARTIAL_ROUTE_RELEASE_COMPLETION_BUDGET_MS,
+                max(1_000.0, remaining_budget_ms * 0.25),
+            )
+            if remaining_budget_ms > reserved_tail_budget_ms + LOCALIZED_RESUME_MIN_FULL_BEAM_MS:
+                full_beam_budget_ms = remaining_budget_ms - reserved_tail_budget_ms
         try:
             localized_completion = _solve_search_result(
                 plan_input=plan_input,
@@ -1567,7 +1860,7 @@ def _try_resume_from_checkpoint(
                 solver_mode="beam",
                 heuristic_weight=1.0,
                 beam_width=8,
-                budget=SearchBudget(time_budget_ms=remaining_budget_ms),
+                budget=SearchBudget(time_budget_ms=full_beam_budget_ms),
                 enable_depot_late_scheduling=enable_depot_late_scheduling,
                 enable_structural_diversity=True,
             )
@@ -1578,6 +1871,41 @@ def _try_resume_from_checkpoint(
     if not localized_completion.is_complete:
         if not localized_completion.partial_plan:
             return None
+        combined_partial_plan = checkpoint_prefix + list(localized_completion.partial_plan)
+        remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if (
+            master is not None
+            and original_initial_state is not None
+            and remaining_budget_ms > ROUTE_BLOCKAGE_TAIL_CLEARANCE_MIN_COMPLETION_BUDGET_MS
+        ):
+            partial_state = _replay_solver_moves(
+                plan_input=plan_input,
+                initial_state=checkpoint_state,
+                plan=list(localized_completion.partial_plan),
+            )
+            if partial_state is not None and not partial_state.loco_carry:
+                route_blockage_plan = compute_route_blockage_plan(
+                    plan_input,
+                    partial_state,
+                    RouteOracle(master),
+                )
+            else:
+                route_blockage_plan = None
+            if (
+                route_blockage_plan is not None
+                and route_blockage_plan.total_blockage_pressure > 0
+            ):
+                tail_clearance = _try_route_blockage_tail_clearance_from_state(
+                    plan_input=plan_input,
+                    original_initial_state=original_initial_state,
+                    prefix_plan=combined_partial_plan,
+                    state=partial_state,
+                    master=master,
+                    time_budget_ms=remaining_budget_ms,
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
+                )
+                if tail_clearance is not None:
+                    return tail_clearance
         return SolverResult(
             plan=[],
             expanded_nodes=localized_completion.expanded_nodes,
@@ -1587,7 +1915,7 @@ def _try_resume_from_checkpoint(
             is_complete=False,
             is_proven_optimal=False,
             fallback_stage="constructive_partial_resume",
-            partial_plan=checkpoint_prefix + list(localized_completion.partial_plan),
+            partial_plan=combined_partial_plan,
             partial_fallback_stage="constructive_partial_resume",
             debug_stats=localized_completion.debug_stats,
         )
@@ -1611,6 +1939,7 @@ def _try_route_release_partial_completion(
     partial_plan: list[HookAction],
     master: MasterData | None,
     time_budget_ms: float,
+    enable_depot_late_scheduling: bool = False,
 ) -> SolverResult | None:
     if master is None or not partial_plan:
         return None
@@ -1619,8 +1948,7 @@ def _try_route_release_partial_completion(
 
     vehicle_by_no: dict[str, NormalizedVehicle] = {v.vehicle_no: v for v in plan_input.vehicles}
     state = initial_state
-    completion_prefix: list[HookAction] = []
-    completion_state: ReplayState | None = None
+    checkpoints: list[tuple[int, int, list[HookAction], ReplayState]] = []
     try:
         replayed_prefix: list[HookAction] = []
         for move in partial_plan:
@@ -1632,57 +1960,720 @@ def _try_route_release_partial_completion(
             )
             replayed_prefix.append(move)
             if not state.loco_carry and not _is_goal(plan_input, state):
-                completion_prefix = list(replayed_prefix)
-                completion_state = state
+                route_blockage_plan = compute_route_blockage_plan(
+                    plan_input,
+                    state,
+                    RouteOracle(master),
+                )
+                if route_blockage_plan.total_blockage_pressure > 0:
+                    structural = compute_structural_metrics(plan_input, state)
+                    checkpoints.append(
+                        (
+                            (
+                                route_blockage_plan.total_blockage_pressure,
+                                structural.goal_track_blocker_count,
+                                structural.staging_debt_count,
+                                structural.unfinished_count,
+                            ),
+                            -len(replayed_prefix),
+                            list(replayed_prefix),
+                            state,
+                        )
+                    )
     except Exception:  # noqa: BLE001
         return None
-    if completion_state is None:
+    if not checkpoints:
         return None
 
-    route_oracle = RouteOracle(master)
-    route_blockage_plan = compute_route_blockage_plan(
-        plan_input,
-        completion_state,
-        route_oracle,
-    )
-    if route_blockage_plan.total_blockage_pressure <= 0:
-        return None
-
-    try:
-        completion = solve_constructive(
-            plan_input,
-            completion_state,
+    recent_window = sorted(checkpoints, key=lambda item: item[1])[:8]
+    recent_min_pressure = min(checkpoint[0][0] for checkpoint in recent_window)
+    low_pressure_recent = [
+        checkpoint
+        for checkpoint in recent_window
+        if checkpoint[0][0] <= recent_min_pressure + 1
+    ]
+    recent_checkpoints = sorted(low_pressure_recent, key=lambda item: item[1])[:1]
+    quality_checkpoints = sorted(
+        checkpoints,
+        key=lambda item: (
+            item[0],
+            item[1],
+        ),
+    )[:2]
+    ranked_checkpoints: list[tuple[tuple[int, int, int, int], int, list[HookAction], ReplayState]] = []
+    seen_prefix_lengths: set[int] = set()
+    for checkpoint in [*recent_checkpoints, *quality_checkpoints]:
+        prefix_len = -checkpoint[1]
+        if prefix_len in seen_prefix_lengths:
+            continue
+        seen_prefix_lengths.add(prefix_len)
+        ranked_checkpoints.append(checkpoint)
+    started_at = perf_counter()
+    best_partial: SolverResult | None = None
+    for index, (_score, _negative_prefix_len, completion_prefix, completion_state) in enumerate(
+        ranked_checkpoints
+    ):
+        remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if remaining_budget_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+            break
+        per_checkpoint_budget = remaining_budget_ms
+        tail_clearance = _try_route_blockage_tail_clearance_from_state(
+            plan_input=plan_input,
+            original_initial_state=initial_state,
+            prefix_plan=completion_prefix,
+            state=completion_state,
             master=master,
-            max_iterations=1500,
-            time_budget_ms=time_budget_ms,
-            strict_staging_regrab=False,
-            route_release_bias=True,
+            time_budget_ms=per_checkpoint_budget,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
+        if tail_clearance is not None:
+            return tail_clearance
+        remaining_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if remaining_budget_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+            break
+        per_checkpoint_budget = remaining_budget_ms
+        try:
+            completion = solve_constructive(
+                plan_input,
+                completion_state,
+                master=master,
+                max_iterations=1500,
+                time_budget_ms=per_checkpoint_budget,
+                strict_staging_regrab=False,
+                route_release_bias=True,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if not completion.reached_goal:
+            partial_candidate = SolverResult(
+                plan=[],
+                expanded_nodes=completion.iterations,
+                generated_nodes=completion.iterations,
+                closed_nodes=0,
+                elapsed_ms=completion.elapsed_ms,
+                is_complete=False,
+                is_proven_optimal=False,
+                fallback_stage="constructive_route_release_tail",
+                partial_plan=list(completion_prefix) + list(completion.plan),
+                partial_fallback_stage="constructive_route_release_tail",
+                debug_stats=dict(completion.debug_stats or {}),
+            )
+            if (
+                partial_candidate.partial_plan
+                and (
+                    best_partial is None
+                    or _partial_result_score(
+                        partial_candidate,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                    < _partial_result_score(
+                        best_partial,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        master=master,
+                    )
+                )
+            ):
+                best_partial = partial_candidate
+            continue
+        combined_plan = list(completion_prefix) + list(completion.plan)
+        result = SolverResult(
+            plan=combined_plan,
+            expanded_nodes=completion.iterations,
+            generated_nodes=completion.iterations,
+            closed_nodes=0,
+            elapsed_ms=completion.elapsed_ms,
+            is_complete=True,
+            is_proven_optimal=False,
+            fallback_stage="constructive_route_release_tail",
+            debug_stats=dict(completion.debug_stats or {}),
+        )
+        try:
+            return _attach_verification(
+                result,
+                plan_input=plan_input,
+                master=master,
+                initial_state=initial_state,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+    return best_partial
+
+
+def _try_route_blockage_tail_clearance_completion(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    partial_plan: list[HookAction],
+    master: MasterData | None,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool = False,
+) -> SolverResult | None:
+    if master is None:
+        return None
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    state = ReplayState.model_validate(initial_state.model_dump())
+    try:
+        for move in partial_plan:
+            state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
     except Exception:  # noqa: BLE001
         return None
-    if not completion.reached_goal:
+    return _try_route_blockage_tail_clearance_from_state(
+        plan_input=plan_input,
+        original_initial_state=initial_state,
+        prefix_plan=list(partial_plan),
+        state=state,
+        master=master,
+        time_budget_ms=time_budget_ms,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+
+
+def _try_route_blockage_tail_clearance_from_state(
+    *,
+    plan_input: NormalizedPlanInput,
+    original_initial_state: ReplayState,
+    prefix_plan: list[HookAction],
+    state: ReplayState,
+    master: MasterData,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if state.loco_carry:
         return None
-    combined_plan = list(completion_prefix) + list(completion.plan)
+    route_oracle = RouteOracle(master)
+    initial_blockage = compute_route_blockage_plan(plan_input, state, route_oracle)
+    if initial_blockage.total_blockage_pressure <= 0:
+        return None
+
+    started_at = perf_counter()
+    frontier: list[tuple[ReplayState, list[HookAction]]] = [(state, [])]
+    seen: set[tuple] = {_state_key(state, plan_input)}
+    expanded = 0
+    generated = 0
+
+    while frontier:
+        remaining_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+        if remaining_ms <= ROUTE_BLOCKAGE_TAIL_CLEARANCE_MIN_COMPLETION_BUDGET_MS:
+            break
+        frontier.sort(
+            key=lambda item: (
+                compute_route_blockage_plan(plan_input, item[0], route_oracle).total_blockage_pressure,
+                compute_structural_metrics(plan_input, item[0]).unfinished_count,
+                len(item[1]),
+            )
+        )
+        current_state, clearing_plan = frontier.pop(0)
+        expanded += 1
+        current_blockage = compute_route_blockage_plan(
+            plan_input,
+            current_state,
+            route_oracle,
+        )
+        if current_blockage.total_blockage_pressure == 0 and not current_state.loco_carry:
+            completion = _try_tail_clearance_resume_from_state(
+                plan_input=plan_input,
+                original_initial_state=original_initial_state,
+                prefix_plan=prefix_plan,
+                clearing_plan=clearing_plan,
+                state=current_state,
+                initial_blockage=initial_blockage,
+                master=master,
+                time_budget_ms=remaining_ms,
+                expanded_nodes=expanded,
+                generated_nodes=generated,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+            )
+            if completion is not None:
+                return completion
+        if len(clearing_plan) >= ROUTE_BLOCKAGE_TAIL_CLEARANCE_MAX_CLEARING_HOOKS:
+            continue
+
+        for move, next_state in _route_blockage_tail_clearance_candidates(
+            plan_input=plan_input,
+            state=current_state,
+            master=master,
+            route_oracle=route_oracle,
+            current_blockage=current_blockage,
+        ):
+            state_key = _state_key(next_state, plan_input)
+            if state_key in seen:
+                continue
+            seen.add(state_key)
+            generated += 1
+            frontier.append((next_state, [*clearing_plan, move]))
+            if len(frontier) > 32:
+                frontier.sort(
+                    key=lambda item: (
+                        compute_route_blockage_plan(
+                            plan_input,
+                            item[0],
+                            route_oracle,
+                        ).total_blockage_pressure,
+                        compute_structural_metrics(plan_input, item[0]).unfinished_count,
+                        len(item[1]),
+                    )
+                )
+                del frontier[32:]
+    return None
+
+
+def _route_blockage_tail_clearance_candidates(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData,
+    route_oracle: RouteOracle,
+    current_blockage: Any,
+) -> list[tuple[HookAction, ReplayState]]:
+    if current_blockage.total_blockage_pressure <= 0 and not state.loco_carry:
+        return []
+    from fzed_shunting.solver.move_generator import generate_real_hook_moves
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    current_pressure = current_blockage.total_blockage_pressure
+    facts_by_blocking_track = getattr(current_blockage, "facts_by_blocking_track", {})
+    if not facts_by_blocking_track and not state.loco_carry:
+        return []
+    current_blocking_tracks = set(facts_by_blocking_track)
+    moves = generate_real_hook_moves(
+        plan_input,
+        state,
+        master=master,
+        route_oracle=route_oracle,
+    )
+    candidates: list[tuple[tuple[int, int, int, str, tuple[str, ...]], HookAction, ReplayState]] = []
+    for move in moves:
+        if state.loco_carry:
+            if move.action_type != "DETACH":
+                continue
+            if move.target_track in current_blocking_tracks:
+                continue
+        else:
+            if move.action_type != "ATTACH":
+                continue
+            fact = facts_by_blocking_track.get(move.source_track)
+            if fact is None:
+                continue
+            if not (set(move.vehicle_nos) & set(fact.blocking_vehicle_nos)):
+                continue
+        try:
+            next_state = _apply_move(
+                state=state,
+                move=move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        next_blockage = compute_route_blockage_plan(
+            plan_input,
+            next_state,
+            route_oracle,
+        )
+        next_pressure = next_blockage.total_blockage_pressure
+        if next_pressure > current_pressure:
+            continue
+        if state.loco_carry and move.target_track in next_blockage.facts_by_blocking_track:
+            continue
+        source_remainder = len(next_state.track_sequences.get(move.source_track, []))
+        pressure_delta = current_pressure - next_pressure
+        candidates.append(
+            (
+                (
+                    -pressure_delta,
+                    0 if move.action_type == "ATTACH" else 1,
+                    source_remainder,
+                    move.target_track,
+                    tuple(move.vehicle_nos),
+                ),
+                move,
+                next_state,
+            )
+        )
+    candidates.sort(key=lambda item: item[0])
+    return [(move, next_state) for _, move, next_state in candidates[:8]]
+
+
+def _try_tail_clearance_resume_from_state(
+    *,
+    plan_input: NormalizedPlanInput,
+    original_initial_state: ReplayState,
+    prefix_plan: list[HookAction],
+    clearing_plan: list[HookAction],
+    state: ReplayState,
+    initial_blockage: Any,
+    master: MasterData,
+    time_budget_ms: float,
+    expanded_nodes: int,
+    generated_nodes: int,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if _is_goal(plan_input, state):
+        result = SolverResult(
+            plan=[*prefix_plan, *clearing_plan],
+            expanded_nodes=expanded_nodes,
+            generated_nodes=generated_nodes,
+            closed_nodes=expanded_nodes,
+            elapsed_ms=0.0,
+            is_complete=True,
+            is_proven_optimal=False,
+            fallback_stage="route_blockage_tail_clearance",
+        )
+        return _attach_verification(
+            result,
+            plan_input=plan_input,
+            master=master,
+            initial_state=original_initial_state,
+        )
+    direct_completion = _try_direct_blocked_tail_completion_from_state(
+        plan_input=plan_input,
+        original_initial_state=original_initial_state,
+        prefix_plan=prefix_plan,
+        clearing_plan=clearing_plan,
+        state=state,
+        initial_blockage=initial_blockage,
+        master=master,
+        time_budget_ms=time_budget_ms,
+        expanded_nodes=expanded_nodes,
+        generated_nodes=generated_nodes,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+    if direct_completion is not None:
+        return direct_completion
+    completion = _try_localized_resume_completion(
+        plan_input=plan_input,
+        initial_state=state,
+        master=master,
+        time_budget_ms=time_budget_ms,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+    if completion is None or not completion.is_complete:
+        return None
+    combined_plan = [*prefix_plan, *clearing_plan, *completion.plan]
     result = SolverResult(
         plan=combined_plan,
-        expanded_nodes=completion.iterations,
-        generated_nodes=completion.iterations,
-        closed_nodes=0,
+        expanded_nodes=expanded_nodes + completion.expanded_nodes,
+        generated_nodes=generated_nodes + completion.generated_nodes,
+        closed_nodes=expanded_nodes + completion.closed_nodes,
         elapsed_ms=completion.elapsed_ms,
         is_complete=True,
         is_proven_optimal=False,
-        fallback_stage="constructive_route_release_tail",
-        debug_stats=dict(completion.debug_stats or {}),
+        fallback_stage="route_blockage_tail_clearance",
+        debug_stats=completion.debug_stats,
     )
     try:
         return _attach_verification(
             result,
             plan_input=plan_input,
             master=master,
-            initial_state=initial_state,
+            initial_state=original_initial_state,
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+def _try_direct_blocked_tail_completion_from_state(
+    *,
+    plan_input: NormalizedPlanInput,
+    original_initial_state: ReplayState,
+    prefix_plan: list[HookAction],
+    clearing_plan: list[HookAction],
+    state: ReplayState,
+    initial_blockage: Any,
+    master: MasterData,
+    time_budget_ms: float,
+    expanded_nodes: int,
+    generated_nodes: int,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if state.loco_carry:
+        return None
+    facts_by_blocking_track = getattr(initial_blockage, "facts_by_blocking_track", {})
+    if not facts_by_blocking_track:
+        return None
+    from fzed_shunting.solver.goal_logic import (
+        goal_effective_allowed_tracks,
+        goal_is_satisfied,
+    )
+    from fzed_shunting.solver.move_generator import generate_real_hook_moves
+
+    started_at = perf_counter()
+    route_oracle = RouteOracle(master)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    direct_state = state
+    direct_plan: list[HookAction] = []
+
+    for fact in sorted(
+        facts_by_blocking_track.values(),
+        key=lambda item: (-getattr(item, "blockage_count", 0), getattr(item, "blocking_track", "")),
+    ):
+        for blocked_vehicle_no in getattr(fact, "blocked_vehicle_nos", []):
+            if time_budget_ms - (perf_counter() - started_at) * 1000 <= 0:
+                return None
+            blocked_vehicle = vehicle_by_no.get(blocked_vehicle_no)
+            if blocked_vehicle is None:
+                continue
+            track_by_vehicle = _vehicle_track_lookup(direct_state)
+            source_track = track_by_vehicle.get(blocked_vehicle_no)
+            if source_track is None:
+                continue
+            if goal_is_satisfied(
+                blocked_vehicle,
+                track_name=source_track,
+                state=direct_state,
+                plan_input=plan_input,
+            ):
+                continue
+            source_seq = direct_state.track_sequences.get(source_track, [])
+            try:
+                source_index = source_seq.index(blocked_vehicle_no)
+            except ValueError:
+                continue
+            source_prefix = source_seq[: source_index + 1]
+            if source_prefix[-1] != blocked_vehicle_no:
+                continue
+            attach_move = _find_generated_move(
+                generate_real_hook_moves(
+                    plan_input,
+                    direct_state,
+                    master=master,
+                    route_oracle=route_oracle,
+                ),
+                action_type="ATTACH",
+                source_track=source_track,
+                vehicle_nos=source_prefix,
+            )
+            if attach_move is None:
+                continue
+            next_state = _apply_move(
+                state=direct_state,
+                move=attach_move,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+            target_tracks = set(
+                goal_effective_allowed_tracks(
+                    blocked_vehicle,
+                    state=next_state,
+                    plan_input=plan_input,
+                )
+            )
+            target_tracks.update(getattr(fact, "target_tracks", []))
+            detach_blocked = _find_generated_move(
+                generate_real_hook_moves(
+                    plan_input,
+                    next_state,
+                    master=master,
+                    route_oracle=route_oracle,
+                ),
+                action_type="DETACH",
+                vehicle_nos=[blocked_vehicle_no],
+                target_tracks=target_tracks,
+            )
+            if detach_blocked is None:
+                continue
+            next_state = _apply_move(
+                state=next_state,
+                move=detach_blocked,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+            local_plan = [attach_move, detach_blocked]
+            if next_state.loco_carry:
+                restore_source = _find_generated_move(
+                    generate_real_hook_moves(
+                        plan_input,
+                        next_state,
+                        master=master,
+                        route_oracle=route_oracle,
+                    ),
+                    action_type="DETACH",
+                    target_track=source_track,
+                    vehicle_nos=list(next_state.loco_carry),
+                )
+                if restore_source is None:
+                    suffix_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+                    suffix_completion = _try_direct_tail_suffix_search(
+                        plan_input=plan_input,
+                        state=next_state,
+                        master=master,
+                        time_budget_ms=suffix_budget_ms,
+                        enable_depot_late_scheduling=enable_depot_late_scheduling,
+                    )
+                    if suffix_completion is None:
+                        continue
+                    local_plan.extend(suffix_completion.plan)
+                    expanded_nodes += suffix_completion.expanded_nodes
+                    generated_nodes += suffix_completion.generated_nodes
+                    complete_plan = [*prefix_plan, *clearing_plan, *direct_plan, *local_plan]
+                    result = SolverResult(
+                        plan=complete_plan,
+                        expanded_nodes=expanded_nodes,
+                        generated_nodes=generated_nodes,
+                        closed_nodes=expanded_nodes,
+                        elapsed_ms=(perf_counter() - started_at) * 1000,
+                        is_complete=True,
+                        is_proven_optimal=False,
+                        fallback_stage="route_blockage_tail_clearance",
+                        debug_stats=suffix_completion.debug_stats,
+                    )
+                    try:
+                        return _attach_verification(
+                            result,
+                            plan_input=plan_input,
+                            master=master,
+                            initial_state=original_initial_state,
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                else:
+                    next_state = _apply_move(
+                        state=next_state,
+                        move=restore_source,
+                        plan_input=plan_input,
+                        vehicle_by_no=vehicle_by_no,
+                    )
+                    local_plan.append(restore_source)
+            if next_state.loco_carry:
+                suffix_budget_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+                suffix_completion = _try_direct_tail_suffix_search(
+                    plan_input=plan_input,
+                    state=next_state,
+                    master=master,
+                    time_budget_ms=suffix_budget_ms,
+                    enable_depot_late_scheduling=enable_depot_late_scheduling,
+                )
+                if suffix_completion is None:
+                    continue
+                local_plan.extend(suffix_completion.plan)
+                expanded_nodes += suffix_completion.expanded_nodes
+                generated_nodes += suffix_completion.generated_nodes
+                complete_plan = [*prefix_plan, *clearing_plan, *direct_plan, *local_plan]
+                result = SolverResult(
+                    plan=complete_plan,
+                    expanded_nodes=expanded_nodes,
+                    generated_nodes=generated_nodes,
+                    closed_nodes=expanded_nodes,
+                    elapsed_ms=(perf_counter() - started_at) * 1000,
+                    is_complete=True,
+                    is_proven_optimal=False,
+                    fallback_stage="route_blockage_tail_clearance",
+                    debug_stats=suffix_completion.debug_stats,
+                )
+                try:
+                    return _attach_verification(
+                        result,
+                        plan_input=plan_input,
+                        master=master,
+                        initial_state=original_initial_state,
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+            direct_state = next_state
+            direct_plan.extend(local_plan)
+
+    if not direct_plan or direct_state.loco_carry:
+        return None
+    remaining_ms = time_budget_ms - (perf_counter() - started_at) * 1000
+    if remaining_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+        return None
+    if _is_goal(plan_input, direct_state):
+        completion_plan: list[HookAction] = []
+    else:
+        completion = _try_localized_resume_completion(
+            plan_input=plan_input,
+            initial_state=direct_state,
+            master=master,
+            time_budget_ms=remaining_ms,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+        if completion is None or not completion.is_complete:
+            return None
+        completion_plan = list(completion.plan)
+        expanded_nodes += completion.expanded_nodes
+        generated_nodes += completion.generated_nodes
+
+    combined_plan = [*prefix_plan, *clearing_plan, *direct_plan, *completion_plan]
+    result = SolverResult(
+        plan=combined_plan,
+        expanded_nodes=expanded_nodes,
+        generated_nodes=generated_nodes,
+        closed_nodes=expanded_nodes,
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+        is_complete=True,
+        is_proven_optimal=False,
+        fallback_stage="route_blockage_tail_clearance",
+    )
+    try:
+        return _attach_verification(
+            result,
+            plan_input=plan_input,
+            master=master,
+            initial_state=original_initial_state,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _try_direct_tail_suffix_search(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if time_budget_ms <= MIN_CHILD_STAGE_BUDGET_MS:
+        return None
+    try:
+        suffix = _solve_search_result(
+            plan_input=plan_input,
+            initial_state=state,
+            master=master,
+            solver_mode="beam",
+            heuristic_weight=1.0,
+            beam_width=8,
+            budget=SearchBudget(time_budget_ms=time_budget_ms),
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_structural_diversity=True,
+        )
+    except ValueError:
+        return None
+    if not suffix.is_complete:
+        return None
+    return suffix
+
+
+def _find_generated_move(
+    moves: list[HookAction],
+    *,
+    action_type: str,
+    vehicle_nos: list[str],
+    source_track: str | None = None,
+    target_track: str | None = None,
+    target_tracks: set[str] | frozenset[str] | None = None,
+) -> HookAction | None:
+    for move in moves:
+        if move.action_type != action_type:
+            continue
+        if source_track is not None and move.source_track != source_track:
+            continue
+        if target_track is not None and move.target_track != target_track:
+            continue
+        if target_tracks is not None and move.target_track not in target_tracks:
+            continue
+        if list(move.vehicle_nos) != list(vehicle_nos):
+            continue
+        return move
+    return None
 
 
 def _partial_route_blockage_pressure(

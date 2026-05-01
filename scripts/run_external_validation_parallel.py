@@ -70,6 +70,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
     parser.add_argument(
+        "--improve-pathological-success",
+        action="store_true",
+        default=False,
+        help=(
+            "continue recovery for already solved plans with very high repeated "
+            "vehicle touches; useful for quality sweeps, disabled for default "
+            "feasibility validation"
+        ),
+    )
+    parser.add_argument(
         "--near-goal-partial-resume-max-final-heuristic",
         type=int,
         default=None,
@@ -374,6 +384,7 @@ def recover_no_solution_results(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = False,
+    improve_pathological_success: bool = False,
 ) -> list[dict[str, Any]]:
     effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
         beam_width=beam_width,
@@ -400,6 +411,7 @@ def recover_no_solution_results(
             )
             or (
                 result.get("solved")
+                and improve_pathological_success
                 and _should_continue_recovery_after_success(result)
             )
         )
@@ -458,7 +470,10 @@ def recover_no_solution_results(
                 < int(current.get("hook_count", 10**9))
             ):
                 merged_results[retry_result["scenario"]] = recovered
-            if not _should_continue_recovery_after_success(recovered):
+            if (
+                not improve_pathological_success
+                or not _should_continue_recovery_after_success(recovered)
+            ):
                 retryable_scenario_names.discard(retry_result["scenario"])
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
 
@@ -612,6 +627,11 @@ def main() -> None:
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        near_goal_partial_resume_max_final_heuristic=getattr(
+            args,
+            "near_goal_partial_resume_max_final_heuristic",
+            None,
+        ),
     )
     results = recover_no_solution_results(
         master_dir=args.master_dir,
@@ -626,6 +646,7 @@ def main() -> None:
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        improve_pathological_success=args.improve_pathological_success,
     )
     summary = {
         "solver": args.solver,
