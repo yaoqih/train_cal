@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from collections import Counter
 from unittest.mock import patch
 
 from fzed_shunting.domain.master_data import load_master_data
@@ -8,14 +9,19 @@ from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.move_generator import (
     _collect_real_hook_access_blocker_attach_requests,
+    _collect_real_hook_identity_attach_requests,
+    _candidate_staging_targets,
     generate_goal_moves,
     generate_real_hook_moves,
 )
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
+from fzed_shunting.solver.state import _state_key
+from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState, build_initial_state
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
+ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 def _vehicle(
@@ -37,6 +43,126 @@ def _vehicle(
         "isSpotting": spotting,
         "vehicleAttributes": "",
     }
+
+
+class _SyntheticRouteBlockagePlan:
+    total_blockage_pressure = 1
+    facts_by_blocking_track = {}
+
+
+def test_generate_real_hook_moves_reuses_route_blockage_pressure_by_state(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/truth/validation_20260206W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    calls_by_state: Counter[tuple] = Counter()
+
+    def fake_compute_route_blockage_plan(
+        plan_input,
+        candidate_state,
+        route_oracle,
+        *,
+        blocked_source_tracks=None,
+    ):
+        calls_by_state[
+            (
+                _state_key(candidate_state, plan_input),
+                tuple(sorted(blocked_source_tracks or ())),
+            )
+        ] += 1
+        return _SyntheticRouteBlockagePlan()
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_generator.compute_route_blockage_plan",
+        fake_compute_route_blockage_plan,
+    )
+
+    moves = generate_real_hook_moves(
+        normalized,
+        state,
+        master=master,
+        route_oracle=RouteOracle(master),
+    )
+
+    assert moves
+    assert max(calls_by_state.values(), default=0) == 1
+
+
+def test_generate_real_hook_moves_returns_stable_semantic_order():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/truth/validation_20260327Z.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+
+    moves = generate_real_hook_moves(
+        normalized,
+        state,
+        master=master,
+        route_oracle=RouteOracle(master),
+    )
+
+    assert moves == sorted(
+        moves,
+        key=lambda move: (
+            move.source_track,
+            move.target_track,
+            tuple(move.vehicle_nos),
+            tuple(move.path_tracks),
+            move.action_type,
+        ),
+    )
+
+
+def test_candidate_staging_targets_can_use_snapshot_fallback_tracks():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 113.0},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存1",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SNAP_STAGE",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SNAPSHOT",
+                "targetTrack": "存1",
+                "targetSource": "END_SNAPSHOT",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "存1",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    targets = _candidate_staging_targets(
+        source_track="存1",
+        block=["SNAP_STAGE"],
+        state=state,
+        plan_input=normalized,
+        master=master,
+        vehicle_by_no=vehicle_by_no,
+        goal_target_hints=("存1",),
+        route_oracle=RouteOracle(master),
+    )
+
+    assert "存2" in targets
 
 
 def test_generate_goal_moves_from_north_prefix_only():
@@ -116,7 +242,7 @@ def test_generate_goal_moves_keeps_only_longest_feasible_prefix_for_single_targe
         ],
         "locoTrackName": "机库",
     }
-    normalized = normalize_plan_input(payload, master)
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = build_initial_state(normalized)
 
     moves = generate_goal_moves(normalized, state)
@@ -157,7 +283,7 @@ def test_generate_goal_moves_keeps_shorter_prefix_when_longest_single_target_pre
         ],
         "locoTrackName": "机库",
     }
-    normalized = normalize_plan_input(payload, master)
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = build_initial_state(normalized)
 
     moves = generate_goal_moves(normalized, state)
@@ -394,6 +520,158 @@ def test_generate_goal_moves_keeps_shorter_prefixes_when_same_goal_front_block_d
         ("M1", "M2"),
         ("M1",),
     ]
+
+
+def test_generate_goal_moves_rejects_single_wash_spotting_without_south_pad():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "洗南", "trackDistance": 88.7},
+        ],
+        "vehicleInfo": [
+            _vehicle("WASH_TARGET", "存5北", "洗南", spotting="是"),
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+
+    assert not any(
+        move.source_track == "存5北"
+        and move.target_track == "洗南"
+        and tuple(move.vehicle_nos) == ("WASH_TARGET",)
+        for move in moves
+    )
+
+
+def test_generate_goal_moves_allows_wash_spotting_with_same_hook_south_pad():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "洗南", "trackDistance": 88.7},
+        ],
+        "vehicleInfo": [
+            _vehicle("WASH_TARGET", "存5北", "洗南", order=1, spotting="是"),
+            _vehicle("SOUTH_PAD", "存5北", "洗南", order=2),
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    moves = generate_goal_moves(normalized, state, master=master)
+
+    assert any(
+        move.source_track == "存5北"
+        and move.target_track == "洗南"
+        and tuple(move.vehicle_nos) == ("WASH_TARGET", "SOUTH_PAD")
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_rejects_exact_rank_detach_past_target_rank():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "存5北", "trackDistance": 367},
+        ],
+        "vehicleInfo": [
+            _vehicle("N1", "存5北", "调棚", order=1),
+            _vehicle("N2", "存5北", "调棚", order=2),
+            _vehicle("EXACT", "存5北", "调棚", order=3, spotting="2"),
+        ],
+        "locoTrackName": "调棚",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = ReplayState(
+        track_sequences={},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("N1", "N2", "EXACT"),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert not any(
+        move.action_type == "DETACH"
+        and move.target_track == "调棚"
+        and tuple(move.vehicle_nos) == ("N1", "N2", "EXACT")
+        for move in moves
+    )
+
+
+def test_generate_real_hook_moves_allows_exact_rank_detach_before_target_rank():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "存5北", "trackDistance": 367},
+        ],
+        "vehicleInfo": [
+            _vehicle("EXACT", "存5北", "调棚", order=1, spotting="2"),
+        ],
+        "locoTrackName": "调棚",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = ReplayState(
+        track_sequences={},
+        loco_track_name="调棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("EXACT",),
+    )
+
+    moves = generate_real_hook_moves(normalized, state, master=master)
+
+    assert any(
+        move.action_type == "DETACH"
+        and move.target_track == "调棚"
+        and tuple(move.vehicle_nos) == ("EXACT",)
+        for move in moves
+    )
+
+
+def test_identity_attach_requests_include_unsatisfied_work_position_vehicle():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            _vehicle("EXACT", "调棚", "调棚", order=1, spotting="2"),
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in normalized.vehicles}
+    length_by_vehicle = {
+        vehicle.vehicle_no: vehicle.vehicle_length for vehicle in normalized.vehicles
+    }
+    capacity_by_track = {
+        info.track_name: info.track_distance for info in normalized.track_info
+    }
+
+    requests = _collect_real_hook_identity_attach_requests(
+        plan_input=normalized,
+        state=state,
+        goal_by_vehicle=goal_by_vehicle,
+        vehicle_by_no=vehicle_by_no,
+        length_by_vehicle=length_by_vehicle,
+        effective_capacity_by_track=capacity_by_track,
+        master=master,
+        route_oracle=RouteOracle(master),
+    )
+
+    assert requests["调棚"] == {1}
 
 
 def test_generate_goal_moves_respects_allowed_target_tracks():
@@ -1360,6 +1638,231 @@ def test_generate_goal_moves_limits_front_blocker_staging_targets_to_nearest_tem
     staging_moves = [move for move in moves if move.source_track == "存5北"]
 
     assert {move.target_track for move in staging_moves} == {"临1", "临2"}
+
+
+def test_route_release_staging_targets_include_lower_pressure_storage_before_cutoff():
+    from fzed_shunting.solver.state import _apply_move
+
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (Path(__file__).resolve().parents[2] / "data" / "validation_inputs" / "truth" / "validation_20260206W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    route_oracle = RouteOracle(master)
+    prefix = [
+        ("ATTACH", "机棚", "机棚", ["3451765", "3451387", "3825233"]),
+        ("DETACH", "机棚", "油", ["3451765", "3451387", "3825233"]),
+        ("ATTACH", "调棚", "调棚", ["5343660", "5740767", "5252529", "5743973", "5345070", "1760360", "4922071", "5280733"]),
+        ("DETACH", "调棚", "修2库内", ["4922071", "5280733"]),
+        ("ATTACH", "机库", "机库", ["5489133", "5320800", "5237784", "1676330", "1849948"]),
+        ("DETACH", "机库", "修2库内", ["1849948"]),
+        ("DETACH", "修2库内", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330"]),
+        ("ATTACH", "修4库内", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330", "5342375", "5349272", "5346073", "4921581"]),
+        ("DETACH", "修4库内", "存4北", ["5342375", "5349272", "5346073", "4921581"]),
+        ("DETACH", "存4北", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330"]),
+        ("DETACH", "修4库内", "临4", ["5343660", "5740767", "5252529", "5743973", "5345070"]),
+        ("ATTACH", "预修", "预修", ["3406195", "1849573", "4904291", "1657219", "1517444", "4866019", "4887695", "4922413", "1663044", "1660229"]),
+        ("DETACH", "预修", "洗北", ["1657219", "1517444", "4866019", "4887695", "4922413", "1663044", "1660229"]),
+        ("DETACH", "洗北", "预修", ["3406195", "1849573", "4904291"]),
+        ("ATTACH", "存2", "存2", ["5313847", "5243183"]),
+    ]
+    for action_type, source, target, vehicle_nos in prefix:
+        state = _apply_move(
+            state=state,
+            move=HookAction(
+                source_track=source,
+                target_track=target,
+                vehicle_nos=vehicle_nos,
+                path_tracks=[source] if source == target else [source, target],
+                action_type=action_type,
+            ),
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+
+    moves = generate_real_hook_moves(normalized, state, master=master, route_oracle=route_oracle)
+    staging_targets = {
+        move.target_track
+        for move in moves
+        if move.action_type == "DETACH"
+        and move.source_track == "存2"
+        and move.vehicle_nos == ["5313847", "5243183"]
+    }
+
+    assert staging_targets & {"存3", "存1", "洗北", "调北"}
+    assert staging_targets != {"临1", "临2"}
+
+
+def test_candidate_staging_targets_bounds_route_pressure_projection_calls(monkeypatch):
+    from fzed_shunting.solver import move_generator
+    from fzed_shunting.solver.move_generator import _candidate_staging_targets
+    from fzed_shunting.solver.state import _apply_move
+
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (Path(__file__).resolve().parents[2] / "data" / "validation_inputs" / "truth" / "validation_20260206W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    route_oracle = RouteOracle(master)
+    prefix = [
+        ("ATTACH", "机棚", "机棚", ["3451765", "3451387", "3825233"]),
+        ("DETACH", "机棚", "油", ["3451765", "3451387", "3825233"]),
+        ("ATTACH", "调棚", "调棚", ["5343660", "5740767", "5252529", "5743973", "5345070", "1760360", "4922071", "5280733"]),
+        ("DETACH", "调棚", "修2库内", ["4922071", "5280733"]),
+        ("ATTACH", "机库", "机库", ["5489133", "5320800", "5237784", "1676330", "1849948"]),
+        ("DETACH", "机库", "修2库内", ["1849948"]),
+        ("DETACH", "修2库内", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330"]),
+        ("ATTACH", "修4库内", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330", "5342375", "5349272", "5346073", "4921581"]),
+        ("DETACH", "修4库内", "存4北", ["5342375", "5349272", "5346073", "4921581"]),
+        ("DETACH", "存4北", "修4库内", ["1760360", "5489133", "5320800", "5237784", "1676330"]),
+        ("DETACH", "修4库内", "临4", ["5343660", "5740767", "5252529", "5743973", "5345070"]),
+        ("ATTACH", "预修", "预修", ["3406195", "1849573", "4904291", "1657219", "1517444", "4866019", "4887695", "4922413", "1663044", "1660229"]),
+        ("DETACH", "预修", "洗北", ["1657219", "1517444", "4866019", "4887695", "4922413", "1663044", "1660229"]),
+        ("DETACH", "洗北", "预修", ["3406195", "1849573", "4904291"]),
+        ("ATTACH", "存2", "存2", ["5313847", "5243183"]),
+    ]
+    for action_type, source, target, vehicle_nos in prefix:
+        state = _apply_move(
+            state=state,
+            move=HookAction(
+                source_track=source,
+                target_track=target,
+                vehicle_nos=vehicle_nos,
+                path_tracks=[source] if source == target else [source, target],
+                action_type=action_type,
+            ),
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+
+    calls = 0
+    real_compute = move_generator.compute_route_blockage_plan
+
+    def wrapped_compute(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(move_generator, "compute_route_blockage_plan", wrapped_compute)
+
+    targets = _candidate_staging_targets(
+        source_track="存2",
+        block=["5313847", "5243183"],
+        state=state,
+        plan_input=normalized,
+        master=master,
+        vehicle_by_no=vehicle_by_no,
+        goal_target_hints=("抛",),
+        route_oracle=route_oracle,
+    )
+
+    assert targets[:3] and set(targets[:3]) & {"存3", "存1", "洗北", "调北"}
+    assert calls == len(targets) + 1
+
+
+def test_candidate_staging_targets_can_skip_route_pressure_for_feasibility_probe(monkeypatch):
+    from fzed_shunting.solver import move_generator
+    from fzed_shunting.solver.move_generator import _candidate_staging_targets
+
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存1", "trackDistance": 113},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临2", "trackDistance": 55.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存2",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修1库内",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "存2",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized).model_copy(update={"loco_carry": ("A",)})
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    def fail_compute(*_args, **_kwargs):
+        raise AssertionError("route pressure projection is not needed for feasibility probes")
+
+    monkeypatch.setattr(move_generator, "compute_route_blockage_plan", fail_compute)
+
+    targets = _candidate_staging_targets(
+        source_track="存2",
+        block=["A"],
+        state=state,
+        plan_input=normalized,
+        master=master,
+        vehicle_by_no=vehicle_by_no,
+        goal_target_hints=("修1库内",),
+        route_oracle=RouteOracle(master),
+        route_pressure_sort=False,
+    )
+
+    assert targets
+
+
+def test_candidate_staging_targets_skips_projection_for_route_irrelevant_block(monkeypatch):
+    from fzed_shunting.solver import move_generator
+    from fzed_shunting.solver.move_generator import _candidate_staging_targets
+
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (
+            ROOT_DIR
+            / "data"
+            / "validation_inputs"
+            / "truth"
+            / "validation_20260206W.json"
+        ).read_text(encoding="utf-8")
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    route_oracle = RouteOracle(master)
+    projection_calls = 0
+    real_compute = move_generator.compute_route_blockage_plan
+
+    def wrapped_compute(*args, **kwargs):
+        nonlocal projection_calls
+        candidate_state = args[1]
+        if candidate_state is not state:
+            projection_calls += 1
+        return real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(move_generator, "compute_route_blockage_plan", wrapped_compute)
+
+    targets = _candidate_staging_targets(
+        source_track="存5北",
+        block=["5487381", "1578911", "5343658"],
+        state=state,
+        plan_input=normalized,
+        master=master,
+        vehicle_by_no=vehicle_by_no,
+        goal_target_hints=("存5南",),
+        route_oracle=route_oracle,
+    )
+
+    assert targets
+    assert projection_calls == 0
+
 
 def test_generate_goal_moves_prunes_heavy_equivalent_block_before_staging_without_l1():
     master = load_master_data(DATA_DIR)

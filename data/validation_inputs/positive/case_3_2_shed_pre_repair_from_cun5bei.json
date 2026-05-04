@@ -1408,7 +1408,6 @@
       "vehicleNo": "T005",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
       "targetTrack": "调棚",
       "isSpotting": "",
       "vehicleAttributes": ""

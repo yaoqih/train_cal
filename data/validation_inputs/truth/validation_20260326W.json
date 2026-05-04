@@ -189,10 +189,11 @@
       "vehicleNo": "1572902",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "机库",
@@ -201,10 +202,11 @@
       "vehicleNo": "1574647",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -214,10 +216,11 @@
       "vehicleNo": "1579159",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -226,10 +229,11 @@
       "vehicleNo": "1582106",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -238,10 +242,11 @@
       "vehicleNo": "1673805",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -250,10 +255,11 @@
       "vehicleNo": "1676076",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5南",
@@ -262,10 +268,11 @@
       "vehicleNo": "1677317",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -274,10 +281,11 @@
       "vehicleNo": "1677323",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修4库内",
@@ -286,10 +294,11 @@
       "vehicleNo": "1678535",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -311,10 +320,11 @@
       "vehicleNo": "1716758",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -323,10 +333,11 @@
       "vehicleNo": "1766696",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -335,10 +346,11 @@
       "vehicleNo": "1766824",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "机库",
@@ -347,10 +359,11 @@
       "vehicleNo": "1768306",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -360,10 +373,11 @@
       "vehicleNo": "1768704",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修2库内",
@@ -384,10 +398,11 @@
       "vehicleNo": "1769276",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -396,10 +411,11 @@
       "vehicleNo": "1778270",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -408,10 +424,11 @@
       "vehicleNo": "1782267",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -421,10 +438,11 @@
       "vehicleNo": "1782300",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -434,10 +452,11 @@
       "vehicleNo": "1782342",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -446,10 +465,11 @@
       "vehicleNo": "1784756",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -458,10 +478,11 @@
       "vehicleNo": "1784832",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5南",
@@ -470,10 +491,11 @@
       "vehicleNo": "1784847",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修1库内",
@@ -494,10 +516,11 @@
       "vehicleNo": "1787537",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存1",
@@ -506,10 +529,11 @@
       "vehicleNo": "1787606",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -518,10 +542,11 @@
       "vehicleNo": "1787694",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -530,10 +555,11 @@
       "vehicleNo": "1787776",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -542,10 +568,11 @@
       "vehicleNo": "1787851",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -554,10 +581,11 @@
       "vehicleNo": "1788118",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -567,10 +595,11 @@
       "vehicleNo": "3422436",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -579,10 +608,11 @@
       "vehicleNo": "3466047",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "机北",
@@ -591,10 +621,11 @@
       "vehicleNo": "3468232",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "油",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -603,10 +634,11 @@
       "vehicleNo": "3834747",
       "repairProcess": "段修",
       "vehicleLength": 17.6,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存1",
@@ -615,10 +647,11 @@
       "vehicleNo": "4203825",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存1",
@@ -627,10 +660,11 @@
       "vehicleNo": "4639021",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5南",
@@ -639,10 +673,11 @@
       "vehicleNo": "4865987",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5南",
@@ -651,10 +686,11 @@
       "vehicleNo": "4873053",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -663,10 +699,11 @@
       "vehicleNo": "4873210",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -675,10 +712,11 @@
       "vehicleNo": "4875501",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -687,10 +725,11 @@
       "vehicleNo": "4887260",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -699,10 +738,11 @@
       "vehicleNo": "4968383",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "轮",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "机库",
@@ -711,10 +751,11 @@
       "vehicleNo": "4968940",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -736,10 +777,11 @@
       "vehicleNo": "5221846",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -748,10 +790,11 @@
       "vehicleNo": "5221985",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修3库外",
@@ -770,12 +813,13 @@
       "order": "4",
       "vehicleModel": "X70",
       "vehicleNo": "5238901",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修3库外",
@@ -796,10 +840,11 @@
       "vehicleNo": "5243150",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "油",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修2库内",
@@ -808,10 +853,11 @@
       "vehicleNo": "5244345",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -819,48 +865,52 @@
       "order": "9",
       "vehicleModel": "X70",
       "vehicleNo": "5244509",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "洗南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
       "order": "8",
       "vehicleModel": "X70",
       "vehicleNo": "5246299",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "抛",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "洗南",
       "order": "8",
       "vehicleModel": "X70",
       "vehicleNo": "5248377",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "洗南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "抛",
       "order": "1",
       "vehicleModel": "X70",
       "vehicleNo": "5249128",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -870,10 +920,11 @@
       "vehicleNo": "5270420",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修4库内",
@@ -882,10 +933,11 @@
       "vehicleNo": "5275876",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -895,10 +947,11 @@
       "vehicleNo": "5280769",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -908,22 +961,24 @@
       "vehicleNo": "5280854",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存2",
       "order": "1",
       "vehicleModel": "X70",
       "vehicleNo": "5310825",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存2",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5北",
@@ -932,22 +987,24 @@
       "vehicleNo": "5310851",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存3",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "抛",
       "order": "2",
       "vehicleModel": "X70",
       "vehicleNo": "5313705",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -955,12 +1012,13 @@
       "order": "9",
       "vehicleModel": "X70",
       "vehicleNo": "5314120",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "抛",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修1库内",
@@ -969,10 +1027,11 @@
       "vehicleNo": "5316849",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "油",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修3库内",
@@ -993,10 +1052,11 @@
       "vehicleNo": "5323244",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存5南",
@@ -1005,10 +1065,11 @@
       "vehicleNo": "5324500",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修2库内",
@@ -1029,10 +1090,11 @@
       "vehicleNo": "5327721",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -1041,10 +1103,11 @@
       "vehicleNo": "5328027",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1054,10 +1117,11 @@
       "vehicleNo": "5329920",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "调棚",
@@ -1066,10 +1130,11 @@
       "vehicleNo": "5331355",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "调棚",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -1078,10 +1143,11 @@
       "vehicleNo": "5331404",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1091,10 +1157,11 @@
       "vehicleNo": "5332801",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "预修",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "预修",
@@ -1103,10 +1170,11 @@
       "vehicleNo": "5333475",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1128,10 +1196,11 @@
       "vehicleNo": "5333605",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1141,34 +1210,37 @@
       "vehicleNo": "5337668",
       "repairProcess": "段修",
       "vehicleLength": 13.2,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存1",
       "order": "5",
       "vehicleModel": "NX70",
       "vehicleNo": "5460824",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "存1",
       "order": "6",
       "vehicleModel": "NX70A",
       "vehicleNo": "5484423",
-      "repairProcess": "段修",
+      "repairProcess": "厂修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存1",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修2库内",
@@ -1177,10 +1249,11 @@
       "vehicleNo": "5492762",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1214,10 +1287,11 @@
       "vehicleNo": "5496883",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1251,10 +1325,11 @@
       "vehicleNo": "5739986",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "存5南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "机北",
@@ -1263,10 +1338,11 @@
       "vehicleNo": "5743059",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "TRACK",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "洗南",
       "isSpotting": "",
-      "vehicleAttributes": ""
+      "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT"
     },
     {
       "trackName": "修4库内",
@@ -1275,10 +1351,11 @@
       "vehicleNo": "8031402",
       "repairProcess": "段修",
       "vehicleLength": 12.1,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {
@@ -1288,10 +1365,11 @@
       "vehicleNo": "8031469",
       "repairProcess": "段修",
       "vehicleLength": 12.1,
-      "targetMode": "AREA",
+      "targetMode": "SNAPSHOT",
       "targetTrack": "大库",
       "isSpotting": "",
       "vehicleAttributes": "",
+      "targetSource": "END_SNAPSHOT",
       "targetAreaCode": "大库:RANDOM"
     },
     {

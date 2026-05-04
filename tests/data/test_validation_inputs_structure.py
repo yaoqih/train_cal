@@ -12,6 +12,15 @@ CORPUS_ROOT = ROOT / "data" / "validation_inputs"
 BASELINE_DIR = CORPUS_ROOT / "_baselines"
 POSITIVE_DIR = CORPUS_ROOT / "positive"
 NEGATIVE_DIR = CORPUS_ROOT / "negative"
+TRUTH_DIR = CORPUS_ROOT / "truth"
+
+REMOVED_WORK_AREA_CODES = frozenset({
+    "调棚:WORK",
+    "调棚:PRE_REPAIR",
+    "洗南:WORK",
+    "油:WORK",
+    "抛:WORK",
+})
 
 ALLOWED_BASELINES = frozenset({
     "B1_clean",
@@ -82,6 +91,19 @@ def test_positive_cases_have_expected_bounds():
         )
         assert "expected_error" not in meta, (
             f"{path.name} positive case must not have expected_error"
+        )
+
+
+def test_positive_cases_do_not_use_removed_work_area_codes():
+    for path in _iter_cases(POSITIVE_DIR):
+        payload = _load(path)
+        removed_refs = {
+            row.get("targetAreaCode")
+            for row in payload.get("vehicleInfo", [])
+            if row.get("targetAreaCode") in REMOVED_WORK_AREA_CODES
+        }
+        assert not removed_refs, (
+            f"{path.name} still uses removed work area codes: {sorted(removed_refs)}"
         )
 
 
@@ -199,3 +221,31 @@ def test_total_case_count():
     neg = len(_iter_cases(NEGATIVE_DIR))
     assert pos == 64, f"expected 64 positive cases, got {pos}"
     assert neg == 27, f"expected 27 negative cases, got {neg}"
+
+
+def test_monthly_truth_end_snapshot_targets_are_soft_except_cun4bei():
+    monthly_files = sorted(
+        path
+        for path in TRUTH_DIR.glob("validation_2026*.json")
+        if path.name != "conversion_summary.json"
+    )
+    assert monthly_files, "monthly truth files must exist"
+    for path in monthly_files:
+        payload = _load(path)
+        for row in payload["vehicleInfo"]:
+            target_mode = row.get("targetMode")
+            target_track = row.get("targetTrack")
+            if target_track == "存4北":
+                assert target_mode == "TRACK", (
+                    f"{path.name} {row.get('vehicleNo')} 存4北 should stay a hard target"
+                )
+                assert row.get("targetSource") in {None, ""}, (
+                    f"{path.name} {row.get('vehicleNo')} hard 存4北 target should not be END_SNAPSHOT"
+                )
+                continue
+            assert target_mode == "SNAPSHOT", (
+                f"{path.name} {row.get('vehicleNo')} should preserve End sheet as soft SNAPSHOT"
+            )
+            assert row.get("targetSource") == "END_SNAPSHOT", (
+                f"{path.name} {row.get('vehicleNo')} missing END_SNAPSHOT source"
+            )

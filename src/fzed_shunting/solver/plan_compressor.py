@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.master_data import MasterData
@@ -27,6 +28,7 @@ def compress_plan(
     master: MasterData | None,
     max_window_size: int = 10,
     max_passes: int = 16,
+    time_budget_ms: float | None = None,
 ) -> CompressionResult:
     """Verifier-guarded local plan compression.
 
@@ -34,19 +36,24 @@ def compress_plan(
     when replay reaches the same terminal state and the full verifier accepts
     the candidate. Failed rewrites leave the original plan unchanged.
     """
-    if not plan or master is None:
+    if not plan or master is None or (time_budget_ms is not None and time_budget_ms <= 0):
         return CompressionResult(compressed_plan=list(plan), accepted_rewrite_count=0)
+    started_at = perf_counter()
     current = list(plan)
     accepted = 0
     for _ in range(max_passes):
+        if _compression_budget_exhausted(started_at, time_budget_ms):
+            break
         changed = False
-        if _simulate(plan_input, initial_state, current) is None:
+        current_terminal_state = _simulate(plan_input, initial_state, current)
+        if current_terminal_state is None:
             break
         current, accepted_rebuild = _try_rebuild_single_source_window(
             master=master,
             plan_input=plan_input,
             initial_state=initial_state,
             current=current,
+            current_terminal_state=current_terminal_state,
             max_window_size=max_window_size,
         )
         if accepted_rebuild:
@@ -58,6 +65,7 @@ def compress_plan(
             plan_input=plan_input,
             initial_state=initial_state,
             current=current,
+            current_terminal_state=current_terminal_state,
         )
         if accepted_same_source_merge:
             accepted += 1
@@ -68,6 +76,7 @@ def compress_plan(
             plan_input=plan_input,
             initial_state=initial_state,
             current=current,
+            current_terminal_state=current_terminal_state,
         )
         if accepted_merge:
             accepted += 1
@@ -76,6 +85,8 @@ def compress_plan(
         for window_size in range(2, min(max_window_size, len(current)) + 1):
             index = 0
             while index + window_size <= len(current):
+                if _compression_budget_exhausted(started_at, time_budget_ms):
+                    break
                 candidate = current[:index] + current[index + window_size:]
                 if len(candidate) >= len(current):
                     index += 1
@@ -90,11 +101,22 @@ def compress_plan(
                 current = candidate
                 accepted += 1
                 changed = True
+            if _compression_budget_exhausted(started_at, time_budget_ms):
+                break
             if changed:
                 break
         if not changed:
             break
     return CompressionResult(compressed_plan=current, accepted_rewrite_count=accepted)
+
+
+def _compression_budget_exhausted(
+    started_at: float,
+    time_budget_ms: float | None,
+) -> bool:
+    if time_budget_ms is None:
+        return False
+    return (perf_counter() - started_at) * 1000 >= time_budget_ms
 
 
 def _try_merge_adjacent_same_source_same_target_pairs(
@@ -103,6 +125,7 @@ def _try_merge_adjacent_same_source_same_target_pairs(
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
     current: list[HookAction],
+    current_terminal_state: ReplayState,
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
     prefix_states = _prefix_states(plan_input, initial_state, current)
@@ -122,6 +145,8 @@ def _try_merge_adjacent_same_source_same_target_pairs(
         candidate = current[:index] + replacement + current[index + 4:]
         candidate_state = _simulate(plan_input, initial_state, candidate)
         if candidate_state is None:
+            continue
+        if not _preserves_terminal_track_sequences(candidate_state, current_terminal_state):
             continue
         if not _verify_candidate(master, plan_input, initial_state, candidate):
             continue
@@ -203,6 +228,7 @@ def _try_merge_adjacent_same_target_pairs(
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
     current: list[HookAction],
+    current_terminal_state: ReplayState,
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
     prefix_states = _prefix_states(plan_input, initial_state, current)
@@ -222,6 +248,8 @@ def _try_merge_adjacent_same_target_pairs(
         candidate = current[:index] + replacement + current[index + 4:]
         candidate_state = _simulate(plan_input, initial_state, candidate)
         if candidate_state is None:
+            continue
+        if not _preserves_terminal_track_sequences(candidate_state, current_terminal_state):
             continue
         if not _verify_candidate(master, plan_input, initial_state, candidate):
             continue
@@ -301,6 +329,7 @@ def _try_rebuild_single_source_window(
     plan_input: NormalizedPlanInput,
     initial_state: ReplayState,
     current: list[HookAction],
+    current_terminal_state: ReplayState,
     max_window_size: int,
 ) -> tuple[list[HookAction], bool]:
     route_oracle = RouteOracle(master)
@@ -325,6 +354,8 @@ def _try_rebuild_single_source_window(
             candidate = current[:index] + replacement + current[index + window_size:]
             candidate_state = _simulate(plan_input, initial_state, candidate)
             if candidate_state is None:
+                continue
+            if not _preserves_terminal_track_sequences(candidate_state, current_terminal_state):
                 continue
             if not _verify_candidate(master, plan_input, initial_state, candidate):
                 continue
@@ -643,6 +674,21 @@ def _state_equivalence_key(state: ReplayState) -> tuple:
         tuple(sorted(state.weighed_vehicle_nos)),
         tuple(sorted(state.spot_assignments.items())),
         state.loco_carry,
+    )
+
+
+def _preserves_terminal_track_sequences(
+    candidate_state: ReplayState,
+    current_terminal_state: ReplayState,
+) -> bool:
+    return _track_sequence_key(candidate_state) == _track_sequence_key(current_terminal_state)
+
+
+def _track_sequence_key(state: ReplayState) -> tuple:
+    return tuple(
+        (track, tuple(seq))
+        for track, seq in sorted(state.track_sequences.items())
+        if seq
     )
 
 

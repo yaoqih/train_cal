@@ -18,6 +18,10 @@ from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.budget import SearchBudget
+from fzed_shunting.solver.exact_spot import (
+    exact_spot_clearance_bonus,
+    exact_spot_seeker_exposure_bonus,
+)
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
@@ -226,6 +230,18 @@ def _solve_search_result(
                 ),
                 route_release_focus_bonus=current.route_release_focus_bonus,
             )
+            blocker_bonus += exact_spot_clearance_bonus(
+                plan_input=plan_input,
+                state=current.state,
+                move=move,
+                next_state=next_state,
+            )
+            blocker_bonus += exact_spot_seeker_exposure_bonus(
+                plan_input=plan_input,
+                state=current.state,
+                move=move,
+                next_state=next_state,
+            )
             blocker_bonus += _carry_exposure_bonus(
                 move=move,
                 state=current.state,
@@ -395,7 +411,7 @@ def _route_release_regression_penalty(
     if route_oracle is None or focus_ttl <= 0 or not focus_tracks:
         return 0
     penalty = 0
-    for focus_track in focus_tracks:
+    for focus_track in sorted(focus_tracks):
         if focus_track == state.loco_track_name:
             continue
         access_result = route_oracle.validate_loco_access(
@@ -453,7 +469,7 @@ def _blocked_focus_tracks(
     focus_tracks: frozenset[str] | set[str],
 ) -> set[str]:
     blocked: set[str] = set()
-    for focus_track in focus_tracks:
+    for focus_track in sorted(focus_tracks):
         if focus_track == state.loco_track_name:
             continue
         access_result = route_oracle.validate_loco_access(

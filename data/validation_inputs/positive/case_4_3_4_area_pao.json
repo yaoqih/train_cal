@@ -266,11 +266,9 @@
       "vehicleNo": "AR003",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetMode": "AREA",
       "targetTrack": "抛",
       "isSpotting": "",
-      "vehicleAttributes": "",
-      "targetAreaCode": "抛:WORK"
+      "vehicleAttributes": ""
     }
   ],
   "locoTrackName": "机库"

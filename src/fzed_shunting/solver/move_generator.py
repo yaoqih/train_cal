@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from fzed_shunting.domain.depot_spots import (
-    WORK_AREA_SPOTS,
     allocate_spots_for_block,
     exact_spot_reservations,
 )
@@ -11,27 +10,63 @@ from fzed_shunting.domain.carry_order import iter_carried_tail_blocks
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
+from fzed_shunting.domain.work_positions import (
+    is_work_position_track,
+    preview_work_positions_after_prepend,
+)
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.goal_logic import (
     goal_effective_allowed_tracks,
     goal_is_satisfied,
     goal_track_preference_level,
 )
-from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
+from fzed_shunting.solver.route_blockage import RouteBlockagePlan, compute_route_blockage_plan
 from fzed_shunting.solver.state import _apply_move, _is_goal, _state_key, _vehicle_track_lookup
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
-AREA_CAPACITY_LIMITS = {
-    "调棚:WORK": 4,
-    "洗南:WORK": 3,
-    "油:WORK": 2,
-    "抛:WORK": 2,
-}
 PRIMARY_STAGING_TRACK_TYPES = {"TEMPORARY"}
 FALLBACK_STAGING_TRACK_TYPES = {"STORAGE"}
 MAX_STAGING_TARGETS = 2
 
+RouteBlockageCache = dict[tuple, RouteBlockagePlan]
+
+
+def _track_sequences_in_order(state: ReplayState):
+    return state.track_sequences.items()
+
+
+def _route_blockage_plan_for_state(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle | None,
+    cache: RouteBlockageCache | None,
+    blocked_source_tracks: set[str] | frozenset[str] | None = None,
+) -> RouteBlockagePlan:
+    if route_oracle is None:
+        return RouteBlockagePlan(facts_by_blocking_track={})
+    cache_key = (
+        _state_key(state, plan_input),
+        tuple(sorted(blocked_source_tracks or ())),
+    )
+    if cache is None:
+        return compute_route_blockage_plan(
+            plan_input,
+            state,
+            route_oracle,
+            blocked_source_tracks=blocked_source_tracks,
+        )
+    cached = cache.get(cache_key)
+    if cached is None:
+        cached = compute_route_blockage_plan(
+            plan_input,
+            state,
+            route_oracle,
+            blocked_source_tracks=blocked_source_tracks,
+        )
+        cache[cache_key] = cached
+    return cached
 
 def _effective_target_tracks_for_detach(
     vehicle_no: str,
@@ -103,6 +138,7 @@ def _collect_real_hook_identity_attach_requests(
     effective_capacity_by_track: dict[str, float],
     master: MasterData | None,
     route_oracle: RouteOracle | None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> dict[str, set[int]]:
     requests_by_source: dict[str, set[int]] = {}
     blocking_goal_targets_by_source = _collect_interfering_goal_targets_by_source(
@@ -113,7 +149,7 @@ def _collect_real_hook_identity_attach_requests(
         route_oracle=route_oracle,
     )
 
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         front_prefix_size = _front_blocker_prefix_size(
@@ -137,6 +173,7 @@ def _collect_real_hook_identity_attach_requests(
                 effective_capacity_by_track=effective_capacity_by_track,
                 master=master,
                 route_oracle=route_oracle,
+                route_blockage_cache=route_blockage_cache,
                 goal_target_hints=tuple(sorted(blocking_goal_targets_by_source[source_track])),
             )
             if clear_prefix_sizes:
@@ -156,7 +193,7 @@ def _collect_real_hook_identity_attach_requests(
             + length_by_vehicle.get(vehicle.vehicle_no, vehicle.vehicle_length)
         )
 
-    for track, seq in state.track_sequences.items():
+    for track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         pending = pending_arrival_by_track.get(track, 0.0)
@@ -235,20 +272,21 @@ def _collect_real_hook_identity_attach_requests(
         allowed = vehicle.goal.allowed_target_tracks
         if not allowed:
             continue
-        any_feasible = False
-        for target in allowed:
-            result = allocate_spots_for_block(
-                vehicles=[vehicle],
-                target_track=target,
-                yard_mode=plan_input.yard_mode,
-                occupied_spot_assignments=state.spot_assignments,
-                reserved_spot_codes=exact_spot_reservations(plan_input),
-            )
-            if result is not None:
-                any_feasible = True
-                break
-        if any_feasible:
-            continue
+        if vehicle.goal.target_mode != "WORK_POSITION":
+            any_feasible = False
+            for target in allowed:
+                result = allocate_spots_for_block(
+                    vehicles=[vehicle],
+                    target_track=target,
+                    yard_mode=plan_input.yard_mode,
+                    occupied_spot_assignments=state.spot_assignments,
+                    reserved_spot_codes=exact_spot_reservations(plan_input),
+                )
+                if result is not None:
+                    any_feasible = True
+                    break
+            if any_feasible:
+                continue
         for target in allowed:
             seq = state.track_sequences.get(target, [])
             if not seq:
@@ -267,7 +305,7 @@ def _collect_real_hook_identity_attach_requests(
             evict_requests[target] = max(evict_requests.get(target, 0), 1)
             break
 
-    for track, prefix_size in evict_requests.items():
+    for track, prefix_size in sorted(evict_requests.items()):
         seq = state.track_sequences.get(track, [])
         if seq and prefix_size <= len(seq):
             requests_by_source.setdefault(track, set()).add(prefix_size)
@@ -282,6 +320,7 @@ def generate_goal_moves(
     route_oracle: RouteOracle | None = None,
     blocking_goal_targets_by_source: dict[str, set[str]] | None = None,
     debug_stats: dict[str, Any] | None = None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> list[HookAction]:
     goal_by_vehicle = {vehicle.vehicle_no: vehicle.goal for vehicle in plan_input.vehicles}
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
@@ -320,7 +359,7 @@ def generate_goal_moves(
                 "moves_by_block_size": {},
             }
         )
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         emitted_longest_single_target_direct_moves: set[str] = set()
@@ -415,6 +454,7 @@ def generate_goal_moves(
                     vehicle_by_no=vehicle_by_no,
                     goal_target_hints=goal_target_hints,
                     route_oracle=route_oracle,
+                    route_blockage_cache=route_blockage_cache,
                 ):
                     if (
                         feasible_target_count > 0
@@ -457,6 +497,7 @@ def generate_goal_moves(
             effective_capacity_by_track=effective_capacity_by_track,
             master=master,
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         )
     )
     moves.extend(
@@ -469,6 +510,7 @@ def generate_goal_moves(
             effective_capacity_by_track=effective_capacity_by_track,
             master=master,
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         )
     )
     return _dedup_moves(moves)
@@ -507,6 +549,7 @@ def generate_real_hook_moves(
     }
     if route_oracle is None and master is not None:
         route_oracle = RouteOracle(master)
+    route_blockage_cache: RouteBlockageCache = {}
 
     current_carry_detach_groups = (
         _min_detach_groups(
@@ -527,6 +570,7 @@ def generate_real_hook_moves(
             effective_capacity_by_track=effective_capacity_by_track,
             master=master,
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         )
         if not state.loco_carry
         else {}
@@ -548,6 +592,7 @@ def generate_real_hook_moves(
             effective_capacity_by_track=effective_capacity_by_track,
             master=master,
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         ).items():
             identity_attach_requests.setdefault(track, set()).update(prefix_sizes)
 
@@ -569,7 +614,7 @@ def generate_real_hook_moves(
     # --- ATTACH moves ---
     # When loco_carry is non-empty, only keep extra ATTACHes that can reduce
     # the remaining DETACH-group count versus solving the new block separately.
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         requested_prefix_sizes = identity_attach_requests.get(source_track, set())
@@ -769,6 +814,7 @@ def generate_real_hook_moves(
                 vehicle_by_no=vehicle_by_no,
                 goal_target_hints=tuple(sorted(goal_targets)),
                 route_oracle=route_oracle,
+                route_blockage_cache=route_blockage_cache,
             )
             staging_limit = (
                 MAX_STAGING_TARGETS + 1
@@ -779,6 +825,7 @@ def generate_real_hook_moves(
                     plan_input=plan_input,
                     vehicle_by_no=vehicle_by_no,
                     route_oracle=route_oracle,
+                    route_blockage_cache=route_blockage_cache,
                 )
                 else MAX_STAGING_TARGETS
             )
@@ -837,7 +884,7 @@ def generate_real_hook_moves(
                 if staged_count >= staging_limit:
                     break
 
-    return _dedup_moves(moves)
+    return _sort_moves_for_stable_search(_dedup_moves(moves))
 
 
 def _empty_carry_detach_has_followup_attach(
@@ -990,6 +1037,7 @@ def _is_carrying_active_route_blocker(
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict,
     route_oracle: RouteOracle | None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> bool:
     if route_oracle is None or not block:
         return False
@@ -1007,7 +1055,7 @@ def _is_carrying_active_route_blocker(
         return False
     restored_sequences = {
         track_name: list(seq)
-        for track_name, seq in state.track_sequences.items()
+        for track_name, seq in _track_sequences_in_order(state)
     }
     restored_sequences[source_track] = list(block) + list(restored_sequences.get(source_track, []))
     restored_state = state.model_copy(
@@ -1020,10 +1068,11 @@ def _is_carrying_active_route_blocker(
             ),
         }
     )
-    return source_track in compute_route_blockage_plan(
-        plan_input,
-        restored_state,
-        route_oracle,
+    return source_track in _route_blockage_plan_for_state(
+        plan_input=plan_input,
+        state=restored_state,
+        route_oracle=route_oracle,
+        cache=route_blockage_cache,
     ).facts_by_blocking_track
 
 
@@ -1036,6 +1085,7 @@ def _generate_capacity_eviction_moves(
     effective_capacity_by_track: dict[str, float],
     master: MasterData | None,
     route_oracle: RouteOracle | None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> list[HookAction]:
     """Generate staging moves for identity-goal vehicles at capacity-full target tracks.
 
@@ -1045,7 +1095,7 @@ def _generate_capacity_eviction_moves(
     """
     current_track_by_vehicle: dict[str, str] = {
         vno: track
-        for track, seq in state.track_sequences.items()
+        for track, seq in _track_sequences_in_order(state)
         for vno in seq
     }
     pending_arrival_by_track: dict[str, float] = {}
@@ -1062,7 +1112,7 @@ def _generate_capacity_eviction_moves(
         )
 
     eviction_moves: list[HookAction] = []
-    for track, seq in state.track_sequences.items():
+    for track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         pending = pending_arrival_by_track.get(track, 0.0)
@@ -1119,6 +1169,7 @@ def _generate_capacity_eviction_moves(
             vehicle_by_no=vehicle_by_no,
             goal_target_hints=(track,),
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         ):
             if feasible_count > 0 and _is_fallback_staging_track(master, staging_target):
                 break
@@ -1153,6 +1204,7 @@ def _generate_spot_eviction_moves(
     effective_capacity_by_track: dict[str, float],
     master: MasterData | None,
     route_oracle: RouteOracle | None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> list[HookAction]:
     """Generate staging moves to free spots blocked by vehicles that need to be evicted.
 
@@ -1167,7 +1219,7 @@ def _generate_spot_eviction_moves(
     reserved_spot_codes = exact_spot_reservations(plan_input)
     current_track_by_vehicle: dict[str, str] = {
         vno: track
-        for track, seq in state.track_sequences.items()
+        for track, seq in _track_sequences_in_order(state)
         for vno in seq
     }
     # evict_requests[track] = near-end prefix size needed to remove all blockers
@@ -1212,20 +1264,21 @@ def _generate_spot_eviction_moves(
         allowed = vehicle.goal.allowed_target_tracks
         if len(allowed) == 0:
             continue
-        any_feasible = False
-        for target in allowed:
-            result = allocate_spots_for_block(
-                vehicles=[vehicle],
-                target_track=target,
-                yard_mode=plan_input.yard_mode,
-                occupied_spot_assignments=state.spot_assignments,
-                reserved_spot_codes=reserved_spot_codes,
-            )
-            if result is not None:
-                any_feasible = True
-                break
-        if any_feasible:
-            continue
+        if vehicle.goal.target_mode != "WORK_POSITION":
+            any_feasible = False
+            for target in allowed:
+                result = allocate_spots_for_block(
+                    vehicles=[vehicle],
+                    target_track=target,
+                    yard_mode=plan_input.yard_mode,
+                    occupied_spot_assignments=state.spot_assignments,
+                    reserved_spot_codes=reserved_spot_codes,
+                )
+                if result is not None:
+                    any_feasible = True
+                    break
+            if any_feasible:
+                continue
         # All targets have full spot assignments: evict front of the first available target
         for target in allowed:
             seq = state.track_sequences.get(target, [])
@@ -1246,7 +1299,7 @@ def _generate_spot_eviction_moves(
             break
 
     eviction_moves: list[HookAction] = []
-    for track, prefix_size in evict_requests.items():
+    for track, prefix_size in sorted(evict_requests.items()):
         seq = state.track_sequences.get(track, [])
         if not seq or prefix_size > len(seq):
             continue
@@ -1272,6 +1325,7 @@ def _generate_spot_eviction_moves(
             vehicle_by_no=vehicle_by_no,
             goal_target_hints=goal_hints,
             route_oracle=route_oracle,
+            route_blockage_cache=route_blockage_cache,
         ):
             if feasible_count > 0 and _is_fallback_staging_track(master, staging_target):
                 break
@@ -1312,6 +1366,19 @@ def _dedup_moves(moves: list[HookAction]) -> list[HookAction]:
         seen.add(key)
         result.append(move)
     return result
+
+
+def _sort_moves_for_stable_search(moves: list[HookAction]) -> list[HookAction]:
+    return sorted(
+        moves,
+        key=lambda move: (
+            move.source_track,
+            move.target_track,
+            tuple(move.vehicle_nos),
+            tuple(move.path_tracks),
+            move.action_type,
+        ),
+    )
 
 
 def _should_skip_shorter_single_target_direct_move(
@@ -1443,17 +1510,39 @@ def _candidate_staging_targets(
     vehicle_by_no: dict,
     goal_target_hints: tuple[str, ...],
     route_oracle: RouteOracle | None,
+    route_pressure_sort: bool = True,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> list[str]:
     if master is None:
         return []
-    targets: list[tuple[tuple[float, float, str], str]] = []
+    current_route_pressure = 0
+    route_pressure_cache: dict[str, int] | None = None
+    if route_pressure_sort and route_oracle is not None:
+        route_blockage_plan = _route_blockage_plan_for_state(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            cache=route_blockage_cache,
+        )
+        current_route_pressure = route_blockage_plan.total_blockage_pressure
+        if current_route_pressure > 0 and _staging_move_can_affect_route_pressure(
+            source_track=source_track,
+            block=block,
+            block_is_carried=bool(state.loco_carry),
+            route_blockage_plan=route_blockage_plan,
+        ):
+            route_pressure_cache = {}
+    candidates: list[tuple[tuple[float, float, float, str], str]] = []
     for info in plan_input.track_info:
         if info.track_name == source_track:
             continue
         type_priority = _staging_track_priority(master, info.track_name)
         if type_priority is None:
             continue
-        if any(info.track_name in vehicle_by_no[vehicle_no].goal.allowed_target_tracks for vehicle_no in block):
+        if any(
+            _staging_target_is_hard_goal_for_vehicle(info.track_name, vehicle_by_no[vehicle_no])
+            for vehicle_no in block
+        ):
             continue
         source_distance = _route_distance(route_oracle, source_track, info.track_name)
         if source_distance is None:
@@ -1472,9 +1561,121 @@ def _candidate_staging_targets(
         if follow_distances:
             combined_distance = source_distance + min(follow_distances)
         occupancy = len(state.track_sequences.get(info.track_name, []))
-        targets.append(((type_priority, occupancy, combined_distance, source_distance, info.track_name), info.track_name))
-    targets.sort(key=lambda item: item[0])
-    return [track_name for _, track_name in targets]
+        candidates.append(
+            (
+                (
+                    type_priority,
+                    occupancy,
+                    combined_distance,
+                    source_distance,
+                    info.track_name,
+                ),
+                info.track_name,
+            )
+        )
+    candidates.sort(key=lambda item: item[0])
+    if route_pressure_cache is None:
+        return [track_name for _, track_name in candidates]
+
+    route_scored: list[tuple[tuple[float, int, int, float, float, float, str], str]] = []
+    for base_key, track_name in candidates:
+        route_pressure = _projected_staging_route_pressure(
+            source_track=source_track,
+            target_track=track_name,
+            block=block,
+            state=state,
+            plan_input=plan_input,
+            route_oracle=route_oracle,
+            current_route_pressure=current_route_pressure,
+            route_pressure_cache=route_pressure_cache,
+            route_blockage_cache=route_blockage_cache,
+        )
+        type_priority, occupancy, combined_distance, source_distance, _ = base_key
+        route_scored.append(
+            (
+                (
+                    max(0, route_pressure - current_route_pressure),
+                    route_pressure,
+                    type_priority,
+                    occupancy,
+                    combined_distance,
+                    source_distance,
+                    track_name,
+                ),
+                track_name,
+            )
+        )
+    route_scored.sort(key=lambda item: item[0])
+    return [track_name for _, track_name in route_scored]
+
+
+def _staging_move_can_affect_route_pressure(
+    *,
+    source_track: str,
+    block: list[str],
+    block_is_carried: bool,
+    route_blockage_plan: RouteBlockagePlan,
+) -> bool:
+    if not route_blockage_plan.facts_by_blocking_track:
+        return False
+    block_set = set(block)
+    if source_track in route_blockage_plan.facts_by_blocking_track:
+        return True
+    for fact in route_blockage_plan.facts_by_blocking_track.values():
+        if block_is_carried and source_track in fact.source_tracks and block_set & set(fact.blocked_vehicle_nos):
+            return True
+        if block_set & set(fact.blocking_vehicle_nos):
+            return True
+    return False
+
+
+def _projected_staging_route_pressure(
+    *,
+    source_track: str,
+    target_track: str,
+    block: list[str],
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle | None,
+    current_route_pressure: int,
+    route_pressure_cache: dict[str, int] | None,
+    route_blockage_cache: RouteBlockageCache | None = None,
+) -> int:
+    if route_oracle is None or route_pressure_cache is None:
+        return current_route_pressure
+    cached = route_pressure_cache.get(target_track)
+    if cached is not None:
+        return cached
+    block_set = set(block)
+    projected_sequences = {
+        track_name: list(seq)
+        for track_name, seq in _track_sequences_in_order(state)
+    }
+    source_seq = list(projected_sequences.get(source_track, []))
+    if source_seq[: len(block)] == list(block):
+        projected_sequences[source_track] = source_seq[len(block):]
+    projected_sequences[target_track] = list(block) + list(
+        projected_sequences.get(target_track, [])
+    )
+    projected_carry = tuple(
+        vehicle_no for vehicle_no in state.loco_carry if vehicle_no not in block_set
+    )
+    projected_state = state.model_copy(
+        update={
+            "track_sequences": projected_sequences,
+            "loco_track_name": target_track,
+            "loco_node": route_oracle.order_end_node(target_track),
+            "loco_carry": projected_carry,
+        }
+    )
+    route_pressure = _route_blockage_plan_for_state(
+        plan_input=plan_input,
+        state=projected_state,
+        route_oracle=route_oracle,
+        cache=route_blockage_cache,
+    ).total_blockage_pressure
+    route_pressure_cache[target_track] = route_pressure
+    return route_pressure
 
 
 def _is_fallback_staging_track(
@@ -1499,6 +1700,18 @@ def _staging_track_priority(
     if track.track_type in FALLBACK_STAGING_TRACK_TYPES:
         return 1
     return None
+
+
+def _staging_target_is_hard_goal_for_vehicle(
+    track_name: str,
+    vehicle: NormalizedVehicle,
+) -> bool:
+    goal = vehicle.goal
+    if track_name in goal.preferred_target_tracks:
+        return True
+    if goal.target_mode == "SNAPSHOT" and track_name in goal.fallback_target_tracks:
+        return False
+    return track_name in goal.allowed_target_tracks
 
 
 def _collect_staging_requests_for_source(
@@ -1666,7 +1879,7 @@ def _collect_interfering_goal_targets_by_source(
     if route_oracle is None:
         return {}
     blocking_goal_targets_by_source: dict[str, set[str]] = {}
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         for prefix_size in range(1, len(seq) + 1):
@@ -1700,6 +1913,7 @@ def _collect_real_hook_access_blocker_attach_requests(
     length_by_vehicle: dict[str, float] | None = None,
     effective_capacity_by_track: dict[str, float] | None = None,
     master: MasterData | None = None,
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> dict[str, set[int]]:
     if route_oracle is None or state.loco_carry:
         return {}
@@ -1723,15 +1937,16 @@ def _collect_real_hook_access_blocker_attach_requests(
             for name, cap in capacity_by_track.items()
         }
     requests: dict[str, set[int]] = {}
-    route_blockage_plan = compute_route_blockage_plan(
-        plan_input,
-        state,
-        route_oracle,
+    route_blockage_plan = _route_blockage_plan_for_state(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        cache=route_blockage_cache,
     )
-    for blocking_track, fact in route_blockage_plan.facts_by_blocking_track.items():
+    for blocking_track, fact in sorted(route_blockage_plan.facts_by_blocking_track.items()):
         if not _route_blockage_fact_warrants_clear_request(
             blocking_track=blocking_track,
-            source_tracks=frozenset(fact.source_tracks),
+            source_tracks=frozenset(sorted(fact.source_tracks)),
             blockage_count=fact.blockage_count,
             state=state,
             route_oracle=route_oracle,
@@ -1750,12 +1965,13 @@ def _collect_real_hook_access_blocker_attach_requests(
             effective_capacity_by_track=effective_capacity_by_track,
             master=master,
             route_oracle=route_oracle,
-            goal_target_hints=tuple(fact.target_tracks),
+            route_blockage_cache=route_blockage_cache,
+            goal_target_hints=tuple(sorted(fact.target_tracks)),
         )
         if blocker_prefix_sizes:
             requests.setdefault(blocking_track, set()).update(blocker_prefix_sizes)
 
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         for prefix_size in _real_hook_attach_frontier_prefix_sizes(
@@ -1798,6 +2014,7 @@ def _collect_real_hook_access_blocker_attach_requests(
                     effective_capacity_by_track=effective_capacity_by_track,
                     master=master,
                     route_oracle=route_oracle,
+                    route_blockage_cache=route_blockage_cache,
                     goal_target_hints=(blocking_track,),
                 )
                 if not blocker_prefix_sizes:
@@ -1814,7 +2031,7 @@ def _route_blockage_fact_warrants_clear_request(
     state: ReplayState,
     route_oracle: RouteOracle,
 ) -> bool:
-    for source_track in source_tracks:
+    for source_track in sorted(source_tracks):
         access_result = route_oracle.validate_loco_access(
             loco_track=state.loco_track_name,
             target_track=source_track,
@@ -1838,6 +2055,7 @@ def _access_blocker_clear_prefix_sizes(
     master: MasterData | None,
     route_oracle: RouteOracle | None,
     goal_target_hints: tuple[str, ...],
+    route_blockage_cache: RouteBlockageCache | None = None,
 ) -> set[int]:
     """Pick the largest hookable prefix that can actually leave the blocker track.
 
@@ -1884,6 +2102,8 @@ def _access_blocker_clear_prefix_sizes(
             vehicle_by_no=vehicle_by_no,
             goal_target_hints=goal_target_hints,
             route_oracle=route_oracle,
+            route_pressure_sort=False,
+            route_blockage_cache=route_blockage_cache,
         ):
             move = _build_candidate_move(
                 source_track=source_track,
@@ -1918,7 +2138,7 @@ def _has_accessible_real_hook_attach_frontier(
     attach work exists, generating extra satisfied-blocker requests too early
     tends to disturb already-good blocks and creates staging churn.
     """
-    for source_track, seq in state.track_sequences.items():
+    for source_track, seq in _track_sequences_in_order(state):
         if not seq:
             continue
         requested_prefix_sizes: set[int] = set()
@@ -2002,7 +2222,7 @@ def _build_candidate_move(
         length_by_vehicle,
     ):
         return None
-    if not _fits_area_capacity(block, target_track, state, vehicle_by_no):
+    if _violates_work_position_preview(block, target_track, state, vehicle_by_no):
         return None
     if allocate_spots_for_block(
         vehicles=block_vehicles,
@@ -2129,20 +2349,18 @@ def _violates_non_cun4bei_attach_close_door_rule(
     return bool(first_vehicle is not None and first_vehicle.is_close_door)
 
 
-def _fits_area_capacity(
+def _violates_work_position_preview(
     block: list[str],
     target_track: str,
     state: ReplayState,
     vehicle_by_no: dict,
 ) -> bool:
-    vehicle = vehicle_by_no[block[0]]
-    area_code = vehicle.goal.target_area_code
-    if area_code not in AREA_CAPACITY_LIMITS:
-        return True
-    limit = AREA_CAPACITY_LIMITS[area_code]
-    current_count = 0
-    for vehicle_no in state.track_sequences.get(target_track, []):
-        existing = vehicle_by_no.get(vehicle_no)
-        if existing and existing.goal.target_area_code == area_code:
-            current_count += 1
-    return current_count + len(block) <= limit
+    if not is_work_position_track(target_track):
+        return False
+    preview = preview_work_positions_after_prepend(
+        target_track=target_track,
+        incoming_vehicle_nos=list(block),
+        existing_vehicle_nos=list(state.track_sequences.get(target_track, [])),
+        vehicle_by_no=vehicle_by_no,
+    )
+    return not preview.valid

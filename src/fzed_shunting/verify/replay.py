@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 
 from fzed_shunting.domain.carry_order import remove_carried_tail_block
 from fzed_shunting.domain.depot_spots import (
-    allocate_spots_for_block,
     build_initial_spot_assignments,
     exact_spot_reservations,
+    realign_spots_for_track_order,
 )
 from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
@@ -93,19 +93,19 @@ def replay_plan(
                 state.spot_assignments.pop(vehicle_no, None)
             state.track_sequences[target] = list(vehicle_nos) + list(state.track_sequences.get(target, []))
             if plan_input is not None:
-                block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in vehicle_nos]
-                new_spot_assignments = allocate_spots_for_block(
-                    vehicles=block_vehicles,
+                next_spot_assignments = realign_spots_for_track_order(
+                    vehicle_nos_in_order=state.track_sequences[target],
+                    vehicle_by_no=vehicle_by_no,
                     target_track=target,
                     yard_mode=plan_input.yard_mode,
-                    occupied_spot_assignments=state.spot_assignments,
+                    current_spot_assignments=state.spot_assignments,
                     reserved_spot_codes=reserved_spot_codes,
                 )
-                if new_spot_assignments is None:
+                if next_spot_assignments is None:
                     raise ValueError(
                         f"No available depot spot for detach to {target}: {vehicle_nos}"
                     )
-                state.spot_assignments.update(new_spot_assignments)
+                state.spot_assignments = next_spot_assignments
             state.loco_track_name = target
             state.loco_node = _order_end_node(target)
             if target == "机库":

@@ -119,6 +119,43 @@ def test_plan_verifier_accepts_valid_direct_move():
     assert report.errors == []
 
 
+def test_plan_verifier_rejects_non_sequential_hook_numbers():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "HOOK_GAP",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    hook_plan = _native_direct_plan(
+        source_track="存5北",
+        target_track="机库",
+        vehicle_nos=["HOOK_GAP"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+    )
+    hook_plan[1]["hookNo"] = 3
+
+    report = verify_plan(master, normalized, hook_plan)
+
+    assert report.is_valid is False
+    assert any("hookNo" in error and "sequential" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_wrong_final_track():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -159,7 +196,7 @@ def test_plan_verifier_rejects_wrong_final_track():
     assert any("final track" in error.lower() for error in report.errors)
 
 
-def test_plan_verifier_requires_work_area_spot_assignment():
+def test_plan_verifier_reports_work_position_rank_mismatch():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -194,7 +231,8 @@ def test_plan_verifier_requires_work_area_spot_assignment():
         ),
     )
 
-    assert report.is_valid is True
+    assert report.is_valid is False
+    assert any("south_rank=1" in error and "expected one of" in error for error in report.errors)
 
 
 def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():

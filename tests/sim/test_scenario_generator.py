@@ -208,7 +208,7 @@ def test_generate_typical_suite_contains_wash_area_scenario():
     payload = wash["payload"]
 
     assert payload["vehicleInfo"][0]["targetTrack"] == "洗南"
-    assert payload["vehicleInfo"][0]["isSpotting"] == "是"
+    assert payload["vehicleInfo"][0]["isSpotting"] == ""
     assert "wash" in payload["scenarioMeta"]["tags"]
     track_names = {track["trackName"] for track in payload["trackInfo"]}
     assert {"存5北", "洗南"} <= track_names

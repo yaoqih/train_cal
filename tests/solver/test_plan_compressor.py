@@ -4,7 +4,7 @@ from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.plan_compressor import compress_plan
 from fzed_shunting.solver.types import HookAction
-from fzed_shunting.verify.replay import build_initial_state
+from fzed_shunting.verify.replay import build_initial_state, replay_plan
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -300,6 +300,33 @@ def test_compressor_removes_redundant_round_trip_window():
 
     assert result.accepted_rewrite_count == 1
     assert result.compressed_plan == []
+
+
+def test_compressor_respects_exhausted_time_budget():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_payload("存1"), master)
+    initial = build_initial_state(normalized)
+    plan = [
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["A"],
+            path_tracks=["存1"],
+            action_type="DETACH",
+        ),
+    ]
+
+    result = compress_plan(normalized, initial, plan, master=master, time_budget_ms=0.0)
+
+    assert result.accepted_rewrite_count == 0
+    assert result.compressed_plan == plan
 
 
 def test_compressor_continues_until_multiple_independent_windows_removed():
@@ -932,7 +959,7 @@ def test_compressor_merges_adjacent_attach_detach_pairs_when_final_order_is_pres
     ]
 
 
-def test_compressor_merges_adjacent_same_source_same_target_pairs():
+def test_compressor_rejects_same_source_same_target_merge_when_final_order_would_change():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_same_source_same_target_payload(), master)
     initial = build_initial_state(normalized)
@@ -969,23 +996,63 @@ def test_compressor_merges_adjacent_same_source_same_target_pairs():
 
     result = compress_plan(normalized, initial, plan, master=master)
 
-    assert result.accepted_rewrite_count == 1
-    assert result.compressed_plan == [
+    assert result.accepted_rewrite_count == 0
+    assert result.compressed_plan == plan
+
+
+def test_compressor_same_source_merge_preserves_successive_detach_north_order():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_same_source_same_target_payload(), master)
+    initial = build_initial_state(normalized)
+    plan = [
         HookAction(
             source_track="存1",
             target_track="存1",
-            vehicle_nos=["A", "B"],
+            vehicle_nos=["A"],
             path_tracks=["存1"],
             action_type="ATTACH",
         ),
         HookAction(
             source_track="存1",
             target_track="存2",
-            vehicle_nos=["A", "B"],
+            vehicle_nos=["A"],
+            path_tracks=["存1", "渡7", "存2"],
+            action_type="DETACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存1",
+            vehicle_nos=["B"],
+            path_tracks=["存1"],
+            action_type="ATTACH",
+        ),
+        HookAction(
+            source_track="存1",
+            target_track="存2",
+            vehicle_nos=["B"],
             path_tracks=["存1", "渡7", "存2"],
             action_type="DETACH",
         ),
     ]
+
+    result = compress_plan(normalized, initial, plan, master=master)
+    replay = replay_plan(
+        initial,
+        [
+            {
+                "hookNo": index,
+                "actionType": move.action_type,
+                "sourceTrack": move.source_track,
+                "targetTrack": move.target_track,
+                "vehicleNos": move.vehicle_nos,
+                "pathTracks": move.path_tracks,
+            }
+            for index, move in enumerate(result.compressed_plan, start=1)
+        ],
+        plan_input=normalized,
+    )
+
+    assert replay.final_state.track_sequences["存2"] == ["B", "A"]
 
 
 def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():

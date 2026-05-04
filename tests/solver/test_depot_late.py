@@ -378,19 +378,13 @@ from fzed_shunting.solver.search import _priority
 
 class TestSearchPriorityDepotSecondary:
     def test_flag_off_default_priority_unchanged_exact(self) -> None:
-        # Baseline parity: neg_depot_index_sum=0 keeps the classic tuple shape.
+        # Baseline parity: neg_depot_index_sum=0 keeps the classic ordering
+        # after the route-release regression guard prefix.
         legacy = _priority(
             cost=3, heuristic=5, blocker_bonus=0,
             solver_mode="exact", heuristic_weight=1.0,
         )
-        # Position 0: f=cost+h=8; position 1: cost; position 2: neg_depot_key
-        # (0 when flag off); position 3: heuristic; position 4: -blocker_bonus.
-        assert legacy[0] == 8
-        assert legacy[1] == 3
-        assert legacy[2] == 0
-        assert legacy[3] == 5
-        assert legacy[4] == (0, 0, 0)
-        assert legacy[5] == 0
+        assert legacy == (0, 8, 3, 0, 5, (0, 0, 0), 0)
 
     def test_flag_on_smaller_neg_index_sum_preferred(self) -> None:
         # Two nodes same (cost, heuristic). Node A has depot at index 3

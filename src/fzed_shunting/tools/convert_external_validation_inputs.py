@@ -236,7 +236,7 @@ def build_shared_vehicle_scenario(
         if vehicle_length is None:
             skipped_vehicle_nos_missing_length.append(vehicle_no)
             continue
-        target_mode = "AREA" if raw_target_track in DEPOT_INNER_TRACKS else "TRACK"
+        target_mode = "TRACK" if raw_target_track == "存4北" else "SNAPSHOT"
         vehicle_payload = {
             "trackName": current_track,
             "order": str(start.order),
@@ -249,6 +249,8 @@ def build_shared_vehicle_scenario(
             "isSpotting": "",
             "vehicleAttributes": vehicle_attributes,
         }
+        if target_mode == "SNAPSHOT":
+            vehicle_payload["targetSource"] = "END_SNAPSHOT"
         if raw_target_track in DEPOT_INNER_TRACKS:
             vehicle_payload["targetAreaCode"] = "大库:RANDOM"
         vehicle_info.append(vehicle_payload)

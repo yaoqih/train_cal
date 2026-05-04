@@ -63,6 +63,7 @@ def test_solver_result_attaches_telemetry_record():
     assert tel.input_vehicle_count == 1
     assert tel.input_track_count == 3
     assert tel.input_weigh_count == 0
+    assert tel.input_work_position_count == 0
     assert tel.plan_hook_count == len(result.plan)
     assert tel.fallback_stage == result.fallback_stage
     assert tel.is_valid is True
@@ -72,6 +73,28 @@ def test_solver_result_attaches_telemetry_record():
     assert tel.exact_ms >= 0
     # total_ms should be >= the individual phases (no phase can overrun total).
     assert tel.total_ms + 1.0 >= tel.constructive_ms + tel.exact_ms
+
+
+def test_solver_telemetry_counts_work_position_goals():
+    master = load_master_data(DATA_DIR)
+    payload = _simple_payload()
+    payload["trackInfo"].append({"trackName": "洗南", "trackDistance": 88.7})
+    payload["vehicleInfo"][0]["targetTrack"] = "洗南"
+    payload["vehicleInfo"][0]["isSpotting"] = "否"
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    result = solve_with_simple_astar_result(
+        normalized,
+        initial,
+        master=master,
+        solver_mode="exact",
+        time_budget_ms=15_000,
+    )
+
+    assert result.telemetry is not None
+    assert result.telemetry.input_work_position_count == 1
+    assert result.telemetry.input_area_count == 0
 
 
 def test_emit_telemetry_appends_jsonl_when_env_var_set(tmp_path, monkeypatch):

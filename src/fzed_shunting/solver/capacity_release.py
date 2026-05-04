@@ -52,6 +52,12 @@ def compute_capacity_release_plan(
     capacity_by_track = {
         info.track_name: float(info.track_distance) for info in plan_input.track_info
     }
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in plan_input.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0)
+            + vehicle.vehicle_length
+        )
     fixed_inbound_by_track: dict[str, list[str]] = {track: [] for track in capacity_by_track}
     for vehicle in plan_input.vehicles:
         allowed = vehicle.goal.allowed_target_tracks
@@ -72,6 +78,7 @@ def compute_capacity_release_plan(
 
     facts: dict[str, TrackCapacityReleaseFact] = {}
     for track_name, capacity in capacity_by_track.items():
+        effective_capacity = max(capacity, initial_occupation_by_track.get(track_name, 0.0))
         seq = list(state.track_sequences.get(track_name, []))
         current_length = sum(length_by_vehicle.get(vehicle_no, 0.0) for vehicle_no in seq)
         keepable_current_length = 0.0
@@ -94,7 +101,7 @@ def compute_capacity_release_plan(
         fixed_inbound_length = sum(length_by_vehicle.get(vehicle_no, 0.0) for vehicle_no in fixed_inbound)
         release_pressure = max(
             0.0,
-            current_length + fixed_inbound_length - capacity,
+            current_length + fixed_inbound_length - effective_capacity,
         )
         front_release_vehicle_nos = _front_release_vehicle_nos(
             seq=seq,

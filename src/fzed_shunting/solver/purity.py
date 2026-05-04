@@ -114,6 +114,8 @@ def _is_fallback_while_preferred_still_feasible(
     state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> bool:
+    if vehicle.goal.target_mode == "SNAPSHOT":
+        return False
     if current_track not in vehicle.goal.fallback_target_tracks:
         return False
     if not vehicle.goal.preferred_target_tracks:

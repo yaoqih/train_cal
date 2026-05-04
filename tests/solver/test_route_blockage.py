@@ -149,6 +149,49 @@ def test_route_blockage_plan_can_filter_to_staging_debt_sources():
     assert non_staging_plan.total_blockage_pressure == 0
 
 
+def test_route_blockage_plan_reuses_oracle_cache_by_state_and_source_filter(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(_corridor_payload(), master)
+    state = build_initial_state(normalized)
+    route_oracle = RouteOracle(master)
+    calls = 0
+    original = route_oracle.validate_loco_access
+
+    def wrapped_validate_loco_access(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(route_oracle, "validate_loco_access", wrapped_validate_loco_access)
+
+    first = compute_route_blockage_plan(
+        normalized,
+        state,
+        route_oracle,
+        blocked_source_tracks={"临4"},
+    )
+    calls_after_first = calls
+    second = compute_route_blockage_plan(
+        normalized,
+        state,
+        route_oracle,
+        blocked_source_tracks=frozenset({"临4"}),
+    )
+    filtered = compute_route_blockage_plan(
+        normalized,
+        state,
+        route_oracle,
+        blocked_source_tracks={"存5北"},
+    )
+
+    assert first is second
+    assert first.total_blockage_pressure == 1
+    assert filtered is not first
+    assert filtered.total_blockage_pressure == 0
+    assert calls_after_first > 0
+    assert calls == calls_after_first
+
+
 def test_real_hook_generator_can_attach_satisfied_goal_vehicle_to_release_corridor():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(_corridor_payload(), master)

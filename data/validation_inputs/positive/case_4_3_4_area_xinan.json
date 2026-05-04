@@ -266,11 +266,9 @@
       "vehicleNo": "AR001",
       "repairProcess": "段修",
       "vehicleLength": 13.0,
-      "targetMode": "AREA",
       "targetTrack": "洗南",
       "isSpotting": "",
-      "vehicleAttributes": "",
-      "targetAreaCode": "洗南:WORK"
+      "vehicleAttributes": ""
     }
   ],
   "locoTrackName": ""

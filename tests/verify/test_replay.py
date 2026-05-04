@@ -78,6 +78,86 @@ def test_build_initial_state_orders_vehicles_north_to_south():
     assert state.track_sequences["存5北"] == ["B1", "B2"]
 
 
+def test_replay_multi_vehicle_attach_and_detach_keep_physical_sequence_order():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": vehicle_no,
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index, vehicle_no in enumerate(("NORTH", "MIDDLE", "SOUTH"), start=1)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    after_attach = replay_plan(
+        initial,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": ["NORTH", "MIDDLE", "SOUTH"],
+                "pathTracks": ["存5北"],
+            }
+        ],
+        plan_input=normalized,
+    ).final_state
+
+    assert after_attach.track_sequences["存5北"] == []
+    assert after_attach.loco_carry == ("NORTH", "MIDDLE", "SOUTH")
+
+    with pytest.raises(ValueError, match="tail of loco_carry"):
+        replay_plan(
+            after_attach,
+            [
+                {
+                    "hookNo": 2,
+                    "actionType": "DETACH",
+                    "sourceTrack": "存5北",
+                    "targetTrack": "修2库内",
+                    "vehicleNos": ["SOUTH", "MIDDLE"],
+                    "pathTracks": ["存5北", "修2库内"],
+                }
+            ],
+            plan_input=normalized,
+        )
+
+    after_detach = replay_plan(
+        after_attach,
+        [
+            {
+                "hookNo": 2,
+                "actionType": "DETACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "修2库内",
+                "vehicleNos": ["MIDDLE", "SOUTH"],
+                "pathTracks": ["存5北", "修2库内"],
+            }
+        ],
+        plan_input=normalized,
+    ).final_state
+
+    assert after_detach.loco_carry == ("NORTH",)
+    assert after_detach.track_sequences["修2库内"] == ["MIDDLE", "SOUTH"]
+
+
 def test_replay_native_attach_and_detach_move_front_block():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -352,7 +432,75 @@ def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
     assert result.final_state.spot_assignments["C2"] == "101"
 
 
-def test_replay_assigns_dispatch_work_spot_when_moving_into_work_area():
+def test_replay_realigns_depot_spots_to_full_track_order_after_prepend():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1库内", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1库内",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OLD1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1库内",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "OLD2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "NEW_SPOT",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SPOT",
+                "targetTrack": "修1库内",
+                "targetSpotCode": "101",
+                "isSpotting": "迎检",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    result = replay_plan(
+        initial,
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="修1库内",
+            vehicle_nos=["NEW_SPOT"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+        ),
+        plan_input=normalized,
+    )
+
+    assert result.final_state.track_sequences["修1库内"] == ["NEW_SPOT", "OLD1", "OLD2"]
+    assert result.final_state.spot_assignments == {
+        "NEW_SPOT": "101",
+        "OLD1": "102",
+        "OLD2": "103",
+    }
+
+
+def test_replay_does_not_assign_dispatch_work_spot_when_moving_into_work_area():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -389,10 +537,10 @@ def test_replay_assigns_dispatch_work_spot_when_moving_into_work_area():
     )
 
     assert result.final_state.track_sequences["调棚"] == ["C3"]
-    assert result.final_state.spot_assignments["C3"] == "调棚:1"
+    assert "C3" not in result.final_state.spot_assignments
 
 
-def test_replay_assigns_dispatch_pre_repair_spot():
+def test_replay_does_not_assign_dispatch_pre_repair_spot():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -429,7 +577,7 @@ def test_replay_assigns_dispatch_pre_repair_spot():
     )
 
     assert result.final_state.track_sequences["调棚"] == ["C4"]
-    assert result.final_state.spot_assignments["C4"] == "调棚:PRE_REPAIR"
+    assert "C4" not in result.final_state.spot_assignments
 
 
 def test_replay_rejects_detach_source_that_does_not_match_loco_track():

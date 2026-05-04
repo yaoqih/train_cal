@@ -9,6 +9,7 @@ from fzed_shunting.solver.astar_solver import (
     RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
 )
 from fzed_shunting.solver.profile import (
+    VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS,
     validation_recovery_should_continue_after_success,
     validation_retry_beam_widths,
     validation_retry_time_budget_ms,
@@ -55,8 +56,16 @@ def solve_with_validation_recovery_result(
 
     best_partial: SolverResult | None = None if initial.is_complete else initial
     best_complete: SolverResult | None = initial if initial.is_complete else None
-    retry_budget_ms = validation_retry_time_budget_ms(time_budget_ms)
+    retry_total_budget_ms = validation_retry_time_budget_ms(time_budget_ms)
+    retry_used_ms = _result_elapsed_ms(initial)
     for retry_beam_width in validation_retry_beam_widths(beam_width=beam_width):
+        retry_budget_ms = _remaining_retry_attempt_budget_ms(
+            total_budget_ms=retry_total_budget_ms,
+            used_ms=retry_used_ms,
+            single_attempt_cap_ms=time_budget_ms,
+        )
+        if retry_budget_ms is not None and retry_budget_ms < VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS:
+            break
         candidate = solve_result_fn(
             plan_input,
             initial_state,
@@ -70,6 +79,7 @@ def solve_with_validation_recovery_result(
                 RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
             ),
         )
+        retry_used_ms += _result_elapsed_ms(candidate)
         if candidate.is_complete:
             if best_complete is None or len(candidate.plan) < len(best_complete.plan):
                 stats: dict[str, Any] = dict(candidate.debug_stats or {})
@@ -96,6 +106,28 @@ def _should_continue_recovery_after_success(result: SolverResult) -> bool:
         hook_count=len(result.plan),
         max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
     )
+
+
+def _remaining_retry_attempt_budget_ms(
+    *,
+    total_budget_ms: float | None,
+    used_ms: float,
+    single_attempt_cap_ms: float | None,
+) -> float | None:
+    if total_budget_ms is None:
+        return None
+    remaining_ms = max(0.0, total_budget_ms - used_ms)
+    if single_attempt_cap_ms is not None:
+        remaining_ms = min(remaining_ms, single_attempt_cap_ms)
+    return remaining_ms
+
+
+def _result_elapsed_ms(result: SolverResult) -> float:
+    try:
+        elapsed_ms = float(result.elapsed_ms or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, elapsed_ms)
 
 
 def _as_int(value: Any) -> int | None:

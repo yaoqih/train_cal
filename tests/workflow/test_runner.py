@@ -34,7 +34,7 @@ def test_solve_workflow_executes_explicit_stage_sequence():
                 "name": "dispatch_work",
                 "description": "先送调棚作业区",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFSEQ1", "targetTrack": "调棚", "isSpotting": "是"}
+                    {"vehicleNo": "WFSEQ1", "targetTrack": "调棚", "isSpotting": ""}
                 ],
             },
             {
@@ -65,7 +65,7 @@ def test_solve_workflow_executes_explicit_stage_sequence():
     ]
     assert all(stage.view is not None for stage in result.stages)
     assert all(stage.view.summary.is_valid is True for stage in result.stages if stage.view)
-    assert result.stages[0].view.final_spot_assignments == {"WFSEQ1": "调棚:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[0].input_payload["locoTrackName"] == "机库"
     assert result.stages[1].input_payload["locoTrackName"] == "调棚"
     assert result.stages[2].input_payload["locoTrackName"] == "修1库内"
@@ -227,7 +227,7 @@ def test_solve_workflow_supports_multi_vehicle_diverge_and_merge():
             {
                 "name": "dispatch_work",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFMIX1", "targetTrack": "调棚", "isSpotting": "是"},
+                    {"vehicleNo": "WFMIX1", "targetTrack": "调棚", "isSpotting": ""},
                     {"vehicleNo": "WFMIX2", "targetTrack": "存5北", "isSpotting": ""},
                 ],
             },
@@ -255,7 +255,7 @@ def test_solve_workflow_supports_multi_vehicle_diverge_and_merge():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[2].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFMIX1": "调棚:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.final_spot_assignments == {"WFMIX1": "101"}
     assert result.stages[2].view.summary.is_valid is True
     assert set(result.stages[2].view.steps[-1].track_sequences["存4北"]) == {"WFMIX2", "WFMIX1"}
@@ -285,7 +285,7 @@ def test_solve_workflow_supports_wash_depot_departure_chain():
             {
                 "name": "wash_work",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFWASH1", "targetTrack": "洗南", "isSpotting": "是"}
+                    {"vehicleNo": "WFWASH1", "targetTrack": "洗南", "isSpotting": ""}
                 ],
             },
             {
@@ -310,7 +310,7 @@ def test_solve_workflow_supports_wash_depot_departure_chain():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[2].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFWASH1": "洗南:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.final_spot_assignments == {"WFWASH1": "101"}
     assert result.stages[2].view.steps[-1].track_sequences["存4北"] == ["WFWASH1"]
 
@@ -411,7 +411,7 @@ def test_solve_workflow_supports_paint_depot_departure_chain():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[2].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFPAINT1": "油:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.final_spot_assignments == {"WFPAINT1": "101"}
     assert result.stages[2].view.steps[-1].track_sequences["存4北"] == ["WFPAINT1"]
 
@@ -465,7 +465,7 @@ def test_solve_workflow_supports_shot_depot_departure_chain():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[2].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFSHOT1": "抛:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.final_spot_assignments == {"WFSHOT1": "101"}
     assert result.stages[2].view.steps[-1].track_sequences["存4北"] == ["WFSHOT1"]
 
@@ -543,7 +543,7 @@ def test_solve_workflow_supports_dispatch_then_jiku_final_chain():
             {
                 "name": "dispatch_work",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFJIKU1", "targetTrack": "调棚", "isSpotting": "是"}
+                    {"vehicleNo": "WFJIKU1", "targetTrack": "调棚", "isSpotting": ""}
                 ],
             },
             {
@@ -561,7 +561,7 @@ def test_solve_workflow_supports_dispatch_then_jiku_final_chain():
     assert result.stage_count == 2
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFJIKU1": "调棚:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.summary.final_tracks == ["机库"]
     assert result.stages[1].view.steps[-1].track_sequences["机库"] == ["WFJIKU1"]
 
@@ -589,7 +589,7 @@ def test_solve_workflow_supports_tank_wash_direct_departure_chain():
             {
                 "name": "wash_work",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFTANK1", "targetTrack": "洗南", "isSpotting": "是"}
+                    {"vehicleNo": "WFTANK1", "targetTrack": "洗南", "isSpotting": ""}
                 ],
             },
             {
@@ -607,7 +607,7 @@ def test_solve_workflow_supports_tank_wash_direct_departure_chain():
     assert result.stage_count == 2
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
-    assert result.stages[0].view.final_spot_assignments == {"WFTANK1": "洗南:1"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.steps[-1].track_sequences["存4北"] == ["WFTANK1"]
 
 
@@ -847,7 +847,7 @@ def test_solve_workflow_supports_pre_repair_then_departure():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[0].view.summary.is_valid is True
-    assert result.stages[0].view.final_spot_assignments == {"WFPR1": "调棚:PRE_REPAIR"}
+    assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[1].view.steps[-1].track_sequences["存4北"] == ["WFPR1"]
 
 

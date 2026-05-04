@@ -240,7 +240,7 @@ def test_app_defaults_match_validation_runner_solver_profile():
     assert app.VALIDATION_DEFAULT_SOLVER == "beam"
     assert app.VALIDATION_DEFAULT_BEAM_WIDTH == 8
     assert app.VALIDATION_DEFAULT_TIMEOUT_SECONDS == 60.0
-    assert app._validation_time_budget_ms(60.0) == 55_000.0
+    assert app._validation_time_budget_ms(60.0) == 50_000.0
 
 
 def test_app_labels_external_plan_validation_source():
@@ -470,7 +470,7 @@ def test_build_workflow_transition_rows_summarizes_track_loco_and_spot_changes()
             {
                 "name": "dispatch_work",
                 "vehicleGoals": [
-                    {"vehicleNo": "WFTRANS1", "targetTrack": "调棚", "isSpotting": "是"}
+                    {"vehicleNo": "WFTRANS1", "targetTrack": "调棚", "isSpotting": ""}
                 ],
             },
             {
@@ -493,7 +493,7 @@ def test_build_workflow_transition_rows_summarizes_track_loco_and_spot_changes()
             "locoTransition": "机库 -> 调棚",
             "movedVehicles": "WFTRANS1(存5北->调棚)",
             "newWeighedVehicles": "无",
-            "spotChanges": "WFTRANS1(无->调棚:1)",
+            "spotChanges": "无",
         },
         {
             "stageIndex": 2,
@@ -501,7 +501,7 @@ def test_build_workflow_transition_rows_summarizes_track_loco_and_spot_changes()
             "locoTransition": "调棚 -> 修1库内",
             "movedVehicles": "WFTRANS1(调棚->修1库内)",
             "newWeighedVehicles": "无",
-            "spotChanges": "WFTRANS1(调棚:1->101)",
+            "spotChanges": "WFTRANS1(无->101)",
         },
     ]
 

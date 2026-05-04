@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from collections import deque
 from pathlib import Path
 
@@ -8,12 +9,18 @@ from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.constructive import solve_constructive, ConstructiveResult
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
-from fzed_shunting.solver.state import ReplayState
+from fzed_shunting.solver.state import ReplayState, _state_key
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 from fzed_shunting.verify.plan_verifier import verify_plan
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+
+class _SyntheticRouteBlockagePlan:
+    total_blockage_pressure = 1
+    facts_by_blocking_track = {}
 
 
 def _simple_payload(vehicles: list[dict]) -> dict:
@@ -35,6 +42,92 @@ def _run(payload: dict) -> tuple[ConstructiveResult, object, object, object]:
     initial = build_initial_state(normalized)
     result = solve_constructive(normalized, initial, master=master, max_iterations=500)
     return result, master, normalized, initial
+
+
+def test_constructive_route_release_scoring_reuses_route_blockage_by_state(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/truth/validation_20260206W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    calls_by_state: Counter[tuple] = Counter()
+
+    def fake_compute_route_blockage_plan(
+        plan_input,
+        candidate_state,
+        route_oracle,
+        *,
+        blocked_source_tracks=None,
+    ):
+        calls_by_state[
+            (
+                _state_key(candidate_state, plan_input),
+                tuple(sorted(blocked_source_tracks or ())),
+            )
+        ] += 1
+        return _SyntheticRouteBlockagePlan()
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.constructive.compute_route_blockage_plan",
+        fake_compute_route_blockage_plan,
+    )
+
+    solve_constructive(
+        normalized,
+        state,
+        master=master,
+        max_iterations=1,
+        max_backtracks=0,
+        route_release_bias=True,
+    )
+
+    assert max(calls_by_state.values(), default=0) == 1
+
+
+def test_constructive_default_scoring_does_not_use_route_blockage_context(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/truth/validation_20260206W.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    calls_by_state: Counter[tuple] = Counter()
+
+    def fake_compute_route_blockage_plan(
+        plan_input,
+        candidate_state,
+        route_oracle,
+        *,
+        blocked_source_tracks=None,
+    ):
+        calls_by_state[
+            (
+                _state_key(candidate_state, plan_input),
+                tuple(sorted(blocked_source_tracks or ())),
+            )
+        ] += 1
+        return _SyntheticRouteBlockagePlan()
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.constructive.compute_route_blockage_plan",
+        fake_compute_route_blockage_plan,
+    )
+
+    solve_constructive(
+        normalized,
+        state,
+        master=master,
+        max_iterations=1,
+        max_backtracks=0,
+        route_release_bias=False,
+    )
+
+    assert calls_by_state == Counter()
 
 
 def test_constructive_returns_plan_for_single_vehicle_track_goal():
@@ -851,6 +944,100 @@ def test_score_native_move_penalizes_fallback_detach_when_preferred_target_remai
     assert preferred_score < fallback_score
 
 
+def test_score_native_move_prefers_snapshot_preferred_track_without_marking_fallback_unfinished():
+    from fzed_shunting.solver.constructive import _score_native_move
+    from fzed_shunting.solver.purity import compute_state_purity
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 156},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "机库",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SNAP_SOFT",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SNAPSHOT",
+                "targetTrack": "存5南",
+                "targetSource": "END_SNAPSHOT",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    carry_state = build_initial_state(normalized).model_copy(
+        update={
+            "track_sequences": {"机库": []},
+            "loco_track_name": "机库",
+            "loco_carry": ("SNAP_SOFT",),
+        }
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    heuristic = make_state_heuristic_real_hook(normalized)
+    preferred_move = HookAction(
+        source_track="机库",
+        target_track="存5南",
+        vehicle_nos=["SNAP_SOFT"],
+        path_tracks=["机库", "渡4", "临2", "临1", "渡2", "存5南"],
+        action_type="DETACH",
+    )
+    fallback_move = HookAction(
+        source_track="机库",
+        target_track="存5北",
+        vehicle_nos=["SNAP_SOFT"],
+        path_tracks=["机库", "渡4", "临2", "临1", "渡2", "存5南", "存5北"],
+        action_type="DETACH",
+    )
+    preferred_state = _apply_move(
+        state=carry_state,
+        move=preferred_move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    fallback_state = _apply_move(
+        state=carry_state,
+        move=fallback_move,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    preferred_score, _ = _score_native_move(
+        move=preferred_move,
+        state=carry_state,
+        next_state=preferred_state,
+        plan_input=normalized,
+        current_heuristic=heuristic(carry_state),
+        next_heuristic=heuristic(preferred_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed={"存5南"},
+        satisfied_by_track={},
+    )
+    fallback_score, _ = _score_native_move(
+        move=fallback_move,
+        state=carry_state,
+        next_state=fallback_state,
+        plan_input=normalized,
+        current_heuristic=heuristic(carry_state),
+        next_heuristic=heuristic(fallback_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed={"存5南"},
+        satisfied_by_track={},
+    )
+
+    assert compute_state_purity(normalized, fallback_state).unfinished_count == 0
+    assert preferred_score < fallback_score
+
+
 def test_score_native_move_keeps_goal_detach_high_priority_even_when_heuristic_is_flat():
     from fzed_shunting.solver.constructive import _score_native_move
     from fzed_shunting.solver.state import _apply_move
@@ -1081,6 +1268,86 @@ def test_move_clears_goal_blocker_does_not_treat_same_track_weigh_pending_vehicl
         goal_tracks_needed={"存1"},
         plan_input=normalized,
     ) is False
+
+
+def test_score_native_move_does_not_treat_same_track_detach_as_goal_blocker_clearance():
+    from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedTrackInfo, NormalizedVehicle
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    normalized = NormalizedPlanInput(
+        track_info=[
+            NormalizedTrackInfo(track_name="预修", track_distance=208.5),
+            NormalizedTrackInfo(track_name="存4北", track_distance=317.8),
+        ],
+        vehicles=[
+            NormalizedVehicle(
+                current_track="预修",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="RETURNED_PREFIX",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存4北",
+                    allowed_target_tracks=["存4北"],
+                ),
+            ),
+            NormalizedVehicle(
+                current_track="预修",
+                order=2,
+                vehicle_model="棚车",
+                vehicle_no="BURIED_TARGET",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="预修",
+                    allowed_target_tracks=["预修"],
+                ),
+            ),
+        ],
+        loco_track_name="预修",
+        yard_mode="NORMAL",
+    )
+    state = ReplayState(
+        track_sequences={"预修": ["BURIED_TARGET"]},
+        loco_track_name="预修",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("RETURNED_PREFIX",),
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    same_track_detach = HookAction(
+        source_track="预修",
+        target_track="预修",
+        vehicle_nos=["RETURNED_PREFIX"],
+        path_tracks=["预修"],
+        action_type="DETACH",
+    )
+    next_state = _apply_move(
+        state=state,
+        move=same_track_detach,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    current_h = make_state_heuristic_real_hook(normalized)(state)
+
+    _score, tier = _score_native_move(
+        move=same_track_detach,
+        state=state,
+        next_state=next_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=make_state_heuristic_real_hook(normalized)(next_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={"预修": 1},
+    )
+
+    assert tier > 3
 
 
 def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_vehicle_over_extra_attach():
@@ -2077,7 +2344,7 @@ def test_score_native_move_applies_route_pressure_before_staging_heuristic_noise
                 ),
             )
         ],
-        loco_track_name="临1",
+        loco_track_name="机库",
         yard_mode="NORMAL",
     )
     state = ReplayState(
@@ -2874,6 +3141,102 @@ def test_route_blockage_parking_pressure_penalizes_reparking_onto_still_blocked_
     ) == 1
 
 
+def test_route_blockage_parking_pressure_penalizes_adding_to_active_blocking_staging_track():
+    from fzed_shunting.domain.route_oracle import RouteOracle
+    from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedTrackInfo, NormalizedVehicle
+    from fzed_shunting.solver.constructive import _route_blockage_parking_pressure
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    master = load_master_data(DATA_DIR)
+    normalized = NormalizedPlanInput(
+        track_info=[
+            NormalizedTrackInfo(track_name="机库", track_distance=71.6),
+            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="存3", track_distance=258.5),
+        ],
+        vehicles=[
+            NormalizedVehicle(
+                current_track="临1",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="EXISTING_BLOCKER",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="临1",
+                    allowed_target_tracks=["临1"],
+                ),
+            ),
+            NormalizedVehicle(
+                current_track="临2",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="NEEDS_STORE3",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存3",
+                    allowed_target_tracks=["存3"],
+                ),
+            ),
+            NormalizedVehicle(
+                current_track="机库",
+                order=1,
+                vehicle_model="棚车",
+                vehicle_no="NEW_STAGING",
+                repair_process="段修",
+                vehicle_length=14.3,
+                goal=GoalSpec(
+                    target_mode="TRACK",
+                    target_track="存3",
+                    allowed_target_tracks=["存3"],
+                ),
+            ),
+        ],
+        loco_track_name="临1",
+        yard_mode="NORMAL",
+    )
+    state = ReplayState(
+        track_sequences={
+            "临1": ["EXISTING_BLOCKER"],
+            "临2": ["NEEDS_STORE3"],
+            "存3": [],
+            "机库": [],
+        },
+        loco_track_name="机库",
+        loco_node="L7",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("NEW_STAGING",),
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    park_on_active_blocker = HookAction(
+        source_track="机库",
+        target_track="临1",
+        vehicle_nos=["NEW_STAGING"],
+        path_tracks=["机库", "渡4", "临2", "临1"],
+        action_type="DETACH",
+    )
+    next_state = _apply_move(
+        state=state,
+        move=park_on_active_blocker,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    assert _route_blockage_parking_pressure(
+        move=park_on_active_blocker,
+        state=state,
+        next_state=next_state,
+        plan_input=normalized,
+        route_oracle=RouteOracle(master),
+    ) == 1
+
+
 def test_score_native_move_does_not_force_primary_staging_without_new_route_blockage():
     from fzed_shunting.domain.route_oracle import RouteOracle
     from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedTrackInfo, NormalizedVehicle
@@ -3039,6 +3402,43 @@ def test_candidate_selection_pool_avoids_recent_state_repeats_before_inverse_fal
     ]
     assert _candidate_selection_pool(scored) == [scored[2]]
     assert _candidate_selection_pool(scored[:2]) == [scored[1]]
+
+
+def test_candidate_selection_pool_keeps_route_pressure_release_before_clean_regression():
+    from fzed_shunting.solver.constructive import _candidate_selection_pool
+    from fzed_shunting.solver.types import HookAction
+
+    pressure_release = HookAction(
+        source_track="临3",
+        target_track="临3",
+        vehicle_nos=["A", "B"],
+        path_tracks=["临3"],
+        action_type="ATTACH",
+    )
+    clean_regression = HookAction(
+        source_track="临3",
+        target_track="临2",
+        vehicle_nos=["C"],
+        path_tracks=["临3", "临2"],
+        action_type="DETACH",
+    )
+
+    release_entry = (
+        (2, 0, 0, 0, 0, 1, 0, -21, -21, 2, 0, 20),
+        2,
+        pressure_release,
+        True,
+        False,
+    )
+    clean_entry = (
+        (5, 0, 0, 0, 0, 1, 0, 0, 44, 0, 20, 24),
+        5,
+        clean_regression,
+        False,
+        False,
+    )
+
+    assert _candidate_selection_pool([release_entry, clean_entry]) == [release_entry]
 
 
 def test_score_native_move_penalizes_staging_to_staging_detach_without_progress():

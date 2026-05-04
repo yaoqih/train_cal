@@ -22,12 +22,7 @@ DEPOT_TRACK_SPOTS: dict[str, dict[str, list[str]]] = {
     },
 }
 
-WORK_AREA_SPOTS: dict[str, list[str]] = {
-    "调棚:WORK": [f"调棚:{i}" for i in range(1, 5)],
-    "调棚:PRE_REPAIR": ["调棚:PRE_REPAIR"],
-    "洗南:WORK": [f"洗南:{i}" for i in range(1, 4)],
-    "油:WORK": [f"油:{i}" for i in range(1, 3)],
-    "抛:WORK": [f"抛:{i}" for i in range(1, 3)],
+SPECIAL_FIXED_SPOTS: dict[str, list[str]] = {
     "机库:WEIGH": ["机库:WEIGH"],
 }
 
@@ -111,6 +106,47 @@ def allocate_spots_for_block(
     return allocations
 
 
+def realign_spots_for_track_order(
+    *,
+    vehicle_nos_in_order: list[str],
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    target_track: str,
+    yard_mode: str,
+    current_spot_assignments: dict[str, str],
+    reserved_spot_codes: set[str] | frozenset[str] | None = None,
+) -> dict[str, str] | None:
+    """Rebuild spot assignments for one physical track order.
+
+    The sequence is the source of truth after a detach. Depot spots are
+    positional, so inserting vehicles at the accessible end can shift existing
+    occupants to later spot codes. Work-track positions are derived from the
+    final track sequence and are not stored here.
+    """
+    target_vehicle_nos = set(vehicle_nos_in_order)
+    base_assignments = {
+        vehicle_no: spot_code
+        for vehicle_no, spot_code in current_spot_assignments.items()
+        if vehicle_no not in target_vehicle_nos
+    }
+    ordered_vehicles = [
+        vehicle_by_no[vehicle_no]
+        for vehicle_no in vehicle_nos_in_order
+        if vehicle_no in vehicle_by_no
+    ]
+    realigned = allocate_spots_for_block(
+        vehicles=ordered_vehicles,
+        target_track=target_track,
+        yard_mode=yard_mode,
+        occupied_spot_assignments=base_assignments,
+        reserved_spot_codes=reserved_spot_codes,
+    )
+    if realigned is None:
+        return None
+    next_assignments = dict(base_assignments)
+    next_assignments.update(realigned)
+    return next_assignments
+
+
 def spot_candidates_for_vehicle(
     vehicle: NormalizedVehicle,
     target_track: str,
@@ -118,7 +154,7 @@ def spot_candidates_for_vehicle(
     reserved_spot_codes: set[str] | frozenset[str] | None = None,
 ) -> list[str]:
     if vehicle.need_weigh and target_track == "机库":
-        candidates = list(WORK_AREA_SPOTS["机库:WEIGH"])
+        candidates = list(SPECIAL_FIXED_SPOTS["机库:WEIGH"])
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
@@ -128,22 +164,12 @@ def spot_candidates_for_vehicle(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
     if vehicle.goal.target_mode == "SPOT":
-        work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
-        if work_area_spot is not None:
-            return _without_reserved_foreign_spots(
-                vehicle, target_track, yard_mode, work_area_spot, reserved_spot_codes
-            )
         candidates = _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
     if vehicle.goal.target_area_code == "大库:RANDOM":
         candidates = _random_depot_spot_candidates(vehicle, target_track, yard_mode)
-        return _without_reserved_foreign_spots(
-            vehicle, target_track, yard_mode, candidates, reserved_spot_codes
-        )
-    if vehicle.goal.target_area_code in WORK_AREA_SPOTS and vehicle.goal.target_track == target_track:
-        candidates = list(WORK_AREA_SPOTS[vehicle.goal.target_area_code])
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
@@ -174,26 +200,7 @@ def _own_exact_spot_candidates(
 ) -> list[str]:
     if vehicle.goal.target_mode != "SPOT":
         return []
-    work_area_spot = _exact_work_area_spot_candidates(vehicle, target_track)
-    if work_area_spot is not None:
-        return work_area_spot
     return _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
-
-
-def _exact_work_area_spot_candidates(
-    vehicle: NormalizedVehicle,
-    target_track: str,
-) -> list[str] | None:
-    area_code = vehicle.goal.target_area_code
-    if area_code not in WORK_AREA_SPOTS:
-        return None
-    if vehicle.goal.target_track != target_track:
-        return []
-    target_spot_code = vehicle.goal.target_spot_code
-    available_spots = WORK_AREA_SPOTS[area_code]
-    if target_spot_code is None or target_spot_code not in available_spots:
-        return []
-    return [target_spot_code]
 
 
 def _exact_depot_spot_candidates(
@@ -232,11 +239,10 @@ def _requires_spot_assignment(vehicle: NormalizedVehicle, target_track: str) -> 
     """Whether a move of ``vehicle`` onto ``target_track`` should consume a spot.
 
     Spot assignment is a FINAL-placement concept: a vehicle claims its spot
-    only when it actually arrives at the track that has spots (e.g., 调棚,
-    修N库内, 洗南, 油, 抛). Transit through staging tracks (临1~临4, 存4南,
-    etc.) must NOT trigger spot allocation, otherwise the solver cannot
-    route SPOT-mode / 大库:RANDOM vehicles through the yard at all (they
-    get rejected by ``allocate_spots_for_block`` at every transit step).
+    only when it actually arrives at a true fixed-spot resource such as
+    修N库内 or 机库:WEIGH. Work-track ranks are derived from final track
+    order, so transit through staging or work tracks must not trigger spot
+    allocation.
     """
     if vehicle.need_weigh and target_track == "机库":
         return True
@@ -253,6 +259,4 @@ def _requires_spot_assignment(vehicle: NormalizedVehicle, target_track: str) -> 
         # Random-depot vehicles only consume a slot once they actually enter
         # a 修N库内 track. Transit through anything else is spot-free.
         return is_depot_inner_track(target_track)
-    if vehicle.goal.target_area_code in WORK_AREA_SPOTS and vehicle.goal.target_track == target_track:
-        return True
     return False

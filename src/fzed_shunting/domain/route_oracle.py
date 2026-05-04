@@ -181,7 +181,10 @@ class RouteOracle:
         self._track_graph = self._build_track_graph()
         self._route_cache: dict[tuple[str, str], ResolvedRoute | None] = {}
         self._path_track_cache: dict[tuple[str, str], tuple[str, ...] | None] = {}
+        self._clear_path_track_cache: dict[tuple, tuple[str, ...] | None] = {}
+        self._endpoint_path_track_cache: dict[tuple, tuple[str, ...] | None] = {}
         self._node_path_cache: dict[tuple[str, str], tuple[str, ...] | None] = {}
+        self._route_blockage_plan_cache: dict[tuple, object] = {}
 
     def validate_path(
         self,
@@ -413,12 +416,23 @@ class RouteOracle:
             return [source_track]
         if source_track not in self._track_endpoints or target_track not in self._track_endpoints:
             return None
+        cache_key = (
+            source_track,
+            target_track,
+            self._occupied_track_key(occupied_track_sequences),
+            source_node,
+            target_node,
+        )
+        if cache_key in self._clear_path_track_cache:
+            cached = self._clear_path_track_cache[cache_key]
+            return list(cached) if cached is not None else None
 
         queue: list[tuple[float, str, list[str]]] = [(0.0, source_track, [source_track])]
         best: dict[str, float] = {source_track: 0.0}
         while queue:
             cost, track_code, path_tracks = heappop(queue)
             if track_code == target_track:
+                self._clear_path_track_cache[cache_key] = tuple(path_tracks)
                 return path_tracks
             if cost > best.get(track_code, float("inf")) + 1e-9:
                 continue
@@ -439,6 +453,7 @@ class RouteOracle:
                     continue
                 best[next_track] = next_cost
                 heappush(queue, (next_cost, next_track, candidate_path))
+        self._clear_path_track_cache[cache_key] = None
         return None
 
     def resolve_path_tracks_for_endpoint_constraints(
@@ -454,11 +469,22 @@ class RouteOracle:
             return [source_track]
         if source_track not in self._track_endpoints or target_track not in self._track_endpoints:
             return None
+        cache_key = (
+            source_track,
+            target_track,
+            self._occupied_track_key(occupied_track_sequences),
+            source_node,
+            target_node,
+        )
+        if cache_key in self._endpoint_path_track_cache:
+            cached = self._endpoint_path_track_cache[cache_key]
+            return list(cached) if cached is not None else None
         queue: list[tuple[float, str, list[str]]] = [(0.0, source_track, [source_track])]
         best: dict[str, float] = {source_track: 0.0}
         while queue:
             cost, track_code, path_tracks = heappop(queue)
             if track_code == target_track:
+                self._endpoint_path_track_cache[cache_key] = tuple(path_tracks)
                 return path_tracks
             if cost > best.get(track_code, float("inf")) + 1e-9:
                 continue
@@ -479,6 +505,7 @@ class RouteOracle:
                     continue
                 best[next_track] = next_cost
                 heappush(queue, (next_cost, next_track, candidate_path))
+        self._endpoint_path_track_cache[cache_key] = None
         return None
 
     def resolve_route(self, source_track: str, target_track: str) -> ResolvedRoute | None:
@@ -728,6 +755,20 @@ class RouteOracle:
             if entry_node is None or entry_node != target_node:
                 blockers.append(target_track)
         return list(dict.fromkeys(blockers))
+
+    def _occupied_track_key(
+        self,
+        occupied_track_sequences: dict[str, list[str]] | None,
+    ) -> tuple[str, ...]:
+        if not occupied_track_sequences:
+            return ()
+        return tuple(
+            sorted(
+                track_code
+                for track_code, seq in occupied_track_sequences.items()
+                if seq
+            )
+        )
 
     def _path_endpoint_blockers(
         self,

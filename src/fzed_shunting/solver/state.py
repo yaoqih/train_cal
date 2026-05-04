@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fzed_shunting.domain.carry_order import remove_carried_tail_block
 from fzed_shunting.domain.depot_spots import (
-    allocate_spots_for_block,
     exact_spot_reservations,
+    realign_spots_for_track_order,
     spot_candidates_for_vehicle,
 )
 from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
@@ -118,19 +118,19 @@ def _apply_detach(
     next_spot_assignments = dict(state.spot_assignments)
     for vehicle_no in move.vehicle_nos:
         next_spot_assignments.pop(vehicle_no, None)
-    block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in move.vehicle_nos]
-    new_spot_assignments = allocate_spots_for_block(
-        vehicles=block_vehicles,
+    realigned_spot_assignments = realign_spots_for_track_order(
+        vehicle_nos_in_order=next_target_seq,
+        vehicle_by_no=vehicle_by_no,
         target_track=move.target_track,
         yard_mode=plan_input.yard_mode,
-        occupied_spot_assignments=next_spot_assignments,
+        current_spot_assignments=next_spot_assignments,
         reserved_spot_codes=exact_spot_reservations(plan_input),
     )
-    if new_spot_assignments is None:
+    if realigned_spot_assignments is None:
         raise ValueError(
             f"No available depot spot for detach to {move.target_track}: {move.vehicle_nos}"
         )
-    next_spot_assignments.update(new_spot_assignments)
+    next_spot_assignments = realigned_spot_assignments
     next_weighed_vehicle_nos = set(state.weighed_vehicle_nos)
     if move.target_track == "机库":
         next_weighed_vehicle_nos.update(move.vehicle_nos)

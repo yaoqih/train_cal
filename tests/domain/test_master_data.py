@@ -28,8 +28,13 @@ def test_special_spots_and_areas_exist():
     master = load_master_data(DATA_DIR)
 
     assert "机库:WEIGH" in master.spots
-    assert "调棚:WORK" in master.areas
     assert "大库:RANDOM" in master.areas
+    assert "调棚:WORK" not in master.areas
+    assert "调棚:PRE_REPAIR" not in master.areas
+    assert "洗南:WORK" not in master.areas
+    assert "油:WORK" not in master.areas
+    assert "抛:WORK" not in master.areas
+    assert not any(spot.category == "WORK_GROUP" for spot in master.spots.values())
 
 
 def test_oil_and_shot_physical_routes_use_40m_missing_segment_without_changing_track_capacity():

@@ -670,6 +670,70 @@ def test_route_oracle_caches_path_tracks_by_track_pair():
     assert oracle._path_track_cache[("存5北", "机库")] == tuple(first)
 
 
+def test_route_oracle_caches_clear_path_by_occupied_tracks(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+    occupied = {"临1": ["BLOCK"]}
+    calls = 0
+    original = oracle._blocking_tracks_for_path
+
+    def wrapped_blocking_tracks(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(oracle, "_blocking_tracks_for_path", wrapped_blocking_tracks)
+
+    first = oracle.resolve_clear_path_tracks(
+        "存5北",
+        "机库",
+        occupied_track_sequences=occupied,
+    )
+    calls_after_first = calls
+    second = oracle.resolve_clear_path_tracks(
+        "存5北",
+        "机库",
+        occupied_track_sequences={"临1": ["OTHER"]},
+    )
+
+    assert first == second
+    assert calls_after_first > 0
+    assert calls == calls_after_first
+
+
+def test_route_oracle_caches_endpoint_constrained_path_by_occupied_tracks(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    oracle = RouteOracle(master)
+    occupied = {"临1": ["BLOCK"]}
+    calls = 0
+    original = oracle._path_endpoint_blockers
+
+    def wrapped_endpoint_blockers(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(oracle, "_path_endpoint_blockers", wrapped_endpoint_blockers)
+
+    first = oracle.resolve_path_tracks_for_endpoint_constraints(
+        "存5北",
+        "机库",
+        occupied_track_sequences=occupied,
+        target_node=oracle.order_end_node("机库"),
+    )
+    calls_after_first = calls
+    second = oracle.resolve_path_tracks_for_endpoint_constraints(
+        "存5北",
+        "机库",
+        occupied_track_sequences={"临1": ["OTHER"]},
+        target_node=oracle.order_end_node("机库"),
+    )
+
+    assert first == second
+    assert calls_after_first > 0
+    assert calls == calls_after_first
+
+
 def test_route_oracle_validate_path_accepts_pre_resolved_route_and_path():
     master = load_master_data(DATA_DIR)
     oracle = RouteOracle(master)

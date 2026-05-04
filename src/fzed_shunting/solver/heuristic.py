@@ -4,7 +4,6 @@ import math
 from dataclasses import dataclass
 from typing import Callable
 
-from fzed_shunting.domain.depot_spots import WORK_AREA_SPOTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.goal_logic import (
     goal_can_use_fallback_now,
@@ -351,6 +350,18 @@ def _h_distinct_transfer_pairs(
         current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
         if current_track is None:
             continue
+        if goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ) and not _is_fallback_while_preferred_still_feasible(
+            vehicle,
+            current_track=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            continue
         effective_allowed = goal_effective_allowed_tracks(
             vehicle,
             state=state,
@@ -393,6 +404,8 @@ def _is_fallback_while_preferred_still_feasible(
     state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> bool:
+    if vehicle.goal.target_mode == "SNAPSHOT":
+        return False
     if current_track not in vehicle.goal.fallback_target_tracks:
         return False
     if not vehicle.goal.preferred_target_tracks:
@@ -502,7 +515,7 @@ def _count_nontrivial_sccs(graph: dict[str, set[str]]) -> int:
     Each such SCC is a set of mutually-blocking tracks that requires exactly
     one extra staging hook to resolve, regardless of cycle length.
     """
-    nodes = list(graph.keys() | {v for vs in graph.values() for v in vs})
+    nodes = sorted(graph.keys() | {v for vs in graph.values() for v in vs})
     if not nodes:
         return 0
     index_of: dict[str, int] = {}
@@ -517,7 +530,7 @@ def _count_nontrivial_sccs(graph: dict[str, set[str]]) -> int:
         counter[0] += 1
         stack.append(v)
         on_stack[v] = True
-        for w in graph.get(v, set()):
+        for w in sorted(graph.get(v, set())):
             if w not in index_of:
                 strongconnect(w)
                 lowlink[v] = min(lowlink[v], lowlink[w])
@@ -585,8 +598,6 @@ def _h_spot_evict(
                 continue
             seen_wrong_occupants.add(current_occupant)
             evict_count += 1
-        elif goal.target_area_code in WORK_AREA_SPOTS and goal.target_area_code != "大库:RANDOM":
-            pass
     return evict_count
 
 

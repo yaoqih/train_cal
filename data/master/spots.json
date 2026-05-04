@@ -7,9 +7,5 @@
   {"code":"修3库内:301-305","track_code":"修3库内","category":"SPOT_GROUP","capacity":5},
   {"code":"修3库内:301-307","track_code":"修3库内","category":"INSPECTION_SPOT_GROUP","capacity":7},
   {"code":"修4库内:401-405","track_code":"修4库内","category":"SPOT_GROUP","capacity":5},
-  {"code":"修4库内:401-407","track_code":"修4库内","category":"INSPECTION_SPOT_GROUP","capacity":7},
-  {"code":"调棚:1-4","track_code":"调棚","category":"WORK_GROUP","capacity":4},
-  {"code":"洗南:1-3","track_code":"洗南","category":"WORK_GROUP","capacity":3},
-  {"code":"抛:1-2","track_code":"抛","category":"WORK_GROUP","capacity":2},
-  {"code":"油:1-2","track_code":"油","category":"WORK_GROUP","capacity":2}
+  {"code":"修4库内:401-407","track_code":"修4库内","category":"INSPECTION_SPOT_GROUP","capacity":7}
 ]

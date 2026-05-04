@@ -150,17 +150,20 @@ def _candidate_tracks_for_vehicle(
         )
         if preference_level is None:
             continue
-        allocatable = (
-            allocate_spots_for_block(
-                vehicles=[vehicle],
-                target_track=track_name,
-                yard_mode=plan_input.yard_mode,
-                occupied_spot_assignments=state.spot_assignments,
-                reserved_spot_codes=exact_spot_reservations(plan_input),
-            )
-            is not None
-        )
         slack = fact.capacity_length - fact.current_length
+        if vehicle.goal.work_position_kind is not None:
+            allocatable = slack + 1e-9 >= vehicle.vehicle_length
+        else:
+            allocatable = (
+                allocate_spots_for_block(
+                    vehicles=[vehicle],
+                    target_track=track_name,
+                    yard_mode=plan_input.yard_mode,
+                    occupied_spot_assignments=state.spot_assignments,
+                    reserved_spot_codes=exact_spot_reservations(plan_input),
+                )
+                is not None
+            )
         candidates.append(
             SoftTargetCandidate(
                 track_name=track_name,

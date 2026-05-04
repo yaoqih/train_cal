@@ -7,7 +7,6 @@ from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
-    validation_retry_time_budget_ms,
     validation_time_budget_ms,
 )
 from fzed_shunting.solver.astar_solver import (
@@ -210,8 +209,8 @@ def test_build_demo_view_model_retries_beam_like_validation_runner(monkeypatch):
 
     assert view.summary.is_valid is True
     assert [call["beam_width"] for call in calls] == [8, 8, 16]
-    assert calls[1]["time_budget_ms"] == validation_retry_time_budget_ms(
-        validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    assert calls[1]["time_budget_ms"] == validation_time_budget_ms(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS
     )
     assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
         RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
@@ -494,7 +493,7 @@ def test_build_demo_view_model_exposes_depot_spot_assignments():
     assert "L19-修1尽头" in view.hook_plan[-1].reverse_branch_codes
 
 
-def test_build_demo_view_model_exposes_dispatch_work_spot_assignments():
+def test_build_demo_view_model_excludes_dispatch_work_from_spot_assignments():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -510,7 +509,7 @@ def test_build_demo_view_model_exposes_dispatch_work_spot_assignments():
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetTrack": "调棚",
-                "isSpotting": "是",
+                "isSpotting": "",
                 "vehicleAttributes": "",
             }
         ],
@@ -519,9 +518,13 @@ def test_build_demo_view_model_exposes_dispatch_work_spot_assignments():
 
     view = build_demo_view_model(master, payload)
 
-    assert view.summary.assigned_spot_count == 1
-    assert view.final_spot_assignments == {"V5": "调棚:1"}
-    assert _detach_steps(view)[0].spot_assignments == {"V5": "调棚:1"}
+    assert view.summary.assigned_spot_count == 0
+    assert view.summary.assigned_work_position_count == 1
+    assert view.final_spot_assignments == {}
+    assert view.final_work_position_assignments["V5"]["track"] == "调棚"
+    assert view.final_work_position_assignments["V5"]["rule"] == "FREE"
+    assert _detach_steps(view)[0].spot_assignments == {}
+    assert _detach_steps(view)[0].work_position_assignments["V5"]["northRank"] == 1
 
 
 def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
@@ -814,7 +817,8 @@ def test_build_demo_view_model_supports_new_typical_suite_scenarios():
     assert pre_repair_view.summary.is_valid is True
     assert wash_view.summary.vehicle_count == 1
     assert wash_view.summary.is_valid is True
-    assert wash_view.final_spot_assignments == {"TYP009": "洗南:1"}
+    assert wash_view.final_spot_assignments == {}
+    assert wash_view.final_work_position_assignments
     assert wheel_view.summary.vehicle_count == 1
     assert wheel_view.summary.is_valid is True
     assert wheel_view.steps[-1].hook.target_track == "轮"

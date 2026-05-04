@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
-from fzed_shunting.solver.state import _vehicle_track_lookup
+from fzed_shunting.solver.state import _state_key, _vehicle_track_lookup
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -70,6 +70,14 @@ def compute_route_blockage_plan(
 ) -> RouteBlockagePlan:
     if route_oracle is None:
         return RouteBlockagePlan(facts_by_blocking_track={})
+    cache_key = _route_blockage_cache_key(
+        plan_input=plan_input,
+        state=state,
+        blocked_source_tracks=blocked_source_tracks,
+    )
+    cached = route_oracle._route_blockage_plan_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     track_by_vehicle = _vehicle_track_lookup(state)
     fact_builders: dict[str, _RouteBlockageFactBuilder] = {}
@@ -150,11 +158,26 @@ def compute_route_blockage_plan(
                     target_track=target_track,
                 )
 
-    return RouteBlockagePlan(
+    plan = RouteBlockagePlan(
         facts_by_blocking_track={
             track: builder.build()
             for track, builder in sorted(fact_builders.items())
         }
+    )
+    route_oracle._route_blockage_plan_cache[cache_key] = plan
+    return plan
+
+
+def _route_blockage_cache_key(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    blocked_source_tracks: set[str] | frozenset[str] | None,
+) -> tuple:
+    return (
+        id(plan_input),
+        _state_key(state, plan_input),
+        tuple(sorted(blocked_source_tracks or ())),
     )
 
 

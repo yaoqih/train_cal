@@ -6,6 +6,11 @@ from fzed_shunting.domain.depot_spots import spot_candidates_for_vehicle
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
+from fzed_shunting.domain.work_positions import (
+    allowed_spotting_south_ranks,
+    north_rank,
+    south_rank,
+)
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.goal_logic import goal_is_satisfied, goal_track_preference_level
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
@@ -42,6 +47,13 @@ def verify_plan(
 ) -> PlanVerificationReport:
     global_errors: list[str] = []
     hook_reports: list[HookVerificationReport] = []
+    hook_sequence_errors = _validate_hook_sequence(hook_plan)
+    if hook_sequence_errors:
+        return PlanVerificationReport(
+            is_valid=False,
+            global_errors=hook_sequence_errors,
+            errors=hook_sequence_errors,
+        )
     route_oracle = RouteOracle(master)
     capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
@@ -83,9 +95,7 @@ def verify_plan(
                         f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
                     )
                 else:
-                    global_errors.append(
-                        f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
-                    )
+                    global_errors.append(_goal_error_message(vehicle, final_track, final_state))
                 continue
             if final_track in master.tracks:
                 track = master.tracks[final_track]
@@ -236,6 +246,31 @@ def _locate_vehicle(track_sequences: dict[str, list[str]], vehicle_no: str) -> s
     raise ValueError(f"Vehicle not found in final state: {vehicle_no}")
 
 
+def _goal_error_message(vehicle, final_track: str, final_state) -> str:
+    goal = vehicle.goal
+    if goal.target_mode == "WORK_POSITION":
+        seq = final_state.track_sequences.get(final_track, [])
+        if final_track not in goal.allowed_target_tracks or vehicle.vehicle_no not in seq:
+            return (
+                f"Vehicle {vehicle.vehicle_no} final track {final_track} "
+                f"does not satisfy work position target {goal.target_track}"
+            )
+        if goal.work_position_kind == "SPOTTING":
+            actual = south_rank(seq, vehicle.vehicle_no)
+            expected = sorted(allowed_spotting_south_ranks(final_track))
+            return (
+                f"Vehicle {vehicle.vehicle_no} on {final_track} has "
+                f"south_rank={actual}, expected one of {expected}"
+            )
+        if goal.work_position_kind == "EXACT_NORTH_RANK":
+            actual = north_rank(seq, vehicle.vehicle_no)
+            return (
+                f"Vehicle {vehicle.vehicle_no} on {final_track} has "
+                f"north_rank={actual}, expected {goal.target_rank}"
+            )
+    return f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
+
+
 def _hook_route_train_length_m(
     *,
     hook: dict,
@@ -257,3 +292,15 @@ def _remaining_source_vehicle_count_after_hook(*, hook: dict, pre_state) -> int:
     if hook.get("actionType") == "DETACH":
         return len(pre_state.track_sequences.get(source_track, []))
     return len(pre_state.track_sequences.get(source_track, []))
+
+
+def _validate_hook_sequence(hook_plan: list[dict]) -> list[str]:
+    errors: list[str] = []
+    for expected_hook_no, hook in enumerate(hook_plan, start=1):
+        hook_no = hook.get("hookNo")
+        if hook_no != expected_hook_no:
+            errors.append(
+                f"hookNo must be sequential starting at 1: "
+                f"expected {expected_hook_no}, got {hook_no!r}"
+            )
+    return errors

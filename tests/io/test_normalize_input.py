@@ -84,7 +84,7 @@ def test_track_target_stays_track_for_regular_storage_line():
     assert vehicle.goal.allowed_target_tracks == ["机库"]
 
 
-def test_dispatch_track_becomes_area_for_work_track():
+def test_dispatch_track_becomes_free_work_position_for_work_track():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["vehicleInfo"] = [
@@ -103,11 +103,91 @@ def test_dispatch_track_becomes_area_for_work_track():
 
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "AREA"
-    assert vehicle.goal.target_area_code == "调棚:PRE_REPAIR"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == "调棚"
+    assert vehicle.goal.allowed_target_tracks == ["调棚"]
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
+    assert vehicle.goal.target_rank is None
 
 
-def test_spotting_yes_maps_to_dispatch_work_area():
+def test_snapshot_target_keeps_observed_track_as_preferred_soft_goal():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "存1", "trackDistance": 113},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "存3", "trackDistance": 258.5},
+            {"trackName": "存5南", "trackDistance": 156},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "SNAP_STORAGE",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "SNAPSHOT",
+            "targetTrack": "存5南",
+            "targetSource": "END_SNAPSHOT",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "SNAPSHOT"
+    assert vehicle.goal.target_track == "存5南"
+    assert vehicle.goal.target_area_code == "接车:RANDOM"
+    assert vehicle.goal.preferred_target_tracks == ["存5南"]
+    assert set(vehicle.goal.fallback_target_tracks) == {"存5北"}
+
+
+def test_snapshot_target_uses_business_area_for_outer_depot_rows():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "修2库外", "trackDistance": 49.3},
+            {"trackName": "修3库外", "trackDistance": 49.3},
+            {"trackName": "修4库外", "trackDistance": 49.3},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "SNAP_OUTER",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "SNAPSHOT",
+            "targetTrack": "修1库外",
+            "targetSource": "END_SNAPSHOT",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "SNAPSHOT"
+    assert vehicle.goal.target_area_code == "大库外:RANDOM"
+    assert vehicle.goal.preferred_target_tracks == ["修1库外"]
+    assert set(vehicle.goal.fallback_target_tracks) == {
+        "修2库外",
+        "修3库外",
+        "修4库外",
+    }
+
+
+def test_spotting_yes_maps_to_dispatch_work_position():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["vehicleInfo"] = [
@@ -126,11 +206,15 @@ def test_spotting_yes_maps_to_dispatch_work_area():
 
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "AREA"
-    assert vehicle.goal.target_area_code == "调棚:WORK"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == "调棚"
+    assert vehicle.goal.allowed_target_tracks == ["调棚"]
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.work_position_kind == "SPOTTING"
+    assert vehicle.goal.target_rank is None
 
 
-def test_wash_track_defaults_to_work_area_when_spotting_empty():
+def test_wash_track_defaults_to_free_work_position_when_spotting_empty():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["vehicleInfo"] = [
@@ -149,8 +233,9 @@ def test_wash_track_defaults_to_work_area_when_spotting_empty():
 
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "AREA"
-    assert vehicle.goal.target_area_code == "洗南:WORK"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
     assert vehicle.goal.allowed_target_tracks == ["洗南"]
 
 
@@ -177,6 +262,227 @@ def test_wheel_track_defaults_to_operate_area_when_spotting_empty():
     assert vehicle.goal.target_mode == "AREA"
     assert vehicle.goal.target_area_code == "轮:OPERATE"
     assert vehicle.goal.allowed_target_tracks == ["轮"]
+
+
+@pytest.mark.parametrize("target_track", ["调棚", "洗南", "油", "抛"])
+def test_work_track_spotting_yes_uses_spotting_position_kind(target_track):
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    if target_track not in {item["trackName"] for item in payload["trackInfo"]}:
+        payload["trackInfo"].append({"trackName": target_track, "trackDistance": 120})
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": f"SPOT_{target_track}",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetTrack": target_track,
+            "isSpotting": "是",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == target_track
+    assert vehicle.goal.allowed_target_tracks == [target_track]
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.target_spot_code is None
+    assert vehicle.goal.work_position_kind == "SPOTTING"
+    assert vehicle.goal.target_rank is None
+
+
+@pytest.mark.parametrize("is_spotting", ["", "否"])
+def test_work_track_non_spotting_uses_free_position_kind(is_spotting):
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": f"FREE_{is_spotting or 'EMPTY'}",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetTrack": "调棚",
+            "isSpotting": is_spotting,
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.target_spot_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
+    assert vehicle.goal.target_rank is None
+
+
+def test_work_track_numeric_spotting_uses_exact_north_rank():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "WORK_RANK_3",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetTrack": "调棚",
+            "isSpotting": "3",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == "调棚"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.target_spot_code is None
+    assert vehicle.goal.work_position_kind == "EXACT_NORTH_RANK"
+    assert vehicle.goal.target_rank == 3
+
+
+def test_work_track_explicit_spot_uses_exact_north_rank():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "WORK_SPOT_4",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "SPOT",
+            "targetTrack": "调棚",
+            "targetSpotCode": "4",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == "调棚"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.target_spot_code is None
+    assert vehicle.goal.work_position_kind == "EXACT_NORTH_RANK"
+    assert vehicle.goal.target_rank == 4
+
+
+def test_work_track_explicit_track_uses_free_position_kind():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "WORK_TRACK_FREE",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "TRACK",
+            "targetTrack": "调棚",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_track == "调棚"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.target_spot_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
+    assert vehicle.goal.target_rank is None
+
+
+@pytest.mark.parametrize("rank_value", ["0", "-1", "abc"])
+def test_work_track_explicit_spot_rejects_invalid_rank(rank_value):
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": f"BAD_RANK_{rank_value}",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "SPOT",
+            "targetTrack": "调棚",
+            "targetSpotCode": rank_value,
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    with pytest.raises(InputValidationError):
+        normalize_plan_input(payload, master)
+
+
+@pytest.mark.parametrize("area_code", ["调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"])
+def test_work_track_explicit_area_rejects_removed_work_area_codes(area_code):
+    master = load_master_data(DATA_DIR)
+    target_track = area_code.split(":", 1)[0]
+    payload = _base_payload()
+    if target_track not in {item["trackName"] for item in payload["trackInfo"]}:
+        payload["trackInfo"].append({"trackName": target_track, "trackDistance": 120})
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "OLD_AREA",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "AREA",
+            "targetTrack": target_track,
+            "targetAreaCode": area_code,
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    with pytest.raises(InputValidationError, match="work area code"):
+        normalize_plan_input(payload, master)
+
+
+def test_work_track_explicit_spot_rejects_old_prefixed_work_spot_code():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "OLD_SPOT",
+            "repairProcess": "段修",
+            "vehicleLength": 14.3,
+            "targetMode": "SPOT",
+            "targetTrack": "调棚",
+            "targetSpotCode": "调棚:2",
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    with pytest.raises(InputValidationError, match="north rank"):
+        normalize_plan_input(payload, master)
 
 
 def test_outer_depot_aggregate_defaults_to_random_area():
@@ -232,7 +538,7 @@ def test_specific_outer_depot_track_stays_track_goal():
     assert vehicle.goal.allowed_target_tracks == ["修1库外"]
 
 
-def test_paint_track_defaults_to_work_area_when_spotting_empty():
+def test_paint_track_defaults_to_free_work_position_when_spotting_empty():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["trackInfo"].append({"trackName": "油", "trackDistance": 124})
@@ -252,12 +558,13 @@ def test_paint_track_defaults_to_work_area_when_spotting_empty():
 
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "AREA"
-    assert vehicle.goal.target_area_code == "油:WORK"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
     assert vehicle.goal.allowed_target_tracks == ["油"]
 
 
-def test_shot_track_defaults_to_work_area_when_spotting_empty():
+def test_shot_track_defaults_to_free_work_position_when_spotting_empty():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["trackInfo"].append({"trackName": "抛", "trackDistance": 131.8})
@@ -277,8 +584,9 @@ def test_shot_track_defaults_to_work_area_when_spotting_empty():
 
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "AREA"
-    assert vehicle.goal.target_area_code == "抛:WORK"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
+    assert vehicle.goal.target_area_code is None
+    assert vehicle.goal.work_position_kind == "FREE"
     assert vehicle.goal.allowed_target_tracks == ["抛"]
 
 

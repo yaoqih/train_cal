@@ -11,7 +11,6 @@ from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
-    validation_retry_time_budget_ms,
     validation_time_budget_ms,
 )
 from fzed_shunting.solver.astar_solver import (
@@ -207,8 +206,8 @@ def test_solve_cli_retries_beam_like_validation_runner(monkeypatch):
     assert result["is_valid"] is True
     assert result["solver_errors"] == []
     assert [call["beam_width"] for call in calls] == [8, 8, 16]
-    assert calls[1]["time_budget_ms"] == validation_retry_time_budget_ms(
-        validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    assert calls[1]["time_budget_ms"] == validation_time_budget_ms(
+        VALIDATION_DEFAULT_TIMEOUT_SECONDS
     )
     assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
         RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
@@ -650,7 +649,7 @@ def test_solve_workflow_cli_executes_stage_sequence(tmp_path: Path):
                     {
                         "name": "dispatch_work",
                         "vehicleGoals": [
-                            {"vehicleNo": "CLIW1", "targetTrack": "调棚", "isSpotting": "是"}
+                            {"vehicleNo": "CLIW1", "targetTrack": "调棚", "isSpotting": ""}
                         ],
                     },
                     {
@@ -826,7 +825,7 @@ def test_solve_workflow_cli_supports_multi_vehicle_workflow(tmp_path: Path):
                     {
                         "name": "dispatch_work",
                         "vehicleGoals": [
-                            {"vehicleNo": "CLIW2A", "targetTrack": "调棚", "isSpotting": "是"},
+                            {"vehicleNo": "CLIW2A", "targetTrack": "调棚", "isSpotting": ""},
                             {"vehicleNo": "CLIW2B", "targetTrack": "存5北", "isSpotting": ""},
                         ],
                     },
@@ -857,7 +856,7 @@ def test_solve_workflow_cli_supports_multi_vehicle_workflow(tmp_path: Path):
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["stageCount"] == 3
-    assert payload["stages"][0]["finalSpotAssignments"] == {"CLIW2A": "调棚:1"}
+    assert payload["stages"][0]["finalSpotAssignments"] == {}
     assert payload["stages"][1]["finalSpotAssignments"] == {"CLIW2A": "101"}
     assert payload["stages"][2]["hookCount"] == 3
     assert payload["stages"][2]["finalTracks"] == ["存4北"]

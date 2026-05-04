@@ -6,6 +6,7 @@ from fzed_shunting.solver.structural_metrics import (
     summarize_plan_shape,
     compute_structural_metrics,
 )
+from fzed_shunting.solver.capacity_release import compute_capacity_release_plan
 from fzed_shunting.solver.constructive import _score_native_move
 from fzed_shunting.solver.move_generator import _candidate_targets
 from fzed_shunting.solver.state import _apply_move
@@ -22,6 +23,7 @@ def _payload(vehicles: list[dict], track_distances: dict[str, float] | None = No
         "存4北": 317.8,
         "存1": 113,
         "临1": 81.4,
+        "洗南": 88.7,
         "修1库内": 151.7,
         "修2库内": 151.7,
         "修3库内": 151.7,
@@ -40,7 +42,15 @@ def _payload(vehicles: list[dict], track_distances: dict[str, float] | None = No
     }
 
 
-def _vehicle(vehicle_no: str, source: str, target: str, *, order: int = 1, length: float = 14.3) -> dict:
+def _vehicle(
+    vehicle_no: str,
+    source: str,
+    target: str,
+    *,
+    order: int = 1,
+    length: float = 14.3,
+    spotting: str = "",
+) -> dict:
     return {
         "trackName": source,
         "order": str(order),
@@ -49,7 +59,7 @@ def _vehicle(vehicle_no: str, source: str, target: str, *, order: int = 1, lengt
         "repairProcess": "段修",
         "vehicleLength": length,
         "targetTrack": target,
-        "isSpotting": "",
+        "isSpotting": spotting,
         "vehicleAttributes": "",
     }
 
@@ -95,6 +105,19 @@ def test_structural_metrics_counts_random_area_unfinished():
 
     assert metrics.unfinished_count == 1
     assert metrics.area_random_unfinished_count == 1
+    assert metrics.work_position_unfinished_count == 0
+
+
+def test_structural_metrics_counts_work_position_unfinished_separately_from_area():
+    normalized, initial = _normalize(
+        _payload([_vehicle("WASH", "存5北", "洗南", spotting="是")])
+    )
+
+    metrics = compute_structural_metrics(normalized, initial)
+
+    assert metrics.unfinished_count == 1
+    assert metrics.area_random_unfinished_count == 0
+    assert metrics.work_position_unfinished_count == 1
 
 
 def test_structural_metrics_counts_front_blocker_pressure():
@@ -145,7 +168,43 @@ def test_structural_metrics_counts_goal_track_blockers_and_capacity_debt():
     assert metrics.goal_track_blocker_count == 1
     assert metrics.goal_track_blocker_by_track == {"存1": 1}
     assert metrics.capacity_overflow_track_count == 1
-    assert metrics.capacity_debt_by_track == {"存1": 25.0}
+    assert metrics.capacity_debt_by_track == {"存1": 15.0}
+
+
+def test_structural_metrics_does_not_double_count_vehicle_already_on_required_track():
+    normalized, initial = _normalize(
+        _payload(
+            [
+                _vehicle("DONE", "存1", "存1", order=1, length=8),
+                _vehicle("ARRIVE", "存5北", "存1", order=1, length=5),
+            ],
+            track_distances={"存1": 10},
+        )
+    )
+
+    metrics = compute_structural_metrics(normalized, initial)
+
+    assert metrics.capacity_overflow_track_count == 1
+    assert metrics.capacity_debt_by_track == {"存1": 3.0}
+
+
+def test_structural_capacity_uses_initial_overlength_as_effective_capacity():
+    normalized, initial = _normalize(
+        _payload(
+            [
+                _vehicle("DONE1", "存1", "存1", order=1, length=8),
+                _vehicle("DONE2", "存1", "存1", order=2, length=8),
+            ],
+            track_distances={"存1": 10},
+        )
+    )
+
+    metrics = compute_structural_metrics(normalized, initial)
+    release = compute_capacity_release_plan(normalized, initial)
+
+    assert metrics.capacity_overflow_track_count == 0
+    assert metrics.capacity_debt_by_track == {}
+    assert release.facts_by_track["存1"].release_pressure_length == 0
 
 
 def test_plan_shape_counts_staging_hooks_and_rehandles():

@@ -1288,6 +1288,24 @@ def _render_vehicle_detail_panel(step, view, vehicle_display_metadata: dict[str,
             use_container_width=True,
             hide_index=True,
         )
+    if step.work_position_assignments:
+        st.markdown("**当前作业线序位**")
+        st.dataframe(
+            [
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "track": item.get("track"),
+                    "northRank": item.get("northRank"),
+                    "southRank": item.get("southRank"),
+                    "rule": item.get("rule"),
+                    "targetRank": item.get("targetRank"),
+                    "satisfied": item.get("satisfied"),
+                }
+                for vehicle_no, item in step.work_position_assignments.items()
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
     elif view.final_spot_assignments:
         st.markdown("**最终台位分配**")
         st.dataframe(
@@ -1297,6 +1315,24 @@ def _render_vehicle_detail_panel(step, view, vehicle_display_metadata: dict[str,
                     "spotCode": spot_code,
                 }
                 for vehicle_no, spot_code in view.final_spot_assignments.items()
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif view.final_work_position_assignments:
+        st.markdown("**最终作业线序位**")
+        st.dataframe(
+            [
+                {
+                    "vehicleNo": _format_vehicle_display_text(vehicle_no, vehicle_meta),
+                    "track": item.get("track"),
+                    "northRank": item.get("northRank"),
+                    "southRank": item.get("southRank"),
+                    "rule": item.get("rule"),
+                    "targetRank": item.get("targetRank"),
+                    "satisfied": item.get("satisfied"),
+                }
+                for vehicle_no, item in view.final_work_position_assignments.items()
             ],
             use_container_width=True,
             hide_index=True,

@@ -1,9 +1,4 @@
 [
-  {"code":"调棚:WORK","track_code":"调棚","category":"AREA","spotting_required":true},
-  {"code":"调棚:PRE_REPAIR","track_code":"调棚","category":"AREA","spotting_required":false},
-  {"code":"洗南:WORK","track_code":"洗南","category":"AREA","spotting_required":true},
-  {"code":"油:WORK","track_code":"油","category":"AREA","spotting_required":true},
-  {"code":"抛:WORK","track_code":"抛","category":"AREA","spotting_required":true},
   {"code":"轮:OPERATE","track_code":"轮","category":"AREA","spotting_required":true},
   {"code":"大库:RANDOM","track_code":"修1库内","category":"MULTI_TRACK_AREA","spotting_required":false},
   {"code":"大库外:RANDOM","track_code":"修1库外","category":"MULTI_TRACK_AREA","spotting_required":false}

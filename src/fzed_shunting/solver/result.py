@@ -28,6 +28,7 @@ class SolverTelemetry:
     input_close_door_count: int = 0
     input_spot_count: int = 0
     input_area_count: int = 0
+    input_work_position_count: int = 0
 
     # Phase timings (ms)
     constructive_ms: float = 0.0

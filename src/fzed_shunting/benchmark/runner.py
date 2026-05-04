@@ -310,6 +310,7 @@ def _solve_suite_payload(
                 "hookCount": stage.view.summary.hook_count if stage.view else 0,
                 "finalTracks": stage.view.summary.final_tracks if stage.view else [],
                 "finalSpotAssignments": stage.view.final_spot_assignments if stage.view else {},
+                "workPositionAssignments": stage.view.final_work_position_assignments if stage.view else {},
                 "failedHookNos": stage.view.failed_hook_nos if stage.view else [],
                 "verifierErrors": stage.view.verifier_errors if stage.view else [],
             }

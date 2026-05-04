@@ -190,9 +190,10 @@ def test_normalize_plan_input_accepts_explicit_track_target_mode():
     result = normalize_plan_input(payload, master)
 
     vehicle = result.vehicles[0]
-    assert vehicle.goal.target_mode == "TRACK"
+    assert vehicle.goal.target_mode == "WORK_POSITION"
     assert vehicle.goal.target_track == "调棚"
     assert vehicle.goal.allowed_target_tracks == ["调棚"]
+    assert vehicle.goal.work_position_kind == "FREE"
 
 
 def test_build_shared_vehicle_scenario_keeps_all_shared_vehicles_and_records_excluded():
@@ -220,13 +221,37 @@ def test_build_shared_vehicle_scenario_keeps_all_shared_vehicles_and_records_exc
     assert scenario["name"] == "validation_sample"
     assert {item["vehicleNo"] for item in scenario["payload"]["vehicleInfo"]} == {"A1", "A2"}
     by_no = {item["vehicleNo"]: item for item in scenario["payload"]["vehicleInfo"]}
-    assert by_no["A1"]["targetMode"] == "TRACK"
+    assert by_no["A1"]["targetMode"] == "SNAPSHOT"
     assert by_no["A1"]["targetTrack"] == "调棚"
-    assert "targetAreaCode" not in by_no["A1"]
+    assert by_no["A1"]["targetSource"] == "END_SNAPSHOT"
     assert by_no["A2"]["targetTrack"] == "预修"
     assert summary["added_vehicle_nos"] == ["ADD1"]
     assert summary["removed_vehicle_nos"] == ["DROP1"]
     assert "调棚" in {item["trackName"] for item in scenario["payload"]["trackInfo"]}
+
+
+def test_build_shared_vehicle_scenario_preserves_cun4bei_as_hard_departure_target():
+    master = load_master_data(DATA_DIR)
+    length_by_model = {"C70E": 14.3}
+    start_rows = [
+        ExcelVehicleRow("存5线北", 1, "C70E", "A1", "段", ""),
+    ]
+    end_rows = [
+        ExcelVehicleRow("存4线", 1, "C70E", "A1", "段", ""),
+    ]
+
+    scenario, _summary = build_shared_vehicle_scenario(
+        pair_spec=PairSpec("start", "end", "validation_sample"),
+        start_rows=start_rows,
+        end_rows=end_rows,
+        length_m_by_model=length_by_model,
+        master=master,
+    )
+
+    vehicle = scenario["payload"]["vehicleInfo"][0]
+    assert vehicle["targetMode"] == "TRACK"
+    assert vehicle["targetTrack"] == "存4北"
+    assert "targetSource" not in vehicle
 
 
 def test_build_shared_vehicle_scenario_records_duplicate_vehicle_rows():
@@ -253,7 +278,7 @@ def test_build_shared_vehicle_scenario_records_duplicate_vehicle_rows():
     assert summary["end_sheet_duplicate_vehicle_nos"] == ["A1"]
 
 
-def test_build_shared_vehicle_scenario_uses_aggregate_depot_target_for_inner_depot_rows():
+def test_build_shared_vehicle_scenario_uses_snapshot_depot_target_for_inner_depot_rows():
     master = load_master_data(DATA_DIR)
     length_by_model = {"C70E": 14.3}
     start_rows = [
@@ -272,9 +297,10 @@ def test_build_shared_vehicle_scenario_uses_aggregate_depot_target_for_inner_dep
     )
 
     vehicle = scenario["payload"]["vehicleInfo"][0]
-    assert vehicle["targetMode"] == "AREA"
+    assert vehicle["targetMode"] == "SNAPSHOT"
     assert vehicle["targetTrack"] == "大库"
     assert vehicle["targetAreaCode"] == "大库:RANDOM"
+    assert vehicle["targetSource"] == "END_SNAPSHOT"
 
 
 def test_convert_external_validation_inputs_converts_each_monthly_workbook_to_one_scenario(tmp_path: Path):

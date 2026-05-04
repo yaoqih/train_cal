@@ -54,6 +54,38 @@ def test_heuristic_zero_when_all_vehicles_at_goal():
     assert compute_admissible_heuristic(normalized, initial) == 0
 
 
+def test_heuristic_zero_for_end_snapshot_vehicle_on_fallback_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 156},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SNAP_SOFT",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SNAPSHOT",
+                "targetTrack": "存5南",
+                "targetSource": "END_SNAPSHOT",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+
+    assert compute_admissible_heuristic(normalized, initial) == 0
+    assert compute_admissible_heuristic_real_hook(normalized, initial) == 0
+
+
 def test_heuristic_counts_misplaced_vehicle():
     master = load_master_data(DATA_DIR)
     payload = _base_payload(

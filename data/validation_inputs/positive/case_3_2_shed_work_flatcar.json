@@ -4,7 +4,7 @@
     "rule_id": "shed_work",
     "variant": "flatcar",
     "baseline": "B5_busy_shed",
-    "purpose": "调棚 WORK with 平车 routes to 调棚:WORK",
+    "purpose": "调棚 spotting rank target with 平车 routes to 调棚",
     "expected_bounds": {
       "must_be_solvable": true,
       "max_hook_count": null,
@@ -1408,11 +1408,9 @@
       "vehicleNo": "T002",
       "repairProcess": "段修",
       "vehicleLength": 17.6,
-      "targetMode": "AREA",
       "targetTrack": "调棚",
       "isSpotting": "是",
-      "vehicleAttributes": "",
-      "targetAreaCode": "调棚:WORK"
+      "vehicleAttributes": ""
     }
   ],
   "locoTrackName": "机库"

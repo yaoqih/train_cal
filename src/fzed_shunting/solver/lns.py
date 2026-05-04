@@ -5,7 +5,6 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Any
 
-from fzed_shunting.domain.depot_spots import spot_candidates_for_vehicle
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import GoalSpec, NormalizedPlanInput, NormalizedVehicle
@@ -431,14 +430,22 @@ def _build_repair_plan_input(
             and vehicle.vehicle_no not in movable_capacity_release_front
             and vehicle.vehicle_no not in extra_movable_vehicle_nos
         ):
-            frozen_goal = GoalSpec(
-                target_mode="TRACK",
-                target_track=current_track,
-                allowed_target_tracks=[current_track],
-                preferred_target_tracks=[current_track],
-                target_area_code=vehicle.goal.target_area_code,
-                target_spot_code=snapshot.spot_assignments.get(vehicle.vehicle_no),
-            )
+            if vehicle.goal.work_position_kind is not None:
+                frozen_goal = GoalSpec(
+                    target_mode="TRACK",
+                    target_track=current_track,
+                    allowed_target_tracks=[current_track],
+                    preferred_target_tracks=[current_track],
+                )
+            else:
+                frozen_goal = GoalSpec(
+                    target_mode="TRACK",
+                    target_track=current_track,
+                    allowed_target_tracks=[current_track],
+                    preferred_target_tracks=[current_track],
+                    target_area_code=vehicle.goal.target_area_code,
+                    target_spot_code=snapshot.spot_assignments.get(vehicle.vehicle_no),
+                )
         localized_vehicles.append(
             vehicle.model_copy(
                 update={
@@ -502,24 +509,15 @@ def _spot_goal_satisfied(
     snapshot: ReplayState,
     plan_input: NormalizedPlanInput | None = None,
 ) -> bool:
-    assigned_spot = snapshot.spot_assignments.get(vehicle.vehicle_no)
-    if vehicle.goal.target_mode == "SPOT":
-        return assigned_spot == vehicle.goal.target_spot_code
-    if vehicle.goal.target_area_code == "大库:RANDOM":
-        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(
-            vehicle,
-            current_track,
-            plan_input.yard_mode if plan_input is not None else "NORMAL",
-        )
-    if vehicle.goal.target_area_code in {"调棚:WORK", "调棚:PRE_REPAIR", "洗南:WORK", "油:WORK", "抛:WORK"}:
-        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
-        return assigned_spot in spot_candidates_for_vehicle(
-            vehicle,
-            current_track,
-            plan_input.yard_mode if plan_input is not None else "NORMAL",
-        )
-    return True
+    current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
+    if current_track is None:
+        return False
+    return goal_is_satisfied(
+        vehicle,
+        track_name=current_track,
+        state=snapshot,
+        plan_input=plan_input,
+    )
 
 
 def _to_hook_dict(move: HookAction) -> dict:

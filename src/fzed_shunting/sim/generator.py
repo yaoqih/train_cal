@@ -268,7 +268,7 @@ def generate_typical_suite(master: MasterData) -> dict:
         },
         {
             "name": "dispatch_work_spot",
-            "description": "调棚作业工位分配",
+            "description": "调棚作业线自由放置",
             "payload": {
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
@@ -283,7 +283,7 @@ def generate_typical_suite(master: MasterData) -> dict:
                         "repairProcess": "段修",
                         "vehicleLength": 14.3,
                         "targetTrack": "调棚",
-                        "isSpotting": "是",
+                        "isSpotting": "",
                         "vehicleAttributes": "",
                     }
                 ],
@@ -387,7 +387,7 @@ def generate_typical_suite(master: MasterData) -> dict:
                         "repairProcess": "段修",
                         "vehicleLength": 14.3,
                         "targetTrack": "洗南",
-                        "isSpotting": "是",
+                        "isSpotting": "",
                         "vehicleAttributes": "",
                     }
                 ],
@@ -512,7 +512,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                         "name": "dispatch_work",
                         "description": "先送调棚作业区",
                         "vehicleGoals": [
-                            {"vehicleNo": "WF_TYP_001", "targetTrack": "调棚", "isSpotting": "是"}
+                            {"vehicleNo": "WF_TYP_001", "targetTrack": "调棚", "isSpotting": ""}
                         ],
                     },
                     {
@@ -656,7 +656,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                         "name": "dispatch_work",
                         "description": "前车送调棚作业，后车留在原线",
                         "vehicleGoals": [
-                            {"vehicleNo": "WF_TYP_003A", "targetTrack": "调棚", "isSpotting": "是"},
+                            {"vehicleNo": "WF_TYP_003A", "targetTrack": "调棚", "isSpotting": ""},
                             {"vehicleNo": "WF_TYP_003B", "targetTrack": "存5北", "isSpotting": ""},
                         ],
                     },
@@ -712,7 +712,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                         "name": "wash_work",
                         "description": "先送洗南作业区",
                         "vehicleGoals": [
-                            {"vehicleNo": "WF_TYP_004", "targetTrack": "洗南", "isSpotting": "是"}
+                            {"vehicleNo": "WF_TYP_004", "targetTrack": "洗南", "isSpotting": ""}
                         ],
                     },
                     {
@@ -963,7 +963,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                         "name": "dispatch_work",
                         "description": "先送调棚作业区",
                         "vehicleGoals": [
-                            {"vehicleNo": "WF_TYP_007", "targetTrack": "调棚", "isSpotting": "是"}
+                            {"vehicleNo": "WF_TYP_007", "targetTrack": "调棚", "isSpotting": ""}
                         ],
                     },
                     {
@@ -1196,7 +1196,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                         "name": "wash_work",
                         "description": "先送洗南作业区",
                         "vehicleGoals": [
-                            {"vehicleNo": "WF_TYP_008", "targetTrack": "洗南", "isSpotting": "是"}
+                            {"vehicleNo": "WF_TYP_008", "targetTrack": "洗南", "isSpotting": ""}
                         ],
                     },
                     {

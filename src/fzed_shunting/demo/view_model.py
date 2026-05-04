@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import PathValidationResult, RouteOracle
+from fzed_shunting.domain.work_positions import build_work_position_assignments
 from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
 from fzed_shunting.solver.profile import (
@@ -73,6 +74,7 @@ class DemoStep(BaseModel):
     track_sequences: dict[str, list[str]] = Field(default_factory=dict)
     weighed_vehicle_nos: list[str] = Field(default_factory=list)
     spot_assignments: dict[str, str] = Field(default_factory=dict)
+    work_position_assignments: dict[str, dict[str, object]] = Field(default_factory=dict)
     verifier_errors: list[str] = Field(default_factory=list)
     track_map: DemoTrackMap = Field(default_factory=DemoTrackMap)
     topology_graph: DemoTopologyGraph = Field(default_factory=DemoTopologyGraph)
@@ -87,6 +89,7 @@ class DemoSummary(BaseModel):
     final_tracks: list[str] = Field(default_factory=list)
     weighed_vehicle_count: int
     assigned_spot_count: int
+    assigned_work_position_count: int = 0
 
 
 class DemoViewModel(BaseModel):
@@ -95,6 +98,7 @@ class DemoViewModel(BaseModel):
     hook_plan: list[DemoHook] = Field(default_factory=list)
     steps: list[DemoStep] = Field(default_factory=list)
     final_spot_assignments: dict[str, str] = Field(default_factory=dict)
+    final_work_position_assignments: dict[str, dict[str, object]] = Field(default_factory=dict)
     failed_hook_nos: list[int] = Field(default_factory=list)
     track_map: DemoTrackMap = Field(default_factory=DemoTrackMap)
     topology_graph: DemoTopologyGraph = Field(default_factory=DemoTopologyGraph)
@@ -196,6 +200,10 @@ def build_demo_view_model(
         if report.errors
     }
     final_state = replay.final_state
+    final_work_positions = build_work_position_assignments(
+        vehicles=normalized.vehicles,
+        state=final_state,
+    )
     summary = DemoSummary(
         hook_count=len(hook_plan),
         vehicle_count=len(normalized.vehicles),
@@ -204,6 +212,7 @@ def build_demo_view_model(
         final_tracks=sorted(track for track, seq in final_state.track_sequences.items() if seq),
         weighed_vehicle_count=len(final_state.weighed_vehicle_nos),
         assigned_spot_count=len(final_state.spot_assignments),
+        assigned_work_position_count=len(final_work_positions),
     )
     visible_track_codes = _visible_track_codes_from_snapshots(replay.snapshots, hook_plan)
     topology_graph = _build_topology_graph(
@@ -254,10 +263,12 @@ def build_demo_view_model(
             replay.snapshots,
             hook_plan,
             hook_error_by_no,
+            vehicles=normalized.vehicles,
             visible_track_codes=visible_track_codes,
             global_edge_keys=topology_graph.edge_keys,
         ),
         final_spot_assignments=dict(sorted(final_state.spot_assignments.items())),
+        final_work_position_assignments=final_work_positions,
         failed_hook_nos=sorted(hook_error_by_no),
         vehicle_target_tracks={
             vehicle.vehicle_no: list(vehicle.goal.allowed_target_tracks)
@@ -402,6 +413,7 @@ def _build_steps(
     hook_plan: list[DemoHook],
     hook_error_by_no: dict[int, list[str]],
     *,
+    vehicles: list,
     visible_track_codes: list[str],
     global_edge_keys: list[tuple[str, str]],
 ) -> list[DemoStep]:
@@ -420,6 +432,10 @@ def _build_steps(
                 track_sequences={track: list(seq) for track, seq in snapshot.track_sequences.items()},
                 weighed_vehicle_nos=sorted(snapshot.weighed_vehicle_nos),
                 spot_assignments=dict(sorted(snapshot.spot_assignments.items())),
+                work_position_assignments=build_work_position_assignments(
+                    vehicles=vehicles,
+                    state=snapshot,
+                ),
                 verifier_errors=list(hook_error_by_no.get(hook.hook_no if hook else 0, [])),
                 track_map=_build_track_map(
                     snapshot=snapshot,
