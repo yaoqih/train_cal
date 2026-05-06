@@ -25,8 +25,8 @@ from fzed_shunting.solver.exact_spot import (
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
-    generate_real_hook_moves,
 )
+from fzed_shunting.solver.move_candidates import MoveCandidate, generate_move_candidates
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.result import SolverResult
@@ -72,6 +72,23 @@ class QueueItem:
     )
     route_release_focus_bonus: int = field(default=0, compare=False)
     route_release_focus_ttl: int = field(default=0, compare=False)
+
+
+@dataclass(frozen=True)
+class CandidateScoring:
+    blocker_bonus: int
+    route_release_regression_penalty: int
+    route_release_focus_tracks: frozenset[str]
+    route_release_focus_bonus: int
+    route_release_focus_ttl: int
+    carry_growth_penalty: int
+
+
+@dataclass(frozen=True)
+class AppliedCandidate:
+    final_state: ReplayState
+    steps: list[HookAction]
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]]
 
 
 def _solve_search_result(
@@ -192,7 +209,7 @@ def _solve_search_result(
             if route_oracle is not None
             else None
         )
-        moves = generate_real_hook_moves(
+        candidates = generate_move_candidates(
             plan_input,
             current.state,
             master=master,
@@ -205,15 +222,19 @@ def _solve_search_result(
                 state=current.state,
                 plan_len=len(current.plan),
                 move_stats=move_stats or {},
-            )
-        for move in moves:
-            next_state = _apply_move(
+        )
+        for candidate in candidates:
+            applied_candidate = _apply_candidate_steps(
+                candidate=candidate,
                 state=current.state,
-                move=move,
                 plan_input=plan_input,
                 vehicle_by_no=vehicle_by_no,
             )
-            next_plan = current.plan + [move]
+            if applied_candidate is None:
+                continue
+            next_state = applied_candidate.final_state
+            candidate_steps = applied_candidate.steps
+            next_plan = current.plan + candidate_steps
             cost = len(next_plan)
             state_key = _state_key(
                 next_state,
@@ -224,62 +245,34 @@ def _solve_search_result(
             best_cost[state_key] = cost
             heuristic = state_heuristic(next_state)
             next_purity = compute_state_purity(plan_input, next_state)
-            blocker_bonus = _blocking_goal_target_bonus(
+            candidate_scoring = _evaluate_candidate_steps(
+                plan_input=plan_input,
                 state=current.state,
-                move=move,
+                candidate_kind=candidate.kind,
+                transitions=applied_candidate.transitions,
+                vehicle_by_no=vehicle_by_no,
+                goal_by_vehicle=goal_by_vehicle,
+                route_oracle=route_oracle,
                 blocking_goal_targets_by_source=blocking_goal_targets_by_source,
                 route_blockage_plan=route_blockage_plan,
-                route_release_focus_tracks=(
+                prior_focus_tracks=(
                     current.route_release_focus_tracks
                     if current.route_release_focus_ttl > 0
                     else frozenset()
                 ),
-                route_release_focus_bonus=current.route_release_focus_bonus,
-            )
-            blocker_bonus += exact_spot_clearance_bonus(
-                plan_input=plan_input,
-                state=current.state,
-                move=move,
-                next_state=next_state,
-            )
-            blocker_bonus += exact_spot_seeker_exposure_bonus(
-                plan_input=plan_input,
-                state=current.state,
-                move=move,
-                next_state=next_state,
-            )
-            blocker_bonus += _carry_exposure_bonus(
-                move=move,
-                state=current.state,
-                plan_input=plan_input,
-                vehicle_by_no=vehicle_by_no,
-            )
-            next_focus_tracks, next_focus_bonus, next_focus_ttl = route_release_focus_after_move(
-                prior_focus_tracks=current.route_release_focus_tracks,
                 prior_focus_bonus=current.route_release_focus_bonus,
                 prior_focus_ttl=current.route_release_focus_ttl,
-                move=move,
-                route_blockage_plan=route_blockage_plan,
             )
-            route_release_regression_penalty = _route_release_regression_penalty(
+            blocker_bonus = candidate_scoring.blocker_bonus
+            next_focus_tracks = candidate_scoring.route_release_focus_tracks
+            next_focus_bonus = candidate_scoring.route_release_focus_bonus
+            next_focus_ttl = candidate_scoring.route_release_focus_ttl
+            route_release_regression_penalty = candidate_scoring.route_release_regression_penalty
+            route_release_regression_penalty += _route_release_regression_penalty(
                 state=next_state,
                 route_oracle=route_oracle,
                 focus_tracks=next_focus_tracks,
                 focus_ttl=next_focus_ttl,
-            )
-            route_release_regression_penalty += _route_release_repark_penalty(
-                move=move,
-                state=current.state,
-                next_state=next_state,
-                plan_input=plan_input,
-                route_oracle=route_oracle,
-                route_blockage_plan=route_blockage_plan,
-                focus_tracks=(
-                    current.route_release_focus_tracks
-                    if current.route_release_focus_ttl > 0
-                    else frozenset()
-                ),
-                focus_ttl=current.route_release_focus_ttl,
             )
             neg_depot_index_sum = 0
             if enable_depot_late_scheduling and solver_mode == "exact":
@@ -303,11 +296,7 @@ def _solve_search_result(
                             next_purity.staging_pollution_count,
                         ),
                         carry_count=len(next_state.loco_carry),
-                        carry_growth_penalty=_carry_growth_penalty_for_move(
-                            move=move,
-                            state=current.state,
-                            vehicle_by_no=vehicle_by_no,
-                        ),
+                        carry_growth_penalty=candidate_scoring.carry_growth_penalty,
                     ),
                     seq=next(counter),
                     state_key=state_key,
@@ -366,6 +355,141 @@ def _solve_search_result(
     )
 
 
+def _apply_candidate_steps(
+    *,
+    candidate: MoveCandidate,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> AppliedCandidate | None:
+    steps = list(candidate.steps)
+    if not steps:
+        return None
+    next_state = state
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]] = []
+    for step in steps:
+        try:
+            before_state = next_state
+            next_state = _apply_move(
+                state=before_state,
+                move=step,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        transitions.append((before_state, step, next_state))
+    return AppliedCandidate(
+        final_state=next_state,
+        steps=steps,
+        transitions=transitions,
+    )
+
+
+def _evaluate_candidate_steps(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    candidate_kind: str,
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]],
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    goal_by_vehicle: dict[str, Any],
+    route_oracle: RouteOracle | None,
+    blocking_goal_targets_by_source: dict[str, set[str]],
+    route_blockage_plan: RouteBlockagePlan | None,
+    prior_focus_tracks: frozenset[str] | set[str],
+    prior_focus_bonus: int,
+    prior_focus_ttl: int,
+) -> CandidateScoring:
+    blocker_bonus = 0
+    route_release_regression_penalty = 0
+    carry_growth_penalty = 0
+    focus_tracks = frozenset(prior_focus_tracks)
+    focus_bonus = prior_focus_bonus
+    focus_ttl = prior_focus_ttl
+    current_blocking_goal_targets = blocking_goal_targets_by_source
+    current_route_blockage_plan = route_blockage_plan
+    if candidate_kind == "work_position_sequence":
+        blocker_bonus += max(4, len(transitions))
+
+    for step_index, (current_state, step, next_state) in enumerate(transitions):
+        if step_index > 0:
+            current_blocking_goal_targets = _collect_interfering_goal_targets_by_source(
+                plan_input=plan_input,
+                state=current_state,
+                goal_by_vehicle=goal_by_vehicle,
+                vehicle_by_no=vehicle_by_no,
+                route_oracle=route_oracle,
+            )
+            current_route_blockage_plan = (
+                compute_route_blockage_plan(plan_input, current_state, route_oracle)
+                if route_oracle is not None
+                else None
+            )
+
+        active_focus_tracks = focus_tracks if focus_ttl > 0 else frozenset()
+        blocker_bonus += _blocking_goal_target_bonus(
+            state=current_state,
+            move=step,
+            blocking_goal_targets_by_source=current_blocking_goal_targets,
+            route_blockage_plan=current_route_blockage_plan,
+            route_release_focus_tracks=active_focus_tracks,
+            route_release_focus_bonus=focus_bonus,
+        )
+        blocker_bonus += exact_spot_clearance_bonus(
+            plan_input=plan_input,
+            state=current_state,
+            move=step,
+            next_state=next_state,
+        )
+        blocker_bonus += exact_spot_seeker_exposure_bonus(
+            plan_input=plan_input,
+            state=current_state,
+            move=step,
+            next_state=next_state,
+        )
+        blocker_bonus += _carry_exposure_bonus(
+            move=step,
+            state=current_state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        route_release_regression_penalty += _route_release_repark_penalty(
+            move=step,
+            state=current_state,
+            next_state=next_state,
+            plan_input=plan_input,
+            route_oracle=route_oracle,
+            route_blockage_plan=current_route_blockage_plan,
+            focus_tracks=active_focus_tracks,
+            focus_ttl=focus_ttl,
+        )
+        carry_growth_penalty = max(
+            carry_growth_penalty,
+            _carry_growth_penalty_for_move(
+                move=step,
+                state=current_state,
+                vehicle_by_no=vehicle_by_no,
+            ),
+        )
+        focus_tracks, focus_bonus, focus_ttl = route_release_focus_after_move(
+            prior_focus_tracks=focus_tracks,
+            prior_focus_bonus=focus_bonus,
+            prior_focus_ttl=focus_ttl,
+            move=step,
+            route_blockage_plan=current_route_blockage_plan,
+        )
+
+    return CandidateScoring(
+        blocker_bonus=blocker_bonus,
+        route_release_regression_penalty=route_release_regression_penalty,
+        route_release_focus_tracks=frozenset(focus_tracks),
+        route_release_focus_bonus=focus_bonus,
+        route_release_focus_ttl=focus_ttl,
+        carry_growth_penalty=carry_growth_penalty,
+    )
+
+
 def _priority(
     *,
     cost: int,
@@ -379,12 +503,14 @@ def _priority(
     carry_count: int = 0,
     carry_growth_penalty: int = 0,
 ) -> tuple:
+    progress_bonus = min(max(blocker_bonus, 0), max(cost + heuristic, 1) // 2)
     if solver_mode == "beam":
         score = cost + heuristic
+        adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             0 if blocker_bonus > 0 else 1,
-            score + carry_growth_penalty,
+            adjusted_score,
             score,
             cost,
             heuristic,
@@ -396,10 +522,12 @@ def _priority(
             heuristic,
         )
     if solver_mode in ("weighted", "real_hook"):
+        score = cost + heuristic_weight * heuristic
+        adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             0 if blocker_bonus > 0 else 1,
-            cost + heuristic_weight * heuristic,
+            adjusted_score,
             cost,
             heuristic,
             purity_metrics,
@@ -776,13 +904,16 @@ def _initialize_debug_stats(
             "closed_states": 0,
             "move_generation_calls": 0,
             "candidate_moves_total": 0,
+            "candidate_steps_total": 0,
             "candidate_direct_moves": 0,
             "candidate_staging_moves": 0,
             "max_candidate_moves_per_state": 0,
+            "max_candidate_steps_per_state": 0,
             "states_with_zero_moves": 0,
             "moves_by_target": {},
             "moves_by_source": {},
             "moves_by_block_size": {},
+            "candidate_steps_by_kind": {},
             "top_expansions": [],
         }
     )
@@ -796,25 +927,36 @@ def _accumulate_move_debug_stats(
     move_stats: dict[str, Any],
 ) -> None:
     move_count = int(move_stats.get("total_moves", 0))
+    step_count = int(move_stats.get("candidate_steps_total", move_count))
     debug_stats["move_generation_calls"] += 1
     debug_stats["candidate_moves_total"] += move_count
+    debug_stats["candidate_steps_total"] += step_count
     debug_stats["candidate_direct_moves"] += int(move_stats.get("direct_moves", 0))
     debug_stats["candidate_staging_moves"] += int(move_stats.get("staging_moves", 0))
     debug_stats["max_candidate_moves_per_state"] = max(
         debug_stats["max_candidate_moves_per_state"],
         move_count,
     )
+    debug_stats["max_candidate_steps_per_state"] = max(
+        debug_stats["max_candidate_steps_per_state"],
+        step_count,
+    )
     if move_count == 0:
         debug_stats["states_with_zero_moves"] += 1
     _merge_counter_dict(debug_stats["moves_by_target"], move_stats.get("moves_by_target", {}))
     _merge_counter_dict(debug_stats["moves_by_source"], move_stats.get("moves_by_source", {}))
     _merge_counter_dict(debug_stats["moves_by_block_size"], move_stats.get("moves_by_block_size", {}))
+    _merge_counter_dict(
+        debug_stats["candidate_steps_by_kind"],
+        move_stats.get("candidate_steps_by_kind", {}),
+    )
     top_expansions = debug_stats["top_expansions"]
     top_expansions.append(
         {
             "plan_len": plan_len,
             "loco_track": state.loco_track_name,
             "move_count": move_count,
+            "step_count": step_count,
             "direct_moves": int(move_stats.get("direct_moves", 0)),
             "staging_moves": int(move_stats.get("staging_moves", 0)),
             "sources": move_stats.get("moves_by_source", {}),

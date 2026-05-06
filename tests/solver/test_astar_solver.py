@@ -73,6 +73,7 @@ from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
     generate_real_hook_moves,
 )
+from fzed_shunting.solver.move_candidates import MoveCandidate
 from fzed_shunting.solver.exact_spot import exact_spot_clearance_bonus
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
@@ -1731,6 +1732,25 @@ def test_beam_priority_prefers_route_release_over_unrelated_short_term_heuristic
     )
 
     assert route_release_priority < unrelated_local_progress_priority
+
+
+def test_beam_priority_counts_verified_progress_against_macro_step_cost():
+    sequence_repair_priority = _priority(
+        cost=18,
+        heuristic=8,
+        blocker_bonus=10,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    short_unrelated_priority = _priority(
+        cost=12,
+        heuristic=12,
+        blocker_bonus=1,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert sequence_repair_priority < short_unrelated_priority
 
 
 def test_route_release_regression_penalty_detects_blocked_focus_source():
@@ -12924,8 +12944,11 @@ def test_real_hook_search_counts_attach_cost_when_comparing_native_paths():
 
     with patch.object(
         search_module,
-        "generate_real_hook_moves",
-        side_effect=lambda plan_input, state, master=None, route_oracle=None, debug_stats=None: transitions[state.loco_track_name],
+        "generate_move_candidates",
+        side_effect=lambda plan_input, state, master=None, route_oracle=None, debug_stats=None: [
+            MoveCandidate(steps=(move,))
+            for move in transitions[state.loco_track_name]
+        ],
     ):
         with patch.object(
             search_module,
@@ -24116,6 +24139,65 @@ def test_beam_search_priority_can_use_depot_late_tiebreaker():
     )
 
     assert later_depot < earlier_depot
+
+
+def test_search_expands_multi_step_move_candidate_as_real_hook_plan(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "MSC1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    initial = build_initial_state(normalized)
+    attach = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["MSC1"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    detach = HookAction(
+        source_track="存5北",
+        target_track="机库",
+        vehicle_nos=["MSC1"],
+        path_tracks=["存5北", "机库"],
+        action_type="DETACH",
+    )
+
+    def fake_candidates(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        return [MoveCandidate(steps=(attach, detach), kind="test_sequence")]
+
+    monkeypatch.setattr(search_module, "generate_move_candidates", fake_candidates)
+
+    result = search_module._solve_search_result(
+        plan_input=normalized,
+        initial_state=initial,
+        master=master,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+        beam_width=1,
+        budget=SearchBudget(time_budget_ms=1_000.0),
+    )
+
+    assert result.is_complete is True
+    assert result.plan == [attach, detach]
+    assert result.expanded_nodes == 2
 
 
 def test_beam_search_priority_prefers_shorter_carry_before_depot_late_tiebreaker():

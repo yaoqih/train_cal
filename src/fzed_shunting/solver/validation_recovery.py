@@ -103,10 +103,9 @@ def solve_with_validation_recovery_result(
                     "recovery_time_budget_ms": retry_budget_ms,
                 }
                 best_complete = replace(candidate, debug_stats=stats)
-            if not (
-                improve_pathological_success
-                and _should_continue_recovery_after_success(candidate)
-            ):
+            if initial.is_complete and not improve_pathological_success:
+                break
+            if not _should_continue_recovery_after_success(candidate):
                 break
             continue
         if best_partial is None or partial_result_is_better(candidate, best_partial):

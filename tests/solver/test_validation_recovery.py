@@ -520,3 +520,85 @@ def test_validation_recovery_retries_pathological_success_when_requested():
 
     assert [call["beam_width"] for call in calls] == [8, 8]
     assert len(result.plan) == 40
+
+
+def test_validation_recovery_continues_after_churny_recovery_success():
+    calls: list[dict] = []
+
+    def fake_solve_result_fn(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SolverResult(
+                plan=[],
+                partial_plan=[_move("TAIL")] * 254,
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=75_000.0,
+                is_complete=False,
+                fallback_stage=kwargs.get("solver_mode"),
+                partial_fallback_stage="route_blockage_tail_clearance",
+                debug_stats={
+                    "partial_structural_metrics": {
+                        "unfinished_count": 9,
+                        "staging_debt_count": 3,
+                        "work_position_unfinished_count": 2,
+                        "front_blocker_count": 2,
+                        "target_sequence_defect_count": 3,
+                        "goal_track_blocker_count": 0,
+                        "loco_carry_count": 0,
+                    },
+                    "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+                },
+            )
+        if len(calls) == 2:
+            return SolverResult(
+                plan=[_move("CHURN")] * 333,
+                partial_plan=[],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=94_000.0,
+                is_complete=True,
+                fallback_stage=kwargs.get("solver_mode"),
+                debug_stats={
+                    "plan_shape_metrics": {
+                        "staging_hook_count": 76,
+                        "staging_to_staging_hook_count": 37,
+                        "rehandled_vehicle_count": 45,
+                        "max_vehicle_touch_count": 62,
+                    }
+                },
+            )
+        return SolverResult(
+            plan=[_move("COMPACT")] * 156,
+            partial_plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=71_000.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+            debug_stats={
+                "plan_shape_metrics": {
+                    "staging_hook_count": 36,
+                    "staging_to_staging_hook_count": 18,
+                    "rehandled_vehicle_count": 35,
+                    "max_vehicle_touch_count": 40,
+                }
+            },
+        )
+
+    result = solve_with_validation_recovery_result(
+        plan_input=None,  # type: ignore[arg-type]
+        initial_state=None,  # type: ignore[arg-type]
+        master=None,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+        beam_width=8,
+        time_budget_ms=75_000.0,
+        solve_result_fn=fake_solve_result_fn,
+    )
+
+    assert [call["beam_width"] for call in calls] == [8, 8, 16]
+    assert len(result.plan) == 156

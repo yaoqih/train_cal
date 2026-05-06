@@ -111,13 +111,14 @@ def parse_args() -> argparse.Namespace:
         "--enable-worker-recovery",
         dest="enable_worker_recovery",
         action="store_true",
-        default=True,
+        default=False,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--disable-worker-recovery",
         dest="enable_worker_recovery",
         action="store_false",
+        default=False,
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--worker", action="store_true")
@@ -136,7 +137,7 @@ def solve_one(
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
-    enable_worker_recovery: bool = True,
+    enable_worker_recovery: bool = False,
     improve_pathological_success: bool = False,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
@@ -445,7 +446,7 @@ def _build_worker_command(
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
-    enable_worker_recovery: bool = True,
+    enable_worker_recovery: bool = False,
     improve_pathological_success: bool = False,
 ) -> list[str]:
     cmd = [
@@ -496,7 +497,7 @@ def _run_scenario_subprocess(
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
-    enable_worker_recovery: bool = True,
+    enable_worker_recovery: bool = False,
     improve_pathological_success: bool = False,
 ) -> dict[str, Any]:
     started_at = perf_counter()
@@ -607,7 +608,7 @@ def run_parallel_scenarios(
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
-    enable_worker_recovery: bool = True,
+    enable_worker_recovery: bool = False,
     improve_pathological_success: bool = False,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
@@ -653,7 +654,7 @@ def recover_no_solution_results(
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = True,
-    enable_worker_recovery: bool = True,
+    enable_worker_recovery: bool = False,
     improve_pathological_success: bool = False,
     deadline_at: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -833,17 +834,14 @@ def recover_no_solution_results(
                     < int(current.get("hook_count", 10**9))
                 ):
                     merged_results[retry_result["scenario"]] = recovered
-                if (
-                    not _should_continue_recovery_after_success(recovered)
-                    or (
-                        not improve_pathological_success
-                        and current.get("solved")
-                    )
-                ):
+                should_keep_searching_complete = _should_continue_recovery_after_success(
+                    recovered
+                )
+                if current.get("solved") and not improve_pathological_success:
+                    should_keep_searching_complete = False
+                if not should_keep_searching_complete:
                     retryable_scenario_names.discard(retry_result["scenario"])
                     continue
-                if not current.get("solved") and not improve_pathological_success:
-                    retryable_scenario_names.discard(retry_result["scenario"])
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
 
 
@@ -1265,7 +1263,7 @@ def _run_worker(args: argparse.Namespace) -> None:
             None,
         ),
         primary_first_beam=getattr(args, "primary_first_beam", False),
-        enable_worker_recovery=getattr(args, "enable_worker_recovery", True),
+        enable_worker_recovery=getattr(args, "enable_worker_recovery", False),
         improve_pathological_success=getattr(args, "improve_pathological_success", False),
     )
     print(json.dumps(result, ensure_ascii=False))
@@ -1298,7 +1296,7 @@ def main() -> None:
     enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
     enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", True)
     primary_first_beam = getattr(args, "primary_first_beam", False)
-    enable_worker_recovery = getattr(args, "enable_worker_recovery", True)
+    enable_worker_recovery = getattr(args, "enable_worker_recovery", False)
     if time_budget_ms is None:
         time_budget_ms = validation_time_budget_ms(args.timeout_seconds)
     deadline_at = None

@@ -633,7 +633,7 @@ def test_build_worker_command_passes_depot_late_disable_only_when_requested(tmp_
     assert "--disable-depot-late-scheduling" in disabled_cmd
 
 
-def test_build_worker_command_passes_worker_recovery_disable_only_when_requested(tmp_path: Path):
+def test_build_worker_command_passes_worker_recovery_enable_only_when_requested(tmp_path: Path):
     scenario_path = tmp_path / "validation_a.json"
     default_cmd = module._build_worker_command(
         master_dir=DATA_DIR,
@@ -650,11 +650,11 @@ def test_build_worker_command_passes_worker_recovery_disable_only_when_requested
         beam_width=8,
         heuristic_weight=1.0,
         time_budget_ms=75_000.0,
-        enable_worker_recovery=False,
+        enable_worker_recovery=True,
     )
 
-    assert "--enable-worker-recovery" in default_cmd
-    assert "--enable-worker-recovery" not in disabled_cmd
+    assert "--enable-worker-recovery" not in default_cmd
+    assert "--enable-worker-recovery" in disabled_cmd
 
 
 def test_worker_timeout_covers_unified_recovery_budget():
@@ -798,7 +798,7 @@ def test_validation_runner_uses_shared_solver_time_budget_default(monkeypatch, t
     assert summary["unsolved_cases"] == 0
 
 
-def test_validation_runner_keeps_three_minute_recovery_in_parent_scheduler(
+def test_validation_runner_keeps_recovery_in_parent_scheduler(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -833,13 +833,14 @@ def test_validation_runner_keeps_three_minute_recovery_in_parent_scheduler(
 
     module.main()
 
-    assert captured["first"]["enable_worker_recovery"] is True
+    assert captured["first"]["enable_worker_recovery"] is False
     assert captured["recover"]["deadline_at"] is None
+    assert captured["recover"]["enable_worker_recovery"] is False
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
-    assert summary["enable_worker_recovery"] is True
+    assert summary["enable_worker_recovery"] is False
 
 
-def test_validation_runner_uses_unified_worker_recovery_for_default_profile(
+def test_validation_runner_enables_worker_recovery_only_when_requested(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -866,6 +867,7 @@ def test_validation_runner_uses_unified_worker_recovery_for_default_profile(
             str(scenario),
             "--output-dir",
             str(output_dir),
+            "--enable-worker-recovery",
         ],
     )
 
@@ -874,7 +876,7 @@ def test_validation_runner_uses_unified_worker_recovery_for_default_profile(
     assert captured["first"]["enable_worker_recovery"] is True
 
 
-def test_recover_no_solution_results_uses_unified_worker_recovery_on_retries(
+def test_recover_no_solution_results_keeps_worker_recovery_disabled_on_retries(
     tmp_path: Path,
 ):
     scenario = tmp_path / "validation_recovery.json"
@@ -940,8 +942,64 @@ def test_recover_no_solution_results_uses_unified_worker_recovery_on_retries(
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == [True]
+    assert calls == [False]
     assert results[0]["solved"] is True
+
+
+def test_recover_no_solution_results_passes_worker_recovery_when_requested(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_recovery.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_recovery.json",
+            "solved": False,
+            "error": "no solution within budget",
+            "error_category": "no_solution",
+            "debug_stats": {},
+        },
+    ]
+    calls: list[bool] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        enable_worker_recovery,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(enable_worker_recovery)
+        return [
+            {
+                "scenario": "validation_recovery.json",
+                "solved": True,
+                "hook_count": 139,
+                "is_valid": True,
+                "verifier_errors": [],
+                "elapsed_ms": 40_000.0,
+                "debug_stats": {"plan_shape_metrics": {"max_vehicle_touch_count": 7}},
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=180,
+            max_workers=4,
+            retry_no_solution_beam_width=None,
+            initial_results=initial_results,
+            time_budget_ms=validation_time_budget_ms(180),
+            enable_worker_recovery=True,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [True]
 
 
 def test_validation_runner_summary_counts_recovered_results(
@@ -1131,7 +1189,9 @@ def test_run_parallel_scenarios_marks_timeout_and_cleans_worker_process_group(tm
     assert ("wait", None) in calls
 
 
-def test_run_parallel_scenarios_gives_worker_timeout_solver_grace(tmp_path: Path):
+def test_run_parallel_scenarios_gives_single_attempt_worker_timeout_solver_grace(
+    tmp_path: Path,
+):
     scenario = tmp_path / "validation_timeout_budget.json"
     scenario.write_text("{}", encoding="utf-8")
     calls: list[tuple] = []
@@ -1174,7 +1234,7 @@ def test_run_parallel_scenarios_gives_worker_timeout_solver_grace(tmp_path: Path
         module.subprocess.Popen = original_popen
         module.os.killpg = original_killpg
 
-    assert ("communicate", 130.0) in calls
+    assert ("communicate", 40.0) in calls
 
 
 def test_run_parallel_scenarios_worker_timeout_uses_reserved_solver_budget(
@@ -1216,6 +1276,7 @@ def test_run_parallel_scenarios_worker_timeout_uses_reserved_solver_budget(
             timeout_seconds=180,
             max_workers=1,
             time_budget_ms=75_000,
+            enable_worker_recovery=True,
         )
     finally:
         module.subprocess.Popen = original_popen
@@ -2673,6 +2734,102 @@ def test_recover_no_solution_results_stops_after_healthy_success(tmp_path: Path)
     assert results[0]["solved"] is True
     assert results[0]["hook_count"] == 95
     assert results[0]["recovery_beam_width"] == 8
+
+
+def test_recover_no_solution_results_continues_after_churny_recovery_success(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_sequence_tail.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_sequence_tail.json",
+            "solved": False,
+            "error": "no solution within budget",
+            "error_category": "no_solution",
+            "partial_hook_count": 254,
+            "debug_stats": {
+                "partial_structural_metrics": {
+                    "unfinished_count": 9,
+                    "staging_debt_count": 3,
+                    "work_position_unfinished_count": 2,
+                    "front_blocker_count": 2,
+                    "target_sequence_defect_count": 3,
+                    "goal_track_blocker_count": 0,
+                    "loco_carry_count": 0,
+                },
+                "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        beam_width,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(beam_width)
+        if beam_width == 8:
+            return [
+                {
+                    "scenario": "validation_sequence_tail.json",
+                    "solved": True,
+                    "hook_count": 333,
+                    "is_valid": True,
+                    "verifier_errors": [],
+                    "elapsed_ms": 94_000.0,
+                    "debug_stats": {
+                        "plan_shape_metrics": {
+                            "staging_hook_count": 76,
+                            "staging_to_staging_hook_count": 37,
+                            "rehandled_vehicle_count": 45,
+                            "max_vehicle_touch_count": 62,
+                        }
+                    },
+                }
+            ]
+        return [
+            {
+                "scenario": "validation_sequence_tail.json",
+                "solved": True,
+                "hook_count": 156,
+                "is_valid": True,
+                "verifier_errors": [],
+                "elapsed_ms": 71_000.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "staging_hook_count": 36,
+                        "staging_to_staging_hook_count": 18,
+                        "rehandled_vehicle_count": 35,
+                        "max_vehicle_touch_count": 40,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=180,
+            max_workers=4,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=validation_time_budget_ms(180),
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8, 16]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 156
+    assert results[0]["recovery_beam_width"] == 16
 
 
 def test_recover_no_solution_results_enables_recovery_partial_resume_profile(tmp_path: Path):
