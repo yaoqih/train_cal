@@ -35,7 +35,11 @@ from fzed_shunting.domain.carry_order import is_carried_tail_block
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
-from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
+from fzed_shunting.solver.goal_logic import (
+    goal_can_use_fallback_now,
+    goal_effective_allowed_tracks,
+    goal_is_satisfied,
+)
 from fzed_shunting.solver.depot_late import DEPOT_INNER_TRACKS
 from fzed_shunting.solver.exact_spot import (
     exact_spot_clearance_bonus,
@@ -216,12 +220,22 @@ def _is_better_attempt(
     if new_result.reached_goal:
         return len(new_result.plan) < len(old_result.plan)
     # Both not reached. Prefer lower final heuristic (closer to goal).
-    new_h = new_result.final_heuristic if new_result.final_heuristic is not None else float("inf")
-    old_h = old_result.final_heuristic if old_result.final_heuristic is not None else float("inf")
+    new_h = _attempt_progress_key(new_result.final_heuristic)
+    old_h = _attempt_progress_key(old_result.final_heuristic)
     if new_h != old_h:
         return new_h < old_h
     # Tie-break: prefer longer plan (more work done without regressing).
     return len(new_result.plan) > len(old_result.plan)
+
+
+def _attempt_progress_key(value: Any) -> tuple[float, ...]:
+    if value is None:
+        return (float("inf"),)
+    if isinstance(value, tuple):
+        return tuple(float(item) for item in value)
+    if isinstance(value, list):
+        return tuple(float(item) for item in value)
+    return (float(value),)
 
 
 def _greedy_forward(
@@ -617,11 +631,12 @@ def _progress_score(
     state_heuristic,
 ) -> tuple[int, int, int, int]:
     purity = compute_state_purity(plan_input, state)
+    structural = compute_structural_metrics(plan_input, state)
     return (
         state_heuristic(state),
         purity.preferred_violation_count,
         purity.staging_pollution_count,
-        purity.unfinished_count,
+        purity.unfinished_count + structural.target_sequence_defect_count,
     )
 
 
@@ -1050,6 +1065,20 @@ def _score_native_move(
                 preferred_violation_delta -= 1
             elif move.target_track in vehicle.goal.fallback_target_tracks:
                 preferred_violation_delta += 1
+    work_position_goal_detach = (
+        move.action_type == "DETACH"
+        and is_goal_detach
+        and any(
+            (vehicle_by_no.get(vehicle_no) is not None)
+            and vehicle_by_no[vehicle_no].goal.work_position_kind is not None
+            for vehicle_no in move.vehicle_nos
+        )
+    )
+    soft_random_area_attach_overflow = _soft_random_area_attach_overflow(
+        move=move,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+    )
     if move.action_type == "DETACH" and is_goal_detach and preferred_violation_delta < 0:
         tier = 0
     elif move.action_type == "DETACH" and is_goal_detach:
@@ -1117,6 +1146,8 @@ def _score_native_move(
         and tier < 5
     ):
         tier = 5
+    if soft_random_area_attach_overflow > 0 and tier < 3:
+        tier = 3
     burial_depth = _move_burial_depth(
         move=move,
         state=state,
@@ -1153,18 +1184,21 @@ def _score_native_move(
         -exact_spot_clearance,
         0 if preferred_violation_delta < 0 else 1 if preferred_violation_delta == 0 else 2,
         exact_spot_reblock,
+        0 if work_position_goal_detach else 1,
         -route_release_continuation,
         route_blockage_pressure_delta,
         0 if route_blockage_plan is None else -route_blockage_release,
         future_detach_groups,
         route_blockage_parking_penalty,
+        soft_random_area_attach_overflow,
         next_heuristic,
         next_purity.preferred_violation_count,
-        next_structure.goal_track_blocker_count,
+        next_structure.work_position_unfinished_count,
+        getattr(next_structure, "target_sequence_defect_count", 0),
         next_structure.front_blocker_count,
+        next_structure.goal_track_blocker_count,
         next_structure.staging_debt_count,
         next_structure.area_random_unfinished_count,
-        next_structure.work_position_unfinished_count,
         next_purity.staging_pollution_count,
         next_purity.unfinished_count,
         0 if move.action_type == "DETACH" else 1,
@@ -1194,6 +1228,29 @@ def _route_blockage_pressure_delta(
         route_oracle,
     )
     return next_plan.total_blockage_pressure - route_blockage_plan.total_blockage_pressure
+
+
+def _soft_random_area_attach_overflow(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    if move.action_type != "ATTACH" or not move.vehicle_nos:
+        return 0
+    projected_carry_count = len(state.loco_carry) + len(move.vehicle_nos)
+    if projected_carry_count <= 10:
+        return 0
+    for vehicle_no in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return 0
+        goal = vehicle.goal
+        if goal.target_mode not in {"AREA", "SNAPSHOT"}:
+            return 0
+        if goal.target_area_code is None or ":RANDOM" not in goal.target_area_code:
+            return 0
+    return projected_carry_count - 10
 
 
 def _carry_is_satisfied_at_loco_track(
@@ -1760,6 +1817,16 @@ def _move_exposes_buried_goal_seeker(
             plan_input=plan_input,
         ):
             return True
+        if (
+            source_track in vehicle.goal.fallback_target_tracks
+            and vehicle.goal.preferred_target_tracks
+            and not goal_can_use_fallback_now(
+                vehicle,
+                state=state,
+                plan_input=plan_input,
+            )
+        ):
+            return True
     return False
 
 
@@ -1805,7 +1872,7 @@ def _is_critical_carry_vehicle(
         return True
     if vehicle.goal.target_mode == "SPOT":
         return True
-    if vehicle.goal.work_position_kind in {"SPOTTING", "EXACT_NORTH_RANK"}:
+    if vehicle.goal.work_position_kind in {"SPOTTING", "EXACT_NORTH_RANK", "EXACT_WORK_SLOT"}:
         return True
     if vehicle.goal.target_area_code not in {None, "大库:RANDOM", "大库外:RANDOM"}:
         return True

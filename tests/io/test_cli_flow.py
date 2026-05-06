@@ -11,6 +11,7 @@ from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
+    validation_retry_time_budget_ms,
     validation_time_budget_ms,
 )
 from fzed_shunting.solver.astar_solver import (
@@ -142,7 +143,7 @@ def test_solve_cli_defaults_match_validation_runner_profile(monkeypatch):
     assert captured["time_budget_ms"] == validation_time_budget_ms(
         VALIDATION_DEFAULT_TIMEOUT_SECONDS
     )
-    assert captured["enable_depot_late_scheduling"] is False
+    assert captured["enable_depot_late_scheduling"] is True
 
 
 def test_solve_cli_retries_beam_like_validation_runner(monkeypatch):
@@ -206,9 +207,8 @@ def test_solve_cli_retries_beam_like_validation_runner(monkeypatch):
     assert result["is_valid"] is True
     assert result["solver_errors"] == []
     assert [call["beam_width"] for call in calls] == [8, 8, 16]
-    assert calls[1]["time_budget_ms"] == validation_time_budget_ms(
-        VALIDATION_DEFAULT_TIMEOUT_SECONDS
-    )
+    primary_budget = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
+    assert calls[1]["time_budget_ms"] == validation_retry_time_budget_ms(primary_budget)
     assert calls[1]["near_goal_partial_resume_max_final_heuristic"] == (
         RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
     )

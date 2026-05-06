@@ -3,6 +3,7 @@ from fzed_shunting.domain.work_positions import (
     north_rank,
     preview_work_positions_after_prepend,
     south_rank,
+    work_slot_violations_by_vehicle,
     work_position_satisfied,
 )
 from fzed_shunting.io.normalize_input import GoalSpec, NormalizedVehicle
@@ -95,6 +96,76 @@ def test_work_position_satisfied_uses_north_rank_for_exact_position():
     wrong_state = state.model_copy(update={"track_sequences": {"调棚": ["B", "C"]}})
 
     assert not work_position_satisfied(vehicle, track_name="调棚", state=wrong_state)
+
+
+def test_work_position_satisfied_allows_explicit_slot_without_north_padding():
+    vehicle = _vehicle(
+        "B",
+        target_track="洗南",
+        work_position_kind="EXACT_WORK_SLOT",
+        target_rank=3,
+    )
+    state = ReplayState(
+        track_sequences={"洗南": ["B"]},
+        loco_track_name="机库",
+    )
+
+    assert work_position_satisfied(vehicle, track_name="洗南", state=state)
+
+    overfilled_state = state.model_copy(
+        update={"track_sequences": {"洗南": ["A", "C", "D", "B"]}}
+    )
+
+    assert not work_position_satisfied(vehicle, track_name="洗南", state=overfilled_state)
+
+
+def test_work_slot_violations_reject_duplicate_explicit_slot():
+    first = _vehicle(
+        "A",
+        target_track="洗南",
+        work_position_kind="EXACT_WORK_SLOT",
+        target_rank=3,
+    )
+    second = _vehicle(
+        "B",
+        target_track="洗南",
+        work_position_kind="EXACT_WORK_SLOT",
+        target_rank=3,
+    )
+    state = ReplayState(
+        track_sequences={"洗南": ["A", "B"]},
+        loco_track_name="机库",
+    )
+
+    violations = work_slot_violations_by_vehicle(vehicles=[first, second], state=state)
+
+    assert set(violations) == {"A", "B"}
+
+
+def test_work_slot_violations_reject_reversed_explicit_slot_order():
+    north_slot = _vehicle(
+        "NORTH_SLOT",
+        target_track="洗南",
+        work_position_kind="EXACT_WORK_SLOT",
+        target_rank=1,
+    )
+    south_slot = _vehicle(
+        "SOUTH_SLOT",
+        target_track="洗南",
+        work_position_kind="EXACT_WORK_SLOT",
+        target_rank=3,
+    )
+    state = ReplayState(
+        track_sequences={"洗南": ["SOUTH_SLOT", "NORTH_SLOT"]},
+        loco_track_name="机库",
+    )
+
+    violations = work_slot_violations_by_vehicle(
+        vehicles=[north_slot, south_slot],
+        state=state,
+    )
+
+    assert set(violations) == {"NORTH_SLOT", "SOUTH_SLOT"}
 
 
 def test_preview_allows_exact_rank_before_target_and_rejects_past_target():

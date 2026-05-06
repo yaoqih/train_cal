@@ -130,6 +130,12 @@ SNAPSHOT_AREA_CODE_BY_TRACK = {
 DEPOT_INNER_PREFERRED_TRACKS_SHORT = ["修1库内", "修2库内"]
 DEPOT_INNER_FALLBACK_TRACKS_SHORT = ["修3库内", "修4库内"]
 DEPOT_INNER_PREFERRED_TRACKS_LONG = ["修3库内", "修4库内"]
+SHORT_REPAIR_TARGET_ALIASES = {
+    "修1": "修1库内",
+    "修2": "修2库内",
+    "修3": "修3库内",
+    "修4": "修4库内",
+}
 
 VALID_IS_SPOTTING_LITERALS = {"", "否", "是", "迎检"}
 FORBIDDEN_FINAL_AREA_CODES = {"机库:WEIGH"}
@@ -253,7 +259,7 @@ def _normalize_goal(
             inspection_enabled=inspection_enabled,
         )
 
-    target_track = raw["targetTrack"]
+    target_track = _canonical_target_track(raw["targetTrack"])
     if target_track != "大库" and target_track != "大库外" and target_track not in master.tracks:
         raise InputValidationError(f"Unknown target track: {target_track}")
 
@@ -289,6 +295,8 @@ def _normalize_goal(
             )
 
     if spotting in ("", "否"):
+        if raw["targetTrack"] in SHORT_REPAIR_TARGET_ALIASES:
+            return (_track_goal(target_track), vehicle_yard_mode)
         if target_track in WORK_AREA_DEFAULTS:
             area_code = WORK_AREA_DEFAULTS[target_track]
             preferred_target_tracks: list[str] = []
@@ -383,7 +391,7 @@ def _normalize_explicit_goal(
     explicit_source: str | None,
     inspection_enabled: bool,
 ) -> tuple[GoalSpec, str]:
-    target_track = raw["targetTrack"]
+    target_track = _canonical_target_track(raw["targetTrack"])
     if target_track not in master.tracks and target_track not in {"大库", "大库外"}:
         raise InputValidationError(f"Unknown target track: {target_track}")
     if explicit_mode == "TRACK":
@@ -410,10 +418,8 @@ def _normalize_explicit_goal(
                 f"Track {target_track} cannot be a final target (allows_final_destination=False)"
             )
         return (
-            GoalSpec(
-                target_mode="TRACK",
-                target_track=target_track,
-                allowed_target_tracks=[target_track],
+            _track_goal(
+                target_track,
                 target_area_code=explicit_area_code,
                 target_spot_code=explicit_spot_code,
                 target_source=explicit_source,
@@ -477,7 +483,7 @@ def _normalize_explicit_goal(
             return (
                 _work_position_goal(
                     target_track,
-                    "EXACT_NORTH_RANK",
+                    "EXACT_WORK_SLOT",
                     target_rank=_parse_work_position_rank(explicit_spot_code),
                     target_source=explicit_source,
                 ),
@@ -586,6 +592,10 @@ def _normalize_snapshot_goal(
     )
 
 
+def _canonical_target_track(target_track: str) -> str:
+    return SHORT_REPAIR_TARGET_ALIASES.get(target_track, target_track)
+
+
 def _area_track(area_code: str, fallback_track: str) -> str:
     if area_code == "大库:RANDOM":
         return "修1库内"
@@ -612,6 +622,23 @@ def _work_position_goal(
         target_source=target_source,
         work_position_kind=kind,
         target_rank=target_rank,
+    )
+
+
+def _track_goal(
+    target_track: str,
+    *,
+    target_area_code: str | None = None,
+    target_spot_code: str | None = None,
+    target_source: str | None = None,
+) -> GoalSpec:
+    return GoalSpec(
+        target_mode="TRACK",
+        target_track=target_track,
+        allowed_target_tracks=[target_track],
+        target_area_code=target_area_code,
+        target_spot_code=target_spot_code,
+        target_source=target_source,
     )
 
 

@@ -64,6 +64,27 @@ def _vehicle(
     }
 
 
+def _spot_vehicle(
+    vehicle_no: str,
+    source: str,
+    target: str,
+    target_spot_code: str,
+    *,
+    order: int = 1,
+    length: float = 14.3,
+) -> dict:
+    vehicle = _vehicle(
+        vehicle_no,
+        source,
+        target,
+        order=order,
+        length=length,
+        spotting="是",
+    )
+    vehicle.update({"targetMode": "SPOT", "targetSpotCode": target_spot_code})
+    return vehicle
+
+
 def _normalize(payload: dict):
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(payload, master)
@@ -118,6 +139,42 @@ def test_structural_metrics_counts_work_position_unfinished_separately_from_area
     assert metrics.unfinished_count == 1
     assert metrics.area_random_unfinished_count == 0
     assert metrics.work_position_unfinished_count == 1
+
+
+def test_structural_metrics_counts_work_position_target_sequence_defect():
+    normalized, initial = _normalize(
+        _payload(
+            [
+                *[
+                    _vehicle(f"PAD_{index}", "洗南", "洗南", order=index)
+                    for index in range(1, 6)
+                ],
+                _vehicle("WORK", "存5北", "洗南", spotting="是"),
+            ]
+        )
+    )
+
+    metrics = compute_structural_metrics(normalized, initial)
+
+    assert metrics.work_position_unfinished_count == 1
+    assert metrics.target_sequence_defect_count == 2
+    assert metrics.target_sequence_defect_by_track == {"洗南": 2}
+
+
+def test_structural_metrics_counts_exact_slot_order_blocking_later_slot_arrival():
+    payload = _payload(
+        [
+            _spot_vehicle("SLOT_1", "调棚", "调棚", "1", order=1),
+            _spot_vehicle("SLOT_3", "存5北", "调棚", "3", order=1),
+        ]
+    )
+    normalized, initial = _normalize(payload)
+
+    metrics = compute_structural_metrics(normalized, initial)
+
+    assert metrics.work_position_unfinished_count == 1
+    assert metrics.target_sequence_defect_count == 1
+    assert metrics.target_sequence_defect_by_track == {"调棚": 1}
 
 
 def test_structural_metrics_counts_front_blocker_pressure():

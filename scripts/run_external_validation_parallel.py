@@ -25,14 +25,22 @@ from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
     VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS,
-    VALIDATION_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
     VALIDATION_RETRY_TIMEOUT_SECONDS,
     VALIDATION_SOLVER_GRACE_SECONDS,
+    VALIDATION_TOTAL_TIMEOUT_SECONDS,
+    prioritized_validation_recovery_beam_widths,
     validation_recovery_should_continue_after_success,
     validation_retry_beam_widths,
     validation_retry_time_budget_ms,
     validation_time_budget_ms,
 )
+from fzed_shunting.solver.partial_selection import (
+    partial_debug_stats_is_route_clean_tail_candidate,
+    partial_dict_is_better,
+    partial_dict_score,
+    partial_result_is_better,
+)
+from fzed_shunting.solver.validation_recovery import solve_with_validation_recovery_result
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state
 
@@ -41,6 +49,7 @@ DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_inputs"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_parallel_runs"
 DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = None
+RECOVERY_MAX_WORKERS = 4
 RETRY_BUDGET_BUCKET_MS = 1_000.0
 PRIMARY_FIRST_BEAM_BUDGET_MS = 20_000.0
 
@@ -68,11 +77,11 @@ def parse_args() -> argparse.Namespace:
         help="disable exact->weighted->beam fallback chain",
     )
     parser.add_argument(
-        "--enable-depot-late-scheduling",
+        "--disable-depot-late-scheduling",
         dest="enable_depot_late_scheduling",
-        action="store_true",
-        default=False,
-        help="Opt in to depot-late scheduling (secondary lexicographic objective).",
+        action="store_false",
+        default=True,
+        help="Disable depot-late scheduling.",
     )
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
@@ -98,6 +107,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--enable-worker-recovery",
+        dest="enable_worker_recovery",
+        action="store_true",
+        default=True,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--disable-worker-recovery",
+        dest="enable_worker_recovery",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--worker", action="store_true")
     return parser.parse_args()
 
@@ -111,33 +133,52 @@ def solve_one(
     heuristic_weight: float,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
+    enable_worker_recovery: bool = True,
+    improve_pathological_success: bool = False,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
     normalized = normalize_plan_input(payload, master)
     initial = build_initial_state(normalized)
     debug_stats: dict[str, Any] = {}
+    capacity_warnings = _final_track_goal_capacity_warnings(normalized)
 
     try:
-        result = _solve_with_primary_first_result(
-            normalized=normalized,
-            initial=initial,
-            master=master,
-            beam_width=beam_width,
-            solver=solver,
-            heuristic_weight=heuristic_weight,
-            debug_stats=debug_stats,
-            time_budget_ms=time_budget_ms,
-            enable_anytime_fallback=enable_anytime_fallback,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
-            near_goal_partial_resume_max_final_heuristic=(
-                near_goal_partial_resume_max_final_heuristic
-            ),
-            primary_first_beam=primary_first_beam,
-        )
+        if enable_worker_recovery:
+            result = _solve_with_worker_recovery_result(
+                normalized=normalized,
+                initial=initial,
+                master=master,
+                beam_width=beam_width,
+                solver=solver,
+                heuristic_weight=heuristic_weight,
+                debug_stats=debug_stats,
+                time_budget_ms=time_budget_ms,
+                enable_anytime_fallback=enable_anytime_fallback,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                primary_first_beam=primary_first_beam,
+                improve_pathological_success=improve_pathological_success,
+            )
+        else:
+            result = _solve_with_primary_first_result(
+                normalized=normalized,
+                initial=initial,
+                master=master,
+                beam_width=beam_width,
+                solver=solver,
+                heuristic_weight=heuristic_weight,
+                debug_stats=debug_stats,
+                time_budget_ms=time_budget_ms,
+                enable_anytime_fallback=enable_anytime_fallback,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                near_goal_partial_resume_max_final_heuristic=(
+                    near_goal_partial_resume_max_final_heuristic
+                ),
+                primary_first_beam=primary_first_beam,
+            )
         debug_stats = result.debug_stats or debug_stats
         if not result.is_complete:
             error = "no solution within budget"
@@ -165,6 +206,7 @@ def solve_one(
                 "expanded_nodes": result.expanded_nodes,
                 "generated_nodes": result.generated_nodes,
                 "elapsed_ms": result.elapsed_ms,
+                "capacity_warnings": capacity_warnings,
                 "debug_stats": debug_stats,
             }
         report = result.verification_report
@@ -181,7 +223,7 @@ def solve_one(
                 for idx, move in enumerate(result.plan, start=1)
             ]
             report = verify_plan(master, normalized, hook_plan)
-        return {
+        summary = {
             "scenario": scenario_path.name,
             "solved": bool(result.is_complete and report.is_valid),
             "hook_count": len(result.plan),
@@ -196,8 +238,11 @@ def solve_one(
             "elapsed_ms": result.elapsed_ms,
             "depot_earliness": result.depot_earliness,
             "depot_hook_count": result.depot_hook_count,
+            "capacity_warnings": capacity_warnings,
             "debug_stats": debug_stats,
         }
+        _attach_worker_recovery_summary(summary)
+        return summary
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         error_category = _classify_solve_error(error)
@@ -207,6 +252,7 @@ def solve_one(
             "error": error,
             "error_category": error_category,
             "retryable": _is_retryable_error_category(error_category),
+            "capacity_warnings": capacity_warnings,
             "debug_stats": debug_stats,
         }
 
@@ -288,6 +334,68 @@ def _solve_with_primary_first_result(
     return selected
 
 
+def _solve_with_worker_recovery_result(
+    *,
+    normalized,
+    initial,
+    master,
+    solver: str,
+    beam_width: int | None,
+    heuristic_weight: float,
+    debug_stats: dict[str, Any],
+    time_budget_ms: float | None,
+    enable_anytime_fallback: bool,
+    enable_depot_late_scheduling: bool,
+    primary_first_beam: bool,
+    improve_pathological_success: bool,
+) -> SolverResult:
+    def solve_result_fn(
+        plan_input,
+        initial_state,
+        *,
+        master,
+        solver_mode: str,
+        heuristic_weight: float,
+        beam_width: int | None,
+        time_budget_ms: float | None,
+        enable_depot_late_scheduling: bool,
+        near_goal_partial_resume_max_final_heuristic: int | None = None,
+    ) -> SolverResult:
+        attempt_debug_stats: dict[str, Any] = {}
+        return _solve_with_primary_first_result(
+            normalized=plan_input,
+            initial=initial_state,
+            master=master,
+            beam_width=beam_width,
+            solver=solver_mode,
+            heuristic_weight=heuristic_weight,
+            debug_stats=attempt_debug_stats,
+            time_budget_ms=time_budget_ms,
+            enable_anytime_fallback=enable_anytime_fallback,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            near_goal_partial_resume_max_final_heuristic=(
+                near_goal_partial_resume_max_final_heuristic
+            ),
+            primary_first_beam=primary_first_beam,
+        )
+
+    result = solve_with_validation_recovery_result(
+        plan_input=normalized,
+        initial_state=initial,
+        master=master,
+        solver_mode=solver,
+        heuristic_weight=heuristic_weight,
+        beam_width=beam_width,
+        time_budget_ms=time_budget_ms,
+        solve_result_fn=solve_result_fn,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+        improve_pathological_success=improve_pathological_success,
+    )
+    debug_stats.clear()
+    debug_stats.update(result.debug_stats or {})
+    return result
+
+
 def _primary_first_beam_budget_ms(time_budget_ms: float | None) -> float | None:
     if time_budget_ms is None:
         return PRIMARY_FIRST_BEAM_BUDGET_MS
@@ -322,7 +430,7 @@ def _better_solver_result(first: SolverResult, second: SolverResult) -> SolverRe
         return first
     if first.is_complete and second.is_complete:
         return second if len(second.plan) < len(first.plan) else first
-    return second if len(second.partial_plan) > len(first.partial_plan) else first
+    return second if partial_result_is_better(second, first) else first
 
 
 def _build_worker_command(
@@ -334,9 +442,11 @@ def _build_worker_command(
     heuristic_weight: float,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
+    enable_worker_recovery: bool = True,
+    improve_pathological_success: bool = False,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -357,8 +467,8 @@ def _build_worker_command(
         cmd.extend(["--solver-time-budget-ms", str(time_budget_ms)])
     if not enable_anytime_fallback:
         cmd.append("--no-anytime-fallback")
-    if enable_depot_late_scheduling:
-        cmd.append("--enable-depot-late-scheduling")
+    if not enable_depot_late_scheduling:
+        cmd.append("--disable-depot-late-scheduling")
     if near_goal_partial_resume_max_final_heuristic is not None:
         cmd.extend([
             "--near-goal-partial-resume-max-final-heuristic",
@@ -366,6 +476,10 @@ def _build_worker_command(
         ])
     if primary_first_beam:
         cmd.append("--primary-first-beam")
+    if enable_worker_recovery:
+        cmd.append("--enable-worker-recovery")
+    if improve_pathological_success:
+        cmd.append("--improve-pathological-success")
     return cmd
 
 
@@ -379,14 +493,17 @@ def _run_scenario_subprocess(
     timeout_seconds: float,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
+    enable_worker_recovery: bool = True,
+    improve_pathological_success: bool = False,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     effective_timeout_seconds = _effective_worker_timeout_seconds(
         timeout_seconds=timeout_seconds,
         time_budget_ms=time_budget_ms,
+        enable_worker_recovery=enable_worker_recovery,
     )
     cmd = _build_worker_command(
         master_dir=master_dir,
@@ -401,6 +518,8 @@ def _run_scenario_subprocess(
             near_goal_partial_resume_max_final_heuristic
         ),
         primary_first_beam=primary_first_beam,
+        enable_worker_recovery=enable_worker_recovery,
+        improve_pathological_success=improve_pathological_success,
     )
     process = subprocess.Popen(
         cmd,
@@ -451,18 +570,23 @@ def _kill_worker_process_group(process: subprocess.Popen[str]) -> None:
     except ProcessLookupError:
         pass
     finally:
-            process.wait()
+        process.wait()
 
 
 def _effective_worker_timeout_seconds(
     *,
     timeout_seconds: float,
     time_budget_ms: float | None,
+    enable_worker_recovery: bool = False,
 ) -> float:
-    solver_timeout_seconds = (
-        0.0 if time_budget_ms is None else max(0.0, float(time_budget_ms) / 1000.0)
-    )
-    return max(float(timeout_seconds), solver_timeout_seconds) + VALIDATION_SOLVER_GRACE_SECONDS
+    if time_budget_ms is None:
+        return float(timeout_seconds) + VALIDATION_SOLVER_GRACE_SECONDS
+    worker_budget_ms = max(0.0, float(time_budget_ms))
+    if enable_worker_recovery:
+        retry_budget_ms = validation_retry_time_budget_ms(time_budget_ms)
+        if retry_budget_ms is not None:
+            worker_budget_ms += max(0.0, float(retry_budget_ms))
+    return worker_budget_ms / 1000.0 + VALIDATION_SOLVER_GRACE_SECONDS
 
 
 def _retry_time_budget_ms(time_budget_ms: float | None) -> float | None:
@@ -480,9 +604,11 @@ def run_parallel_scenarios(
     max_workers: int,
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
+    enable_worker_recovery: bool = True,
+    improve_pathological_success: bool = False,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -502,6 +628,8 @@ def run_parallel_scenarios(
                     near_goal_partial_resume_max_final_heuristic
                 ),
                 primary_first_beam=primary_first_beam,
+                enable_worker_recovery=enable_worker_recovery,
+                improve_pathological_success=improve_pathological_success,
             )
             for scenario_path in scenario_paths
         ]
@@ -524,8 +652,10 @@ def recover_no_solution_results(
     initial_results: list[dict[str, Any]],
     time_budget_ms: float | None = None,
     enable_anytime_fallback: bool = True,
-    enable_depot_late_scheduling: bool = False,
+    enable_depot_late_scheduling: bool = True,
+    enable_worker_recovery: bool = True,
     improve_pathological_success: bool = False,
+    deadline_at: float | None = None,
 ) -> list[dict[str, Any]]:
     effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
         beam_width=beam_width,
@@ -551,8 +681,9 @@ def recover_no_solution_results(
                 and _is_retryable_result(result)
             )
             or (
+                improve_pathological_success
+                and
                 result.get("solved")
-                and improve_pathological_success
                 and _should_continue_recovery_after_success(result)
             )
         )
@@ -561,100 +692,158 @@ def recover_no_solution_results(
         result["scenario"]: dict(result)
         for result in initial_results
     }
-    used_solver_ms_by_scenario = {
-        result["scenario"]: _result_solver_elapsed_ms(result)
+    retry_beam_widths_by_scenario = {
+        result["scenario"]: _recovery_beam_widths_for_result(
+            result,
+            retry_beam_widths=retry_beam_widths,
+            base_beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
+        )
         for result in initial_results
     }
-    used_worker_ms_by_scenario = {
-        result["scenario"]: _result_worker_elapsed_ms(result)
+    used_retry_solver_ms_by_scenario = {
+        result["scenario"]: _result_recovery_solver_elapsed_ms(result)
+        for result in initial_results
+    }
+    used_retry_worker_ms_by_scenario = {
+        result["scenario"]: _result_recovery_worker_elapsed_ms(result)
+        for result in initial_results
+    }
+    used_total_solver_ms_by_scenario = {
+        result["scenario"]: _result_total_solver_elapsed_ms(result)
+        for result in initial_results
+    }
+    used_total_worker_ms_by_scenario = {
+        result["scenario"]: _result_total_worker_elapsed_ms(result)
         for result in initial_results
     }
 
-    for retry_beam_width in retry_beam_widths:
-        retry_scenarios = [
-            scenario_path_by_name[scenario_name]
-            for scenario_name in ordered_scenarios
-            if (
-                scenario_name in scenario_path_by_name
-                and scenario_name in retryable_scenario_names
-            )
-        ]
-        if not retry_scenarios:
+    while retryable_scenario_names:
+        if (
+            deadline_at is not None
+            and _runner_deadline_remaining_budget_ms(deadline_at) is None
+        ):
             break
-        retry_results = _run_retry_scenarios_with_remaining_budget(
-            master_dir=master_dir,
-            scenario_paths=retry_scenarios,
-            solver=solver,
-            beam_width=retry_beam_width,
-            heuristic_weight=heuristic_weight,
-            timeout_seconds=VALIDATION_RETRY_TIMEOUT_SECONDS,
-            max_workers=_retry_max_workers(
-                base_beam_width=beam_width,
-                retry_beam_width=retry_beam_width,
-                max_workers=max_workers,
-            ),
-            base_time_budget_ms=_retry_time_budget_ms(time_budget_ms),
-            single_attempt_time_budget_ms=time_budget_ms,
-            used_solver_ms_by_scenario=used_solver_ms_by_scenario,
-            used_worker_ms_by_scenario=used_worker_ms_by_scenario,
+        grouped_retry_scenarios = _group_next_retry_scenarios_by_width(
+            ordered_scenarios=ordered_scenarios,
+            scenario_path_by_name=scenario_path_by_name,
+            retryable_scenario_names=retryable_scenario_names,
+            retry_beam_widths_by_scenario=retry_beam_widths_by_scenario,
+        )
+        if not grouped_retry_scenarios:
+            break
+        for retry_beam_width, retry_scenarios in grouped_retry_scenarios:
+            if (
+                deadline_at is not None
+                and _runner_deadline_remaining_budget_ms(deadline_at) is None
+            ):
+                break
+            attempted_scenario_names = {scenario.name for scenario in retry_scenarios}
+            for scenario_name in attempted_scenario_names:
+                _consume_next_retry_beam_width(
+                    retry_beam_widths_by_scenario,
+                    scenario_name=scenario_name,
+                    retry_beam_width=retry_beam_width,
+                )
+            retry_results = _run_retry_scenarios_with_remaining_budget(
+                master_dir=master_dir,
+                scenario_paths=retry_scenarios,
+                solver=solver,
+                beam_width=retry_beam_width,
+                heuristic_weight=heuristic_weight,
+                timeout_seconds=VALIDATION_RETRY_TIMEOUT_SECONDS,
+                max_workers=_retry_max_workers(
+                    base_beam_width=beam_width,
+                    retry_beam_width=retry_beam_width,
+                    max_workers=max_workers,
+                ),
+                base_time_budget_ms=_retry_time_budget_ms(time_budget_ms),
+                used_retry_solver_ms_by_scenario=used_retry_solver_ms_by_scenario,
+                used_retry_worker_ms_by_scenario=used_retry_worker_ms_by_scenario,
+                used_total_solver_ms_by_scenario=used_total_solver_ms_by_scenario,
+                used_total_worker_ms_by_scenario=used_total_worker_ms_by_scenario,
+                deadline_at=deadline_at,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_worker_recovery=enable_worker_recovery,
             near_goal_partial_resume_max_final_heuristic=(
                 RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
             ),
-        )
-        for retry_result in retry_results:
-            scenario_name = retry_result["scenario"]
-            used_solver_ms_by_scenario[scenario_name] = (
-                used_solver_ms_by_scenario.get(scenario_name, 0.0)
-                + _result_solver_elapsed_ms(retry_result)
             )
-            used_worker_ms_by_scenario[scenario_name] = (
-                used_worker_ms_by_scenario.get(scenario_name, 0.0)
-                + _result_worker_elapsed_ms(retry_result)
-            )
-            current = merged_results[retry_result["scenario"]]
-            if not retry_result.get("solved"):
-                retry_failed = dict(retry_result)
-                retry_failed["recovery_beam_width"] = retry_beam_width
-                retry_failed["recovery_time_budget_ms"] = retry_result.get(
+            returned_scenario_names = {result["scenario"] for result in retry_results}
+            for scenario_name in attempted_scenario_names - returned_scenario_names:
+                if not retry_beam_widths_by_scenario.get(scenario_name):
+                    retryable_scenario_names.discard(scenario_name)
+            for retry_result in retry_results:
+                scenario_name = retry_result["scenario"]
+                retry_solver_ms = _result_solver_elapsed_ms(retry_result)
+                retry_worker_ms = _result_worker_elapsed_ms(retry_result)
+                used_retry_solver_ms_by_scenario[scenario_name] = (
+                    used_retry_solver_ms_by_scenario.get(scenario_name, 0.0)
+                    + retry_solver_ms
+                )
+                used_retry_worker_ms_by_scenario[scenario_name] = (
+                    used_retry_worker_ms_by_scenario.get(scenario_name, 0.0)
+                    + retry_worker_ms
+                )
+                used_total_solver_ms_by_scenario[scenario_name] = (
+                    used_total_solver_ms_by_scenario.get(scenario_name, 0.0)
+                    + retry_solver_ms
+                )
+                used_total_worker_ms_by_scenario[scenario_name] = (
+                    used_total_worker_ms_by_scenario.get(scenario_name, 0.0)
+                    + retry_worker_ms
+                )
+                current = merged_results[retry_result["scenario"]]
+                if not retry_result.get("solved"):
+                    retry_failed = dict(retry_result)
+                    retry_failed["recovery_beam_width"] = retry_beam_width
+                    retry_failed["recovery_time_budget_ms"] = retry_result.get(
+                        "recovery_attempt_time_budget_ms"
+                    )
+                    retry_failed["total_solver_elapsed_ms"] = round(
+                        used_total_solver_ms_by_scenario[scenario_name],
+                        3,
+                    )
+                    retry_failed["total_worker_elapsed_ms"] = round(
+                        used_total_worker_ms_by_scenario[scenario_name],
+                        3,
+                    )
+                    if _failed_retry_is_better_partial(retry_failed, current):
+                        merged_results[retry_result["scenario"]] = retry_failed
+                    if not retry_beam_widths_by_scenario.get(scenario_name):
+                        retryable_scenario_names.discard(scenario_name)
+                    continue
+                recovered = dict(retry_result)
+                recovered["recovery_beam_width"] = retry_beam_width
+                recovered["recovery_time_budget_ms"] = retry_result.get(
                     "recovery_attempt_time_budget_ms"
                 )
-                retry_failed["total_solver_elapsed_ms"] = round(
-                    used_solver_ms_by_scenario[scenario_name],
+                recovered["total_solver_elapsed_ms"] = round(
+                    used_total_solver_ms_by_scenario[scenario_name],
                     3,
                 )
-                retry_failed["total_worker_elapsed_ms"] = round(
-                    used_worker_ms_by_scenario[scenario_name],
+                recovered["total_worker_elapsed_ms"] = round(
+                    used_total_worker_ms_by_scenario[scenario_name],
                     3,
                 )
-                if _failed_retry_is_better_partial(retry_failed, current):
-                    merged_results[retry_result["scenario"]] = retry_failed
-                continue
-            recovered = dict(retry_result)
-            recovered["recovery_beam_width"] = retry_beam_width
-            recovered["recovery_time_budget_ms"] = retry_result.get(
-                "recovery_attempt_time_budget_ms"
-            )
-            recovered["total_solver_elapsed_ms"] = round(
-                used_solver_ms_by_scenario[scenario_name],
-                3,
-            )
-            recovered["total_worker_elapsed_ms"] = round(
-                used_worker_ms_by_scenario[scenario_name],
-                3,
-            )
-            if (
-                not current.get("solved")
-                or int(recovered.get("hook_count", 10**9))
-                < int(current.get("hook_count", 10**9))
-            ):
-                merged_results[retry_result["scenario"]] = recovered
-            if (
-                not improve_pathological_success
-                or not _should_continue_recovery_after_success(recovered)
-            ):
-                retryable_scenario_names.discard(retry_result["scenario"])
+                if (
+                    not current.get("solved")
+                    or int(recovered.get("hook_count", 10**9))
+                    < int(current.get("hook_count", 10**9))
+                ):
+                    merged_results[retry_result["scenario"]] = recovered
+                if (
+                    not _should_continue_recovery_after_success(recovered)
+                    or (
+                        not improve_pathological_success
+                        and current.get("solved")
+                    )
+                ):
+                    retryable_scenario_names.discard(retry_result["scenario"])
+                    continue
+                if not current.get("solved") and not improve_pathological_success:
+                    retryable_scenario_names.discard(retry_result["scenario"])
     return [merged_results[scenario_name] for scenario_name in ordered_scenarios]
 
 
@@ -668,11 +857,14 @@ def _run_retry_scenarios_with_remaining_budget(
     timeout_seconds: float,
     max_workers: int,
     base_time_budget_ms: float | None,
-    single_attempt_time_budget_ms: float | None,
-    used_solver_ms_by_scenario: dict[str, float],
-    used_worker_ms_by_scenario: dict[str, float],
+    used_retry_solver_ms_by_scenario: dict[str, float],
+    used_retry_worker_ms_by_scenario: dict[str, float],
+    used_total_solver_ms_by_scenario: dict[str, float],
+    used_total_worker_ms_by_scenario: dict[str, float],
+    deadline_at: float | None,
     enable_anytime_fallback: bool,
     enable_depot_late_scheduling: bool,
+    enable_worker_recovery: bool,
     near_goal_partial_resume_max_final_heuristic: int,
 ) -> list[dict[str, Any]]:
     grouped_paths: dict[tuple[float | None, float], list[Path]] = {}
@@ -681,9 +873,11 @@ def _run_retry_scenarios_with_remaining_budget(
             scenario_name=scenario_path.name,
             timeout_seconds=timeout_seconds,
             base_time_budget_ms=base_time_budget_ms,
-            single_attempt_time_budget_ms=single_attempt_time_budget_ms,
-            used_solver_ms_by_scenario=used_solver_ms_by_scenario,
-            used_worker_ms_by_scenario=used_worker_ms_by_scenario,
+            used_retry_solver_ms_by_scenario=used_retry_solver_ms_by_scenario,
+            used_retry_worker_ms_by_scenario=used_retry_worker_ms_by_scenario,
+            used_total_solver_ms_by_scenario=used_total_solver_ms_by_scenario,
+            used_total_worker_ms_by_scenario=used_total_worker_ms_by_scenario,
+            deadline_at=deadline_at,
         )
         if remaining_budget is None:
             continue
@@ -707,6 +901,7 @@ def _run_retry_scenarios_with_remaining_budget(
             time_budget_ms=retry_time_budget_ms,
             enable_anytime_fallback=enable_anytime_fallback,
             enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_worker_recovery=enable_worker_recovery,
             near_goal_partial_resume_max_final_heuristic=(
                 near_goal_partial_resume_max_final_heuristic
             ),
@@ -733,28 +928,50 @@ def _bucket_retry_budget(
     return round(bucketed_ms, 3), bucketed_seconds
 
 
+def _runner_deadline_remaining_budget_ms(deadline_at: float | None) -> float | None:
+    if deadline_at is None:
+        return None
+    remaining_ms = (
+        float(deadline_at)
+        - perf_counter()
+        - VALIDATION_SOLVER_GRACE_SECONDS
+    ) * 1000.0
+    if remaining_ms < VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS:
+        return None
+    return max(0.0, remaining_ms)
+
+
 def _remaining_retry_budget(
     *,
     scenario_name: str,
     timeout_seconds: float,
     base_time_budget_ms: float | None,
-    single_attempt_time_budget_ms: float | None,
-    used_solver_ms_by_scenario: dict[str, float],
-    used_worker_ms_by_scenario: dict[str, float],
+    used_retry_solver_ms_by_scenario: dict[str, float],
+    used_retry_worker_ms_by_scenario: dict[str, float],
+    used_total_solver_ms_by_scenario: dict[str, float],
+    used_total_worker_ms_by_scenario: dict[str, float],
+    deadline_at: float | None = None,
 ) -> tuple[float | None, float] | None:
     retry_timeout_seconds = max(0.001, timeout_seconds)
     if base_time_budget_ms is None:
         return None, retry_timeout_seconds
-    used_ms = max(
-        used_solver_ms_by_scenario.get(scenario_name, 0.0),
-        used_worker_ms_by_scenario.get(scenario_name, 0.0),
+    used_retry_ms = max(
+        used_retry_solver_ms_by_scenario.get(scenario_name, 0.0),
+        used_retry_worker_ms_by_scenario.get(scenario_name, 0.0),
     )
-    remaining_ms = base_time_budget_ms - used_ms
-    if remaining_ms < VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS:
-        return None
-    if single_attempt_time_budget_ms is not None:
-        remaining_ms = min(remaining_ms, single_attempt_time_budget_ms)
-    remaining_ms = min(remaining_ms, retry_timeout_seconds * 1000.0)
+    used_total_ms = max(
+        used_total_solver_ms_by_scenario.get(scenario_name, 0.0),
+        used_total_worker_ms_by_scenario.get(scenario_name, 0.0),
+    )
+    total_cap_ms = VALIDATION_TOTAL_TIMEOUT_SECONDS * 1000.0
+    retry_worker_budget_ms = max(
+        0.0,
+        total_cap_ms - used_total_ms - VALIDATION_SOLVER_GRACE_SECONDS * 1000.0,
+    )
+    deadline_budget_ms = _runner_deadline_remaining_budget_ms(deadline_at)
+    if deadline_budget_ms is not None:
+        retry_worker_budget_ms = min(retry_worker_budget_ms, deadline_budget_ms)
+    remaining_ms = min(base_time_budget_ms - used_retry_ms, retry_worker_budget_ms)
     if remaining_ms < VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS:
         return None
     return round(remaining_ms, 3), retry_timeout_seconds
@@ -771,26 +988,43 @@ def _result_worker_elapsed_ms(result: dict[str, Any]) -> float:
     return _result_solver_elapsed_ms(result)
 
 
+def _result_recovery_solver_elapsed_ms(result: dict[str, Any]) -> float:
+    return _as_float(result.get("total_solver_elapsed_ms"))
+
+
+def _result_recovery_worker_elapsed_ms(result: dict[str, Any]) -> float:
+    worker_elapsed = _as_float(result.get("total_worker_elapsed_ms"))
+    if worker_elapsed > 0:
+        return worker_elapsed
+    return _result_recovery_solver_elapsed_ms(result)
+
+
+def _result_total_solver_elapsed_ms(result: dict[str, Any]) -> float:
+    return max(_result_solver_elapsed_ms(result), _result_recovery_solver_elapsed_ms(result))
+
+
+def _result_total_worker_elapsed_ms(result: dict[str, Any]) -> float:
+    return max(_result_worker_elapsed_ms(result), _result_recovery_worker_elapsed_ms(result))
+
+
+def _attach_worker_recovery_summary(result: dict[str, Any]) -> None:
+    recovery = (result.get("debug_stats") or {}).get("validation_recovery") or {}
+    if not recovery:
+        return
+    if "recovery_beam_width" in recovery:
+        result["recovery_beam_width"] = recovery["recovery_beam_width"]
+    if "recovery_time_budget_ms" in recovery:
+        result["recovery_time_budget_ms"] = recovery["recovery_time_budget_ms"]
+
+
 def _failed_retry_is_better_partial(candidate: dict[str, Any], incumbent: dict[str, Any]) -> bool:
     if incumbent.get("solved"):
         return False
-    candidate_score = _failed_partial_score(candidate)
-    incumbent_score = _failed_partial_score(incumbent)
-    return candidate_score < incumbent_score
+    return partial_dict_is_better(candidate, incumbent)
 
 
-def _failed_partial_score(result: dict[str, Any]) -> tuple[int, int, int]:
-    debug_stats = result.get("debug_stats") or {}
-    structural = debug_stats.get("partial_structural_metrics") or {}
-    route_blockage = debug_stats.get("partial_route_blockage_plan") or {}
-    unfinished = _as_int(structural.get("unfinished_count"))
-    blockage = _as_int(route_blockage.get("total_blockage_pressure"))
-    partial_hooks = _as_int(result.get("partial_hook_count"))
-    return (
-        unfinished if unfinished is not None else 10**9,
-        blockage if blockage is not None else 10**9,
-        -(partial_hooks if partial_hooks is not None else -1),
-    )
+def _failed_partial_score(result: dict[str, Any]) -> tuple[int, ...]:
+    return partial_dict_score(result)
 
 
 def _should_continue_recovery_after_success(result: dict[str, Any]) -> bool:
@@ -798,6 +1032,8 @@ def _should_continue_recovery_after_success(result: dict[str, Any]) -> bool:
     return validation_recovery_should_continue_after_success(
         hook_count=_as_int(result.get("hook_count")),
         max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
+        staging_to_staging_hook_count=_as_int(shape.get("staging_to_staging_hook_count")),
+        rehandled_vehicle_count=_as_int(shape.get("rehandled_vehicle_count")),
     )
 
 
@@ -807,9 +1043,14 @@ def _retry_max_workers(
     retry_beam_width: int,
     max_workers: int,
 ) -> int:
-    if retry_beam_width <= base_beam_width:
-        return max(1, max_workers)
-    return max(1, int(max_workers * base_beam_width / retry_beam_width))
+    return max(
+        1,
+        min(
+            int(max_workers),
+            RECOVERY_MAX_WORKERS,
+            int(max_workers * base_beam_width / max(base_beam_width, retry_beam_width)),
+        ),
+    )
 
 
 def _as_int(value: Any) -> int | None:
@@ -840,7 +1081,7 @@ def _is_retryable_no_solution_error(error: str) -> bool:
 
 def _is_retryable_result(result: dict[str, Any]) -> bool:
     error_category = result.get("error_category")
-    if error_category == "no_solution":
+    if error_category in {"no_solution", "timeout"}:
         return True
     if error_category is not None:
         return False
@@ -849,8 +1090,6 @@ def _is_retryable_result(result: dict[str, Any]) -> bool:
 
 def _classify_solve_error(error: str) -> str:
     normalized = (error or "").strip().lower()
-    if "final arrangement exceeds track capacity" in normalized:
-        return "capacity_infeasible"
     if _is_retryable_no_solution_error(normalized):
         return "no_solution"
     if normalized == "timeout":
@@ -859,7 +1098,47 @@ def _classify_solve_error(error: str) -> str:
 
 
 def _is_retryable_error_category(error_category: str) -> bool:
-    return error_category == "no_solution"
+    return error_category in {"no_solution", "timeout"}
+
+
+def _final_track_goal_capacity_warnings(normalized) -> list[dict[str, float | str]]:
+    capacity_by_track = {
+        info.track_name: info.track_distance
+        for info in normalized.track_info
+    }
+    initial_occupation_by_track: dict[str, float] = {}
+    for vehicle in normalized.vehicles:
+        initial_occupation_by_track[vehicle.current_track] = (
+            initial_occupation_by_track.get(vehicle.current_track, 0.0)
+            + vehicle.vehicle_length
+        )
+    final_length_by_track: dict[str, float] = {}
+    for vehicle in normalized.vehicles:
+        if vehicle.goal.target_mode != "TRACK":
+            continue
+        final_length_by_track[vehicle.goal.target_track] = (
+            final_length_by_track.get(vehicle.goal.target_track, 0.0)
+            + vehicle.vehicle_length
+        )
+    warnings: list[dict[str, float | str]] = []
+    for track_name, total_length in final_length_by_track.items():
+        capacity = capacity_by_track.get(track_name)
+        if capacity is None:
+            continue
+        effective_capacity = max(
+            capacity,
+            initial_occupation_by_track.get(track_name, 0.0),
+        )
+        if total_length > effective_capacity + 1e-9:
+            warnings.append(
+                {
+                    "track": track_name,
+                    "required_length": round(total_length, 1),
+                    "capacity": round(capacity, 1),
+                    "effective_capacity": round(effective_capacity, 1),
+                }
+            )
+    return warnings
 
 
 def _resolve_retry_no_solution_beam_width(
@@ -889,6 +1168,85 @@ def _build_retry_beam_widths(
     )
 
 
+def _recovery_beam_widths_for_result(
+    result: dict[str, Any],
+    *,
+    retry_beam_widths: list[int],
+    base_beam_width: int,
+    time_budget_ms: float | None,
+) -> list[int]:
+    if _result_is_route_clean_tail_candidate(result):
+        return list(retry_beam_widths)
+    return _prioritized_recovery_beam_widths(
+        retry_beam_widths,
+        base_beam_width=base_beam_width,
+        time_budget_ms=time_budget_ms,
+    )
+
+
+def _result_is_route_clean_tail_candidate(result: dict[str, Any]) -> bool:
+    if result.get("solved"):
+        return False
+    return partial_debug_stats_is_route_clean_tail_candidate(result.get("debug_stats"))
+
+
+def _group_next_retry_scenarios_by_width(
+    *,
+    ordered_scenarios: list[str],
+    scenario_path_by_name: dict[str, Path],
+    retryable_scenario_names: set[str],
+    retry_beam_widths_by_scenario: dict[str, list[int]],
+) -> list[tuple[int, list[Path]]]:
+    grouped: dict[int, list[Path]] = {}
+    width_order: list[int] = []
+    for scenario_name in ordered_scenarios:
+        if (
+            scenario_name not in retryable_scenario_names
+            or scenario_name not in scenario_path_by_name
+        ):
+            continue
+        widths = retry_beam_widths_by_scenario.get(scenario_name) or []
+        if not widths:
+            continue
+        retry_beam_width = widths[0]
+        if retry_beam_width not in grouped:
+            grouped[retry_beam_width] = []
+            width_order.append(retry_beam_width)
+        grouped[retry_beam_width].append(scenario_path_by_name[scenario_name])
+    return [(width, grouped[width]) for width in width_order]
+
+
+def _consume_next_retry_beam_width(
+    retry_beam_widths_by_scenario: dict[str, list[int]],
+    *,
+    scenario_name: str,
+    retry_beam_width: int,
+) -> None:
+    widths = retry_beam_widths_by_scenario.get(scenario_name)
+    if not widths:
+        return
+    if widths[0] == retry_beam_width:
+        del widths[0]
+        return
+    try:
+        widths.remove(retry_beam_width)
+    except ValueError:
+        return
+
+
+def _prioritized_recovery_beam_widths(
+    retry_beam_widths: list[int],
+    *,
+    base_beam_width: int,
+    time_budget_ms: float | None,
+) -> list[int]:
+    return prioritized_validation_recovery_beam_widths(
+        retry_beam_widths,
+        base_beam_width=base_beam_width,
+        time_budget_ms=time_budget_ms,
+    )
+
+
 def _run_worker(args: argparse.Namespace) -> None:
     if args.scenario is None:
         raise SystemExit("--worker requires --scenario")
@@ -900,13 +1258,15 @@ def _run_worker(args: argparse.Namespace) -> None:
         heuristic_weight=args.heuristic_weight,
         time_budget_ms=getattr(args, "solver_time_budget_ms", None),
         enable_anytime_fallback=getattr(args, "enable_anytime_fallback", True),
-        enable_depot_late_scheduling=getattr(args, "enable_depot_late_scheduling", False),
+        enable_depot_late_scheduling=getattr(args, "enable_depot_late_scheduling", True),
         near_goal_partial_resume_max_final_heuristic=getattr(
             args,
             "near_goal_partial_resume_max_final_heuristic",
             None,
         ),
         primary_first_beam=getattr(args, "primary_first_beam", False),
+        enable_worker_recovery=getattr(args, "enable_worker_recovery", True),
+        improve_pathological_success=getattr(args, "improve_pathological_success", False),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -936,10 +1296,12 @@ def main() -> None:
             scenario_paths = sorted(args.input_dir.glob("*.json"))
     time_budget_ms = getattr(args, "solver_time_budget_ms", None)
     enable_anytime_fallback = getattr(args, "enable_anytime_fallback", True)
-    enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", False)
+    enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", True)
     primary_first_beam = getattr(args, "primary_first_beam", False)
+    enable_worker_recovery = getattr(args, "enable_worker_recovery", True)
     if time_budget_ms is None:
         time_budget_ms = validation_time_budget_ms(args.timeout_seconds)
+    deadline_at = None
     near_goal_partial_resume_max_final_heuristic = getattr(
         args,
         "near_goal_partial_resume_max_final_heuristic",
@@ -960,6 +1322,8 @@ def main() -> None:
             near_goal_partial_resume_max_final_heuristic
         ),
         primary_first_beam=primary_first_beam,
+        enable_worker_recovery=enable_worker_recovery,
+        improve_pathological_success=args.improve_pathological_success,
     )
     results = recover_no_solution_results(
         master_dir=args.master_dir,
@@ -974,8 +1338,12 @@ def main() -> None:
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        enable_worker_recovery=enable_worker_recovery,
         improve_pathological_success=args.improve_pathological_success,
+        deadline_at=deadline_at,
     )
+    solved_cases = sum(1 for result in results if result.get("solved"))
+    unsolved_cases = len(results) - solved_cases
     summary = {
         "solver": args.solver,
         "beam_width": args.beam_width,
@@ -984,8 +1352,15 @@ def main() -> None:
         "solver_time_budget_ms": time_budget_ms,
         "enable_anytime_fallback": enable_anytime_fallback,
         "enable_depot_late_scheduling": enable_depot_late_scheduling,
+        "near_goal_partial_resume_max_final_heuristic": (
+            near_goal_partial_resume_max_final_heuristic
+        ),
         "primary_first_beam": primary_first_beam,
+        "enable_worker_recovery": enable_worker_recovery,
         "scenario_count": len(results),
+        "generated_cases": len(scenario_paths),
+        "solved_cases": solved_cases,
+        "unsolved_cases": unsolved_cases,
         "results": results,
     }
     (args.output_dir / "summary.json").write_text(

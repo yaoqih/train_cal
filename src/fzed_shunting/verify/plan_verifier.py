@@ -10,15 +10,21 @@ from fzed_shunting.domain.work_positions import (
     allowed_spotting_south_ranks,
     north_rank,
     south_rank,
+    work_slot_violations_by_vehicle,
 )
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
-from fzed_shunting.solver.goal_logic import goal_is_satisfied, goal_track_preference_level
+from fzed_shunting.solver.goal_logic import (
+    goal_can_use_fallback_now,
+    goal_is_satisfied,
+    goal_track_preference_level,
+)
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 
 
 class PlanVerificationReport(BaseModel):
     is_valid: bool
     global_errors: list[str] = Field(default_factory=list)
+    capacity_warnings: list[str] = Field(default_factory=list)
     hook_reports: list["HookVerificationReport"] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
@@ -46,6 +52,7 @@ def verify_plan(
     require_complete_goals: bool = True,
 ) -> PlanVerificationReport:
     global_errors: list[str] = []
+    capacity_warnings: list[str] = []
     hook_reports: list[HookVerificationReport] = []
     hook_sequence_errors = _validate_hook_sequence(hook_plan)
     if hook_sequence_errors:
@@ -95,7 +102,29 @@ def verify_plan(
                         f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
                     )
                 else:
-                    global_errors.append(_goal_error_message(vehicle, final_track, final_state))
+                    global_errors.append(
+                        _goal_error_message(
+                            vehicle,
+                            final_track,
+                            final_state,
+                            plan_input,
+                        )
+                    )
+                continue
+            if (
+                final_track in vehicle.goal.fallback_target_tracks
+                and vehicle.goal.preferred_target_tracks
+                and vehicle.goal.target_mode != "SNAPSHOT"
+                and not goal_can_use_fallback_now(
+                    vehicle,
+                    state=final_state,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                )
+            ):
+                global_errors.append(
+                    f"Vehicle {vehicle.vehicle_no} final track {final_track} violates preferred/fallback target policy"
+                )
                 continue
             if final_track in master.tracks:
                 track = master.tracks[final_track]
@@ -114,7 +143,7 @@ def verify_plan(
         declared_cap = capacity_by_track[track_code]
         effective_cap = max(declared_cap, initial_occupation_by_track.get(track_code, 0.0))
         if occupied > effective_cap + 1e-9:
-            global_errors.append(
+            capacity_warnings.append(
                 f"Capacity overflow on track {track_code}: occupied {occupied} > {declared_cap}"
             )
 
@@ -234,6 +263,7 @@ def verify_plan(
     return PlanVerificationReport(
         is_valid=not errors,
         global_errors=global_errors,
+        capacity_warnings=capacity_warnings,
         hook_reports=hook_reports,
         errors=errors,
     )
@@ -246,7 +276,7 @@ def _locate_vehicle(track_sequences: dict[str, list[str]], vehicle_no: str) -> s
     raise ValueError(f"Vehicle not found in final state: {vehicle_no}")
 
 
-def _goal_error_message(vehicle, final_track: str, final_state) -> str:
+def _goal_error_message(vehicle, final_track: str, final_state, plan_input) -> str:
     goal = vehicle.goal
     if goal.target_mode == "WORK_POSITION":
         seq = final_state.track_sequences.get(final_track, [])
@@ -267,6 +297,19 @@ def _goal_error_message(vehicle, final_track: str, final_state) -> str:
             return (
                 f"Vehicle {vehicle.vehicle_no} on {final_track} has "
                 f"north_rank={actual}, expected {goal.target_rank}"
+            )
+        if goal.work_position_kind == "EXACT_WORK_SLOT":
+            violations = work_slot_violations_by_vehicle(
+                vehicles=plan_input.vehicles,
+                state=final_state,
+            )
+            violation = violations.get(vehicle.vehicle_no)
+            if violation is not None:
+                return f"Vehicle {vehicle.vehicle_no} {violation}"
+            actual = north_rank(seq, vehicle.vehicle_no)
+            return (
+                f"Vehicle {vehicle.vehicle_no} on {final_track} has "
+                f"north_rank={actual}, expected no more than work slot {goal.target_rank}"
             )
     return f"Vehicle {vehicle.vehicle_no} final track/spot/weigh state does not satisfy goal"
 

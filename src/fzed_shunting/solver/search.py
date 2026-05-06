@@ -16,7 +16,7 @@ from typing import Any
 from fzed_shunting.domain.carry_order import is_carried_tail_block
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
-from fzed_shunting.io.normalize_input import NormalizedPlanInput
+from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.budget import SearchBudget
 from fzed_shunting.solver.exact_spot import (
     exact_spot_clearance_bonus,
@@ -28,6 +28,7 @@ from fzed_shunting.solver.move_generator import (
     generate_real_hook_moves,
 )
 from fzed_shunting.solver.purity import compute_state_purity
+from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.route_blockage import (
     RouteBlockagePlan,
@@ -61,8 +62,8 @@ class QueueItem:
     state: ReplayState
     plan: list[HookAction]
     cost: int = field(default=0, compare=False)
-    structural_key: tuple[int, int, int, int, int, int] = field(
-        default=(0, 0, 0, 0, 0, 0),
+    structural_key: tuple[int, ...] = field(
+        default=(-1, 0, 0, 0, 0, 0, 0),
         compare=False,
     )
     route_release_focus_tracks: frozenset[str] = field(
@@ -109,8 +110,11 @@ def _solve_search_result(
                 solver_mode=solver_mode,
                 heuristic_weight=heuristic_weight,
                 neg_depot_index_sum=0,
+                carry_count=len(initial_state.loco_carry),
+                carry_growth_penalty=0,
                 purity_metrics=(
                     initial_purity.unfinished_count,
+                    0,
                     initial_purity.preferred_violation_count,
                     initial_purity.staging_pollution_count,
                 ),
@@ -119,6 +123,7 @@ def _solve_search_result(
             state_key=initial_key,
             state=initial_state,
             plan=[],
+            structural_key=_approximate_beam_structural_key([], initial_state),
         ),
     )
     best_cost = {initial_key: 0}
@@ -146,9 +151,10 @@ def _solve_search_result(
         closed_state_keys.add(current.state_key)
         if current.plan:
             partial_purity = compute_state_purity(plan_input, current.state)
+            partial_structural = compute_structural_metrics(plan_input, current.state)
             partial_score = (
                 state_heuristic(current.state),
-                partial_purity.unfinished_count,
+                partial_purity.unfinished_count + partial_structural.target_sequence_defect_count,
                 -len(current.plan),
             )
             if best_partial_score is None or partial_score < best_partial_score:
@@ -277,13 +283,6 @@ def _solve_search_result(
             )
             neg_depot_index_sum = 0
             if enable_depot_late_scheduling and solver_mode == "exact":
-                # Secondary key is only engaged in exact mode where the
-                # admissible heuristic guarantees f-tie tiebreaking preserves
-                # optimality. In heuristic modes (weighted/beam/greedy) an
-                # injected secondary can redirect search into worse
-                # primary-objective regions, so leave priority unchanged
-                # there and rely on LNS and post-processing reorder for
-                # depot-lateness.
                 from fzed_shunting.solver.depot_late import weighted_depot_index_sum
                 neg_depot_index_sum = -weighted_depot_index_sum(next_plan, vehicle_by_no)
             heappush(
@@ -299,8 +298,15 @@ def _solve_search_result(
                         neg_depot_index_sum=neg_depot_index_sum,
                         purity_metrics=(
                             next_purity.unfinished_count,
+                            0,
                             next_purity.preferred_violation_count,
                             next_purity.staging_pollution_count,
+                        ),
+                        carry_count=len(next_state.loco_carry),
+                        carry_growth_penalty=_carry_growth_penalty_for_move(
+                            move=move,
+                            state=current.state,
+                            vehicle_by_no=vehicle_by_no,
                         ),
                     ),
                     seq=next(counter),
@@ -308,7 +314,10 @@ def _solve_search_result(
                     state=next_state,
                     plan=next_plan,
                     cost=cost,
-                    structural_key=_beam_structural_key(next_plan, next_state),
+                    structural_key=_approximate_beam_structural_key(
+                        next_plan,
+                        next_state,
+                    ),
                     route_release_focus_tracks=next_focus_tracks,
                     route_release_focus_bonus=next_focus_bonus,
                     route_release_focus_ttl=next_focus_ttl,
@@ -322,6 +331,7 @@ def _solve_search_result(
                 queue,
                 best_cost,
                 beam_width,
+                plan_input=plan_input,
                 enable_structural_diversity=enable_structural_diversity,
             )
     if best_goal_plan is None:
@@ -365,17 +375,23 @@ def _priority(
     solver_mode: str,
     heuristic_weight: float,
     neg_depot_index_sum: int = 0,
-    purity_metrics: tuple[int, int, int] = (0, 0, 0),
+    purity_metrics: tuple[int, ...] = (0, 0, 0, 0),
+    carry_count: int = 0,
+    carry_growth_penalty: int = 0,
 ) -> tuple:
     if solver_mode == "beam":
+        score = cost + heuristic
         return (
             route_release_regression_penalty,
             0 if blocker_bonus > 0 else 1,
-            cost + heuristic,
+            score + carry_growth_penalty,
+            score,
             cost,
-            neg_depot_index_sum,
             heuristic,
             purity_metrics,
+            carry_growth_penalty,
+            carry_count,
+            neg_depot_index_sum,
             -blocker_bonus,
             heuristic,
         )
@@ -385,20 +401,62 @@ def _priority(
             0 if blocker_bonus > 0 else 1,
             cost + heuristic_weight * heuristic,
             cost,
-            neg_depot_index_sum,
             heuristic,
             purity_metrics,
+            carry_growth_penalty,
+            carry_count,
+            neg_depot_index_sum,
             -blocker_bonus,
         )
     return (
         route_release_regression_penalty,
         cost + heuristic,
         cost,
-        neg_depot_index_sum,
         heuristic,
         purity_metrics,
+        carry_growth_penalty,
+        carry_count,
+        neg_depot_index_sum,
         -blocker_bonus,
     )
+
+
+def _carry_growth_penalty_for_move(
+    *,
+    move: HookAction,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    if move.action_type != "ATTACH":
+        return 0
+
+    penalty = len(move.vehicle_nos) if state.loco_carry else 0
+    projected_carry_count = len(state.loco_carry) + len(move.vehicle_nos)
+    if projected_carry_count <= 10:
+        return penalty
+
+    if _is_soft_random_area_attach(move=move, vehicle_by_no=vehicle_by_no):
+        penalty += (projected_carry_count - 10) * 2
+    return penalty
+
+
+def _is_soft_random_area_attach(
+    *,
+    move: HookAction,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if not move.vehicle_nos:
+        return False
+    for vehicle_no in move.vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return False
+        goal = vehicle.goal
+        if goal.target_mode not in {"AREA", "SNAPSHOT"}:
+            return False
+        if goal.target_area_code is None or ":RANDOM" not in goal.target_area_code:
+            return False
+    return True
 
 
 def _route_release_regression_penalty(
@@ -569,6 +627,7 @@ def _prune_queue(
     best_cost: dict[tuple, int],
     beam_width: int,
     *,
+    plan_input: NormalizedPlanInput | None = None,
     enable_structural_diversity: bool = False,
 ) -> None:
     if len(queue) <= beam_width:
@@ -607,6 +666,14 @@ def _prune_queue(
                 for item in ranked[:frontier_limit]
                 if id(item) not in kept_ids
             ]
+            if plan_input is not None:
+                for item in low_debt_candidates:
+                    if item.structural_key[0] < 0:
+                        item.structural_key = _full_beam_structural_key(
+                            plan_input,
+                            item.plan,
+                            item.state,
+                        )
             low_debt_candidates.sort(key=lambda item: (item.structural_key, item.priority))
             for item in low_debt_candidates[:BEAM_LOW_STRUCTURAL_DEBT_RESERVE]:
                 if len(kept) >= beam_width:
@@ -632,8 +699,8 @@ def _prune_queue(
 
 def _has_structural_churn_pressure(queue: list[QueueItem]) -> bool:
     return any(
-        item.structural_key[1] >= BEAM_STRUCTURAL_DIVERSITY_MIN_STAGING_TO_STAGING
-        or item.structural_key[2] >= BEAM_STRUCTURAL_DIVERSITY_MIN_REPEATED_STAGING_TOUCHES
+        item.structural_key[2] >= BEAM_STRUCTURAL_DIVERSITY_MIN_STAGING_TO_STAGING
+        or item.structural_key[3] >= BEAM_STRUCTURAL_DIVERSITY_MIN_REPEATED_STAGING_TOUCHES
         for item in queue
     )
 
@@ -641,7 +708,9 @@ def _has_structural_churn_pressure(queue: list[QueueItem]) -> bool:
 def _beam_structural_key(
     plan: list[HookAction],
     state: ReplayState,
-) -> tuple[int, int, int, int, int, int]:
+    *,
+    target_sequence_defect_count: int = 0,
+) -> tuple[int, ...]:
     staging_hooks = 0
     staging_to_staging_hooks = 0
     repeated_staging_touches = 0
@@ -664,12 +733,31 @@ def _beam_structural_key(
     )
     max_touch = max(touched.values(), default=0)
     return (
+        target_sequence_defect_count,
         staging_debt,
         staging_to_staging_hooks,
         repeated_staging_touches,
         staging_hooks,
         max_touch,
         len(plan),
+    )
+
+
+def _approximate_beam_structural_key(plan: list[HookAction], state: ReplayState) -> tuple[int, ...]:
+    structural_key = _beam_structural_key(plan, state)
+    return (-1, *structural_key[1:])
+
+
+def _full_beam_structural_key(
+    plan_input: NormalizedPlanInput,
+    plan: list[HookAction],
+    state: ReplayState,
+) -> tuple[int, ...]:
+    structural = compute_structural_metrics(plan_input, state)
+    return _beam_structural_key(
+        plan,
+        state,
+        target_sequence_defect_count=structural.target_sequence_defect_count,
     )
 
 

@@ -10,9 +10,14 @@ from fzed_shunting.solver.astar_solver import (
 )
 from fzed_shunting.solver.profile import (
     VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS,
+    prioritized_validation_recovery_beam_widths,
     validation_recovery_should_continue_after_success,
     validation_retry_beam_widths,
     validation_retry_time_budget_ms,
+)
+from fzed_shunting.solver.partial_selection import (
+    partial_result_is_better,
+    partial_result_is_route_clean_tail_candidate,
 )
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.verify.replay import ReplayState
@@ -32,6 +37,7 @@ def solve_with_validation_recovery_result(
     time_budget_ms: float | None,
     solve_result_fn: SolveResultFn,
     enable_depot_late_scheduling: bool = False,
+    improve_pathological_success: bool = False,
 ) -> SolverResult:
     """Run the validation-profile solve plus the same beam retry policy.
 
@@ -51,18 +57,27 @@ def solve_with_validation_recovery_result(
     )
     if solver_mode != "beam" or beam_width is None:
         return initial
-    if initial.is_complete and not _should_continue_recovery_after_success(initial):
+    if initial.is_complete and not (
+        improve_pathological_success
+        and _should_continue_recovery_after_success(initial)
+    ):
         return initial
 
     best_partial: SolverResult | None = None if initial.is_complete else initial
     best_complete: SolverResult | None = initial if initial.is_complete else None
     retry_total_budget_ms = validation_retry_time_budget_ms(time_budget_ms)
-    retry_used_ms = _result_elapsed_ms(initial)
-    for retry_beam_width in validation_retry_beam_widths(beam_width=beam_width):
+    retry_used_ms = 0.0
+    base_retry_beam_widths = validation_retry_beam_widths(beam_width=beam_width)
+    retry_beam_widths = _recovery_beam_widths_for_result(
+        initial,
+        retry_beam_widths=base_retry_beam_widths,
+        base_beam_width=beam_width,
+        time_budget_ms=time_budget_ms,
+    )
+    for retry_beam_width in retry_beam_widths:
         retry_budget_ms = _remaining_retry_attempt_budget_ms(
             total_budget_ms=retry_total_budget_ms,
             used_ms=retry_used_ms,
-            single_attempt_cap_ms=time_budget_ms,
         )
         if retry_budget_ms is not None and retry_budget_ms < VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS:
             break
@@ -88,10 +103,13 @@ def solve_with_validation_recovery_result(
                     "recovery_time_budget_ms": retry_budget_ms,
                 }
                 best_complete = replace(candidate, debug_stats=stats)
-            if not _should_continue_recovery_after_success(candidate):
+            if not (
+                improve_pathological_success
+                and _should_continue_recovery_after_success(candidate)
+            ):
                 break
             continue
-        if best_partial is None or len(candidate.partial_plan) > len(best_partial.partial_plan):
+        if best_partial is None or partial_result_is_better(candidate, best_partial):
             best_partial = candidate
     if best_complete is not None:
         return best_complete
@@ -105,6 +123,26 @@ def _should_continue_recovery_after_success(result: SolverResult) -> bool:
     return validation_recovery_should_continue_after_success(
         hook_count=len(result.plan),
         max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
+        staging_to_staging_hook_count=_as_int(
+            shape.get("staging_to_staging_hook_count")
+        ),
+        rehandled_vehicle_count=_as_int(shape.get("rehandled_vehicle_count")),
+    )
+
+
+def _recovery_beam_widths_for_result(
+    result: SolverResult,
+    *,
+    retry_beam_widths: list[int],
+    base_beam_width: int,
+    time_budget_ms: float | None,
+) -> list[int]:
+    if partial_result_is_route_clean_tail_candidate(result):
+        return list(retry_beam_widths)
+    return prioritized_validation_recovery_beam_widths(
+        retry_beam_widths,
+        base_beam_width=base_beam_width,
+        time_budget_ms=time_budget_ms,
     )
 
 
@@ -112,13 +150,10 @@ def _remaining_retry_attempt_budget_ms(
     *,
     total_budget_ms: float | None,
     used_ms: float,
-    single_attempt_cap_ms: float | None,
 ) -> float | None:
     if total_budget_ms is None:
         return None
     remaining_ms = max(0.0, total_budget_ms - used_ms)
-    if single_attempt_cap_ms is not None:
-        remaining_ms = min(remaining_ms, single_attempt_cap_ms)
     return remaining_ms
 
 

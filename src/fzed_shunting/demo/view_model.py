@@ -235,6 +235,7 @@ def build_demo_view_model(
                 time_budget_ms=time_budget_ms,
                 enable_depot_late_scheduling=False,
                 solve_result_fn=solve_with_simple_astar_result,
+                improve_pathological_success=True,
             )
             if solver_result.is_complete:
                 solver_hook_count = len(solver_result.plan)
@@ -332,6 +333,7 @@ def _resolve_hook_plan(
             time_budget_ms=time_budget_ms,
             enable_depot_late_scheduling=False,
             solve_result_fn=solve_with_simple_astar_result,
+            improve_pathological_success=True,
         )
         if not result.is_complete:
             raise ValueError(

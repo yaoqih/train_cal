@@ -13,10 +13,13 @@ from fzed_shunting.tools.convert_external_validation_inputs import (
     build_vehicle_attributes,
     convert_external_validation_inputs,
     convert_data_external_validation_inputs,
+    convert_online_validation_inputs,
     discover_data_plan_workbooks,
     discover_monthly_plan_workbooks,
+    discover_online_plan_workbooks,
     load_length_m_by_model,
     load_data_vehicle_rows_by_sheet,
+    load_online_vehicle_rows_by_workbook,
     load_supplemental_length_m_by_model,
     load_vehicle_rows_by_sheet,
     map_excel_track_name,
@@ -36,9 +39,16 @@ DATA_WORKBOOK_WITH_LEADING_BLANK_ROW = DATA_PLAN_ROOT / "2025-11-06-noon.xlsx"
 DATA_WORKBOOK_WITH_EXTRA_REPAIR_COLUMN = DATA_PLAN_ROOT / "2025-11-11-noon.xlsx"
 DATA_WORKBOOK_WITH_EXTRA_SHEETS = DATA_PLAN_ROOT / "2025-09-04-noon.xlsx"
 DATA_WORKBOOK_WITH_BACKFILL = DATA_PLAN_ROOT / "2025-11-04-afternoon.xlsx"
+ONLINE_PLAN_ROOT = MONTHLY_PLAN_ROOT / "new"
+ONLINE_SAMPLE_WORKBOOK = ONLINE_PLAN_ROOT / "调车计划编制_20260401W.xlsx"
+ONLINE_WORKBOOK_WITH_RESIDUAL_SHEET = ONLINE_PLAN_ROOT / "调车计划编制_20260402W.xlsx"
 
 
 def test_map_excel_track_name_maps_known_aliases():
+    assert map_excel_track_name("存5北") == "存5北"
+    assert map_excel_track_name("存4") == "存4北"
+    assert map_excel_track_name("修1") == "修1库内"
+    assert map_excel_track_name("修4") == "修4库内"
     assert map_excel_track_name("存5线北") == "存5北"
     assert map_excel_track_name("老预修") == "预修"
     assert map_excel_track_name("调梁库内") == "调棚"
@@ -117,6 +127,28 @@ def test_discover_data_plan_workbooks_returns_all_data_xlsx_without_map():
     assert workbooks[0].name == "2025-09-04-noon.xlsx"
     assert workbooks[-1].name == "2025-12-09-noon.xlsx"
     assert DATA_MAP_XLSX not in workbooks
+
+
+def test_discover_online_plan_workbooks_returns_new_xlsx_files():
+    workbooks = discover_online_plan_workbooks(ONLINE_PLAN_ROOT)
+
+    assert len(workbooks) == 6
+    assert workbooks[0].name == "调车计划编制_20260401W.xlsx"
+    assert workbooks[-1].name == "调车计划编制_20260403Z.xlsx"
+
+
+def test_load_online_vehicle_rows_by_workbook_reads_two_column_snapshot_and_skips_residual_sheet():
+    rows, summary = load_online_vehicle_rows_by_workbook(ONLINE_WORKBOOK_WITH_RESIDUAL_SHEET)
+
+    assert len(rows) == 81
+    assert summary["ignored_sheets"] == ["起点 (2)"]
+    assert rows[0].track_name == "预修"
+    assert rows[0].vehicle_no == "5337588"
+    assert rows[0].target_track == "修4"
+    assert rows[0].note == "拉走"
+    assert rows[-1].track_name == "存1"
+    assert rows[-1].vehicle_no == "4639021"
+    assert rows[-1].target_track == ""
 
 
 def test_build_pair_spec_for_workbook_ignores_template_sheet():
@@ -372,6 +404,49 @@ def test_convert_data_external_validation_inputs_backfills_shared_fields_and_wri
     assert by_no["1528734"]["vehicleModel"] == "C70EH"
     assert by_no["1528734"]["repairProcess"] == "段修"
     assert by_no["1528734"]["targetTrack"] == "存4北"
+    assert (output_dir / "conversion_assumptions.md").exists()
+
+
+def test_convert_online_validation_inputs_writes_single_snapshot_plan_payloads(tmp_path: Path):
+    source_root = tmp_path / "new"
+    source_root.mkdir(parents=True)
+    copy2(ONLINE_SAMPLE_WORKBOOK, source_root / ONLINE_SAMPLE_WORKBOOK.name)
+    output_dir = tmp_path / "online"
+
+    summary = convert_online_validation_inputs(
+        output_dir=output_dir,
+        source_root=source_root,
+        length_xlsx=ROOT_DIR / "段内车型换长.xlsx",
+        master_dir=DATA_DIR,
+    )
+
+    assert summary["source_root"] == "new"
+    assert summary["scenario_count"] == 1
+    assert summary["scenarios"][0]["vehicle_count"] == 93
+    assert summary["scenarios"][0]["empty_target_count"] == 33
+    assert summary["scenarios"][0]["scenario_file"] == "validation_20260401W.json"
+
+    payload = json.loads((output_dir / "validation_20260401W.json").read_text(encoding="utf-8"))
+    by_no = {item["vehicleNo"]: item for item in payload["vehicleInfo"]}
+
+    assert by_no["5331984"]["trackName"] == "预修"
+    assert "targetMode" not in by_no["5331984"]
+    assert by_no["5331984"]["targetTrack"] == "修4"
+    assert "targetAreaCode" not in by_no["5331984"]
+    assert by_no["5313995"]["targetTrack"] == "修1"
+    assert by_no["5313995"]["isSpotting"] == "104"
+    assert "targetAreaCode" not in by_no["5313995"]
+    assert by_no["5741082"]["targetTrack"] == "调棚"
+    assert by_no["5741082"]["isSpotting"] == "是"
+    assert by_no["1676076"]["targetTrack"] == "存4北"
+    assert "targetMode" not in by_no["1676076"]
+    assert by_no["5329931"]["targetMode"] == "SNAPSHOT"
+    assert by_no["5329931"]["targetTrack"] == "洗南"
+    assert by_no["5329931"]["targetSource"] == "ONLINE_EMPTY_TARGET"
+    assert by_no["4972204"]["vehicleAttributes"] == "重车"
+
+    master = load_master_data(DATA_DIR)
+    normalize_plan_input(payload, master)
     assert (output_dir / "conversion_assumptions.md").exists()
 
 

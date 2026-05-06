@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -70,7 +71,77 @@ def work_position_satisfied(vehicle: Any, *, track_name: str, state: Any) -> boo
         return rank in allowed_spotting_south_ranks(track_name)
     if kind == "EXACT_NORTH_RANK":
         return north_rank(seq, vehicle.vehicle_no) == goal.target_rank
+    if kind == "EXACT_WORK_SLOT":
+        rank = north_rank(seq, vehicle.vehicle_no)
+        return (
+            rank is not None
+            and goal.target_rank is not None
+            and rank <= goal.target_rank
+        )
     return False
+
+
+def work_slot_violations_by_vehicle(
+    *,
+    vehicles: list[Any],
+    state: Any,
+) -> dict[str, str]:
+    violations: dict[str, str] = {}
+    vehicles_by_track: dict[str, list[Any]] = {}
+    for vehicle in vehicles:
+        goal = vehicle.goal
+        if goal.work_position_kind != "EXACT_WORK_SLOT":
+            continue
+        current_track = _locate_track(state.track_sequences, vehicle.vehicle_no)
+        if current_track is None or current_track not in goal.allowed_target_tracks:
+            continue
+        vehicles_by_track.setdefault(current_track, []).append(vehicle)
+
+    for track_name, track_vehicles in vehicles_by_track.items():
+        slot_counts = Counter(vehicle.goal.target_rank for vehicle in track_vehicles)
+        for vehicle in track_vehicles:
+            target_rank = vehicle.goal.target_rank
+            if target_rank is None:
+                violations[vehicle.vehicle_no] = "missing explicit work slot"
+                continue
+            if slot_counts[target_rank] > 1:
+                violations[vehicle.vehicle_no] = (
+                    f"duplicate explicit work slot {target_rank} on {track_name}"
+                )
+
+        ordered = sorted(
+            track_vehicles,
+            key=lambda vehicle: (
+                north_rank(
+                    list(state.track_sequences.get(track_name, [])),
+                    vehicle.vehicle_no,
+                )
+                or 10**9,
+                vehicle.vehicle_no,
+            ),
+        )
+        max_seen_slot = 0
+        for vehicle in ordered:
+            target_rank = vehicle.goal.target_rank
+            if target_rank is None:
+                continue
+            if target_rank < max_seen_slot:
+                violations[vehicle.vehicle_no] = (
+                    f"explicit work slot {target_rank} is north of an earlier larger slot on {track_name}"
+                )
+            max_seen_slot = max(max_seen_slot, target_rank)
+        min_south_slot = 10**9
+        for vehicle in reversed(ordered):
+            target_rank = vehicle.goal.target_rank
+            if target_rank is None:
+                continue
+            if target_rank > min_south_slot:
+                violations[vehicle.vehicle_no] = (
+                    f"explicit work slot {target_rank} is south of a later smaller slot on {track_name}"
+                )
+            min_south_slot = min(min_south_slot, target_rank)
+
+    return violations
 
 
 def preview_work_positions_after_prepend(
@@ -200,6 +271,29 @@ def _evaluate_vehicle(
             violation = (
                 f"vehicle {vehicle_no} on {target_track} has north_rank={n_rank}, "
                 f"expected no more than {target_rank}"
+            )
+        return (
+            WorkPositionEvaluation(
+                vehicle_no=vehicle_no,
+                kind=kind,
+                north_rank=n_rank,
+                south_rank=s_rank,
+                target_rank=target_rank,
+                rank_gap=rank_gap,
+                satisfied_now=satisfied,
+            ),
+            violation,
+        )
+    if kind == "EXACT_WORK_SLOT":
+        rank_gap = None if n_rank is None or target_rank is None else target_rank - n_rank
+        satisfied = rank_gap is not None and rank_gap >= 0
+        violation = None
+        if target_rank is None:
+            violation = f"vehicle {vehicle_no} explicit work slot is missing target_rank"
+        elif rank_gap is not None and rank_gap < 0:
+            violation = (
+                f"vehicle {vehicle_no} on {target_track} has north_rank={n_rank}, "
+                f"expected no more than work slot {target_rank}"
             )
         return (
             WorkPositionEvaluation(

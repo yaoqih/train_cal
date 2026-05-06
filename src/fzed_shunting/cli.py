@@ -271,8 +271,9 @@ def _solve_payload(
         heuristic_weight=heuristic_weight,
         beam_width=effective_beam_width,
         time_budget_ms=effective_time_budget_ms,
-        enable_depot_late_scheduling=False,
+        enable_depot_late_scheduling=True,
         solve_result_fn=solve_with_simple_astar_result,
+        improve_pathological_success=True,
     )
     if not result.is_complete:
         return {

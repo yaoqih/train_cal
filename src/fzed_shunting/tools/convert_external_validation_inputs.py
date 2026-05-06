@@ -15,6 +15,7 @@ app = typer.Typer(no_args_is_help=True)
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[3] / "data" / "master"
 DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[3] / "取送车计划"
 DEFAULT_DATA_SOURCE_ROOT = DEFAULT_SOURCE_ROOT / "Data"
+DEFAULT_ONLINE_SOURCE_ROOT = DEFAULT_SOURCE_ROOT / "new"
 DEFAULT_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "段内车型换长.xlsx"
 DEFAULT_SUPPLEMENTAL_LENGTH_XLSX = Path(__file__).resolve().parents[3] / "换长.xlsx"
 MONTHLY_PLAN_SUBDIRS = ("1月-取送车计划", "2月-取送车计划", "3月-取送车计划")
@@ -50,7 +51,44 @@ class ExcelVehicleRow:
     note: str
 
 
+@dataclass(frozen=True)
+class OnlineVehicleRow(ExcelVehicleRow):
+    target_track: str
+    is_spotting: str
+    vehicle_attributes: str
+
+
 TRACK_ALIAS_MAP = {
+    "存1": "存1",
+    "存2": "存2",
+    "存3": "存3",
+    "存4": "存4北",
+    "存4北": "存4北",
+    "存5北": "存5北",
+    "存5南": "存5南",
+    "修1": "修1库内",
+    "修2": "修2库内",
+    "修3": "修3库内",
+    "修4": "修4库内",
+    "修1库内": "修1库内",
+    "修2库内": "修2库内",
+    "修3库内": "修3库内",
+    "修4库内": "修4库内",
+    "修1库外": "修1库外",
+    "修2库外": "修2库外",
+    "修3库外": "修3库外",
+    "修4库外": "修4库外",
+    "预修": "预修",
+    "调棚": "调棚",
+    "调北": "调北",
+    "洗南": "洗南",
+    "洗北": "洗北",
+    "油": "油",
+    "抛": "抛",
+    "轮": "轮",
+    "机棚": "机棚",
+    "机库": "机库",
+    "机北": "机北",
     "存1线": "存1",
     "存2线": "存2",
     "存3线": "存3",
@@ -91,6 +129,7 @@ TRACK_ALIAS_MAP = {
 }
 
 DEPOT_INNER_TRACKS = {"修1库内", "修2库内", "修3库内", "修4库内"}
+ONLINE_SHORT_REPAIR_TARGETS = {"修1", "修2", "修3", "修4"}
 
 REPAIR_PROCESS_MAP = {
     "段": "段修",
@@ -124,6 +163,12 @@ def map_excel_track_name(track_name: str) -> str:
         return TRACK_ALIAS_MAP[track_name]
     except KeyError as exc:
         raise ValueError(f"Unsupported Excel track name: {track_name}") from exc
+
+
+def map_online_target_track_name(track_name: str) -> str:
+    if track_name in ONLINE_SHORT_REPAIR_TARGETS:
+        return track_name
+    return map_excel_track_name(track_name)
 
 
 def build_vehicle_attributes(repair_value: str) -> tuple[str, str]:
@@ -289,6 +334,95 @@ def build_shared_vehicle_scenario(
     return scenario, summary
 
 
+def build_online_vehicle_scenario(
+    *,
+    scenario_name: str,
+    vehicle_rows: list[OnlineVehicleRow],
+    length_m_by_model: dict[str, float],
+    master: MasterData,
+) -> tuple[dict, dict]:
+    track_codes: set[str] = set(master.tracks)
+    vehicle_info: list[dict] = []
+    missing_models = sorted(
+        {
+            item.vehicle_model
+            for item in vehicle_rows
+            if item.vehicle_model and item.vehicle_model not in length_m_by_model
+        }
+    )
+    skipped_vehicle_nos_missing_length: list[str] = []
+    empty_target_vehicle_nos: list[str] = []
+    normalized_target_counts: dict[str, int] = {}
+    for vehicle_row in vehicle_rows:
+        current_track = map_excel_track_name(vehicle_row.track_name)
+        track_codes.add(current_track)
+        target_source = "ONLINE_EXPLICIT_TARGET"
+        if vehicle_row.target_track:
+            raw_target_track = map_online_target_track_name(vehicle_row.target_track)
+        else:
+            raw_target_track = current_track
+            target_source = "ONLINE_EMPTY_TARGET"
+            empty_target_vehicle_nos.append(vehicle_row.vehicle_no)
+        target_track = _online_payload_target_track(raw_target_track)
+        repair_process, inferred_attributes = build_vehicle_attributes(vehicle_row.repair)
+        vehicle_attributes = vehicle_row.vehicle_attributes or inferred_attributes
+        vehicle_length = length_m_by_model.get(vehicle_row.vehicle_model)
+        if vehicle_length is None:
+            skipped_vehicle_nos_missing_length.append(vehicle_row.vehicle_no)
+            continue
+        normalized_target_counts[target_track] = normalized_target_counts.get(target_track, 0) + 1
+        vehicle_payload = {
+            "trackName": current_track,
+            "order": str(vehicle_row.order),
+            "vehicleModel": vehicle_row.vehicle_model,
+            "vehicleNo": vehicle_row.vehicle_no,
+            "repairProcess": repair_process,
+            "vehicleLength": vehicle_length,
+            "targetTrack": target_track,
+            "isSpotting": vehicle_row.is_spotting,
+            "vehicleAttributes": vehicle_attributes,
+            "targetSource": target_source,
+        }
+        target_mode = _online_target_mode(raw_target_track, target_source)
+        if target_mode is not None:
+            vehicle_payload["targetMode"] = target_mode
+        if target_track == "大库":
+            vehicle_payload["targetAreaCode"] = "大库:RANDOM"
+        vehicle_info.append(vehicle_payload)
+    track_info = [
+        {
+            "trackName": track_code,
+            "trackDistance": master.tracks[track_code].effective_length_m,
+        }
+        for track_code in sorted(track_codes)
+    ]
+    payload = {
+        "trackInfo": track_info,
+        "vehicleInfo": vehicle_info,
+        "locoTrackName": "机库",
+    }
+    summary = {
+        "scenario_name": scenario_name,
+        "vehicle_count": len(vehicle_info),
+        "empty_target_count": len(empty_target_vehicle_nos),
+        "empty_target_vehicle_nos": empty_target_vehicle_nos,
+        "missing_models": missing_models,
+        "skipped_vehicle_nos_missing_length": skipped_vehicle_nos_missing_length,
+        "normalized_target_counts": dict(sorted(normalized_target_counts.items())),
+    }
+    return payload, summary
+
+
+def _online_payload_target_track(raw_target_track: str) -> str:
+    return raw_target_track
+
+
+def _online_target_mode(raw_target_track: str, target_source: str) -> str | None:
+    if target_source == "ONLINE_EMPTY_TARGET":
+        return "SNAPSHOT"
+    return None
+
+
 def discover_monthly_plan_workbooks(source_root: Path) -> list[Path]:
     workbooks: list[Path] = []
     for month_dir_name in MONTHLY_PLAN_SUBDIRS:
@@ -323,6 +457,10 @@ def discover_data_plan_workbooks(source_root: Path) -> list[Path]:
         for path in source_root.glob("*.xlsx")
         if path.is_file() and path.name not in DATA_IGNORED_WORKBOOK_NAMES
     )
+
+
+def discover_online_plan_workbooks(source_root: Path) -> list[Path]:
+    return sorted(path for path in source_root.glob("*.xlsx") if path.is_file())
 
 
 def build_data_pair_spec_for_workbook(
@@ -432,6 +570,37 @@ def load_data_vehicle_rows_by_sheet(path: Path) -> dict[str, list[ExcelVehicleRo
     return vehicles_by_sheet
 
 
+def load_online_vehicle_rows_by_workbook(path: Path) -> tuple[list[OnlineVehicleRow], dict]:
+    rows_by_sheet = read_worksheet_rows(path)
+    expected_suffix = path.stem.rsplit("_", maxsplit=1)[-1]
+    vehicles: list[OnlineVehicleRow] = []
+    ignored_sheets: list[str] = []
+    used_sheets: list[str] = []
+    for sheet_name, rows in rows_by_sheet.items():
+        if not _online_sheet_matches_workbook_suffix(rows, expected_suffix):
+            ignored_sheets.append(sheet_name)
+            continue
+        used_sheets.append(sheet_name)
+        vehicles.extend(
+            _load_online_vehicle_rows_from_sheet(
+                path=path,
+                sheet_name=sheet_name,
+                rows=rows,
+            )
+        )
+    duplicate_vehicle_nos = sorted(_duplicate_vehicle_nos(vehicles))
+    if duplicate_vehicle_nos:
+        raise ValueError(
+            f"{path.name} has duplicate vehicleNo values after sheet filtering: "
+            f"{', '.join(duplicate_vehicle_nos)}"
+        )
+    return vehicles, {
+        "used_sheets": used_sheets,
+        "ignored_sheets": ignored_sheets,
+        "vehicle_count": len(vehicles),
+    }
+
+
 def convert_external_validation_inputs(
     *,
     source_root: Path = DEFAULT_SOURCE_ROOT,
@@ -493,6 +662,79 @@ def convert_external_validation_inputs(
     }
     (output_dir / "conversion_summary.json").write_text(
         json.dumps(summary_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return summary_payload
+
+
+def convert_online_validation_inputs(
+    *,
+    source_root: Path = DEFAULT_ONLINE_SOURCE_ROOT,
+    length_xlsx: Path = DEFAULT_LENGTH_XLSX,
+    supplemental_length_xlsx: Path = DEFAULT_SUPPLEMENTAL_LENGTH_XLSX,
+    output_dir: Path,
+    master_dir: Path = DEFAULT_MASTER_DIR,
+) -> dict:
+    master = load_master_data(master_dir)
+    length_m_by_model = load_length_m_by_model(length_xlsx)
+    if supplemental_length_xlsx.exists():
+        length_m_by_model.update(
+            load_supplemental_length_m_by_model(
+                supplemental_length_xlsx,
+                alias_overrides=SUPPLEMENTAL_LENGTH_ALIASES,
+                literal_overrides=SUPPLEMENTAL_LITERAL_LENGTHS,
+            )
+        )
+    workbooks = discover_online_plan_workbooks(source_root)
+    if not workbooks:
+        raise ValueError(f"No online plan workbooks found under {source_root}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for stale_path in output_dir.glob("validation_*.json"):
+        stale_path.unlink()
+    for stale_path in (
+        output_dir / "conversion_summary.json",
+        output_dir / "conversion_assumptions.md",
+    ):
+        if stale_path.exists():
+            stale_path.unlink()
+
+    summaries: list[dict] = []
+    for workbook in workbooks:
+        rows, parse_summary = load_online_vehicle_rows_by_workbook(workbook)
+        scenario_name = f"validation_{workbook.stem.rsplit('_', maxsplit=1)[-1]}"
+        payload, summary = build_online_vehicle_scenario(
+            scenario_name=scenario_name,
+            vehicle_rows=rows,
+            length_m_by_model=length_m_by_model,
+            master=master,
+        )
+        scenario_path = output_dir / f"{scenario_name}.json"
+        scenario_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summaries.append(
+            {
+                **summary,
+                **parse_summary,
+                "source_workbook": workbook.relative_to(source_root).as_posix(),
+                "scenario_file": scenario_path.name,
+            }
+        )
+
+    summary_payload = {
+        "source_root": source_root.name,
+        "length_xlsx": length_xlsx.name,
+        "supplemental_length_xlsx": supplemental_length_xlsx.name if supplemental_length_xlsx.exists() else None,
+        "scenario_count": len(summaries),
+        "scenarios": summaries,
+    }
+    (output_dir / "conversion_summary.json").write_text(
+        json.dumps(summary_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (output_dir / "conversion_assumptions.md").write_text(
+        _render_online_conversion_assumptions(summary_payload),
         encoding="utf-8",
     )
     return summary_payload
@@ -634,6 +876,104 @@ def _build_vehicle_row_from_cells(
     )
 
 
+def _build_online_vehicle_row_from_cells(
+    *,
+    path: Path,
+    sheet_name: str,
+    headers: list[str],
+    cells: list[str],
+) -> OnlineVehicleRow | None:
+    normalized_headers = {header.strip(): index for index, header in enumerate(headers)}
+    required_headers = {"股道", "序号", "车型", "车号", "修程", "备注", "目标股道", "是否对位", "车辆属性"}
+    missing_headers = sorted(required_headers - set(normalized_headers))
+    if missing_headers:
+        raise ValueError(
+            f"{path.name}::{sheet_name} is missing required online headers: "
+            f"{', '.join(missing_headers)}"
+        )
+    vehicle_no = cells[normalized_headers["车号"]].strip()
+    order_raw = cells[normalized_headers["序号"]].strip()
+    if not vehicle_no or vehicle_no == "车号" or order_raw == "序号":
+        return None
+    if not order_raw:
+        raise ValueError(f"{path.name}::{sheet_name} has vehicle {vehicle_no} without 序号")
+    return OnlineVehicleRow(
+        track_name=cells[normalized_headers["股道"]].strip(),
+        order=int(float(order_raw)),
+        vehicle_model=cells[normalized_headers["车型"]].strip(),
+        vehicle_no=vehicle_no,
+        repair=cells[normalized_headers["修程"]].strip(),
+        note=cells[normalized_headers["备注"]].strip(),
+        target_track=cells[normalized_headers["目标股道"]].strip(),
+        is_spotting=cells[normalized_headers["是否对位"]].strip(),
+        vehicle_attributes=cells[normalized_headers["车辆属性"]].strip(),
+    )
+
+
+def _load_online_vehicle_rows_from_sheet(
+    *,
+    path: Path,
+    sheet_name: str,
+    rows: list[list[str]],
+) -> list[OnlineVehicleRow]:
+    header_row_index, headers = _find_online_header_row(
+        path=path,
+        sheet_name=sheet_name,
+        rows=rows,
+    )
+    if len(headers) % 2 != 0:
+        raise ValueError(f"Unsupported online plan header layout in {path.name}::{sheet_name}")
+    block_width = len(headers) // 2
+    block_headers = [
+        [cell.strip() for cell in headers[base_index:base_index + block_width]]
+        for base_index in range(0, len(headers), block_width)
+    ]
+    vehicles: list[OnlineVehicleRow] = []
+    for row in rows[header_row_index + 1:]:
+        for block_index, block_header in enumerate(block_headers):
+            base_index = block_index * block_width
+            cells = (row[base_index:base_index + block_width] + [""] * block_width)[:block_width]
+            vehicle = _build_online_vehicle_row_from_cells(
+                path=path,
+                sheet_name=sheet_name,
+                headers=block_header,
+                cells=cells,
+            )
+            if vehicle is not None:
+                vehicles.append(vehicle)
+    return vehicles
+
+
+def _find_online_header_row(
+    *,
+    path: Path,
+    sheet_name: str,
+    rows: list[list[str]],
+) -> tuple[int, list[str]]:
+    required_headers = {"股道", "序号", "车型", "车号", "修程", "备注", "目标股道", "是否对位", "车辆属性"}
+    for row_index, row in enumerate(rows[:DATA_HEADER_SCAN_MAX_ROWS]):
+        normalized_row = [cell.strip() for cell in row]
+        row_values = {cell for cell in normalized_row if cell}
+        if required_headers.issubset(row_values):
+            return row_index, normalized_row
+    raise ValueError(f"Unsupported online workbook header layout in {path.name}::{sheet_name}")
+
+
+def _online_sheet_matches_workbook_suffix(rows: list[list[str]], expected_suffix: str) -> bool:
+    title = rows[0][0].strip() if rows and rows[0] else ""
+    if expected_suffix in title:
+        return True
+    if len(expected_suffix) != 9:
+        return False
+    date_part = expected_suffix[:8]
+    period_code = expected_suffix[8]
+    period = {"Z": "上午", "W": "下午"}.get(period_code)
+    if period is None:
+        return False
+    dotted_date = f"{date_part[:4]}.{date_part[4:6]}.{date_part[6:8]}"
+    return dotted_date in title and period in title
+
+
 def _find_header_row(
     *,
     path: Path,
@@ -702,6 +1042,34 @@ def _render_data_conversion_assumptions(summary_payload: dict) -> str:
     )
 
 
+def _render_online_conversion_assumptions(summary_payload: dict) -> str:
+    total_empty_targets = sum(
+        item.get("empty_target_count", 0)
+        for item in summary_payload.get("scenarios", [])
+    )
+    ignored_sheets = [
+        f"{item.get('source_workbook')}: {', '.join(item.get('ignored_sheets', []))}"
+        for item in summary_payload.get("scenarios", [])
+        if item.get("ignored_sheets")
+    ]
+    lines = [
+        "# Online Conversion Assumptions",
+        "",
+        "- Source workbooks under `取送车计划/new` are treated as single-snapshot online plan inputs, not paired Start/End snapshots.",
+        "- Each data row with a `车号` becomes one `vehicleInfo` row; both left and right table blocks are parsed.",
+        "- A sheet is used only when its title matches the workbook suffix, either directly as `20260402W` or by date/period such as `2026.04.02下午`; residual sheets with other dates are ignored.",
+        "- Blank `目标股道` means the vehicle is kept in the payload as a current-track occupancy row with `targetMode=SNAPSHOT` and `targetSource=ONLINE_EMPTY_TARGET`.",
+        "- Explicit online targets `修1/修2/修3/修4` are preserved as those short target names in JSON; normalization interprets them as the corresponding concrete inner-depot tracks.",
+        "- `目标股道=存4` is normalized to `存4北` because `存4南` is not a legal final destination.",
+        "- `车辆属性` from the workbook is preserved when present; otherwise legacy repair-derived attributes such as `重 -> 重车` are used.",
+        f"- Total blank-target rows preserved as occupancy rows: {total_empty_targets}",
+    ]
+    if ignored_sheets:
+        lines.extend(["", "## Ignored Sheets"])
+        lines.extend(f"- {item}" for item in ignored_sheets)
+    return "\n".join(lines)
+
+
 def _duplicate_vehicle_nos(rows: list[ExcelVehicleRow]) -> set[str]:
     seen: set[str] = set()
     duplicates: set[str] = set()
@@ -739,6 +1107,24 @@ def convert_data_cmd(
     master_dir: Path = typer.Option(DEFAULT_MASTER_DIR, exists=True, file_okay=False, dir_okay=True),
 ):
     summary = convert_data_external_validation_inputs(
+        source_root=source_root,
+        length_xlsx=length_xlsx,
+        supplemental_length_xlsx=supplemental_length_xlsx,
+        output_dir=output_dir,
+        master_dir=master_dir,
+    )
+    typer.echo(json.dumps(summary, ensure_ascii=False))
+
+
+@app.command("convert-online")
+def convert_online_cmd(
+    output_dir: Path = typer.Option(..., exists=False, file_okay=False, dir_okay=True),
+    source_root: Path = typer.Option(DEFAULT_ONLINE_SOURCE_ROOT, exists=True, file_okay=False, dir_okay=True),
+    length_xlsx: Path = typer.Option(DEFAULT_LENGTH_XLSX, exists=True, dir_okay=False),
+    supplemental_length_xlsx: Path = typer.Option(DEFAULT_SUPPLEMENTAL_LENGTH_XLSX, exists=False, dir_okay=False),
+    master_dir: Path = typer.Option(DEFAULT_MASTER_DIR, exists=True, file_okay=False, dir_okay=True),
+):
+    summary = convert_online_validation_inputs(
         source_root=source_root,
         length_xlsx=length_xlsx,
         supplemental_length_xlsx=supplemental_length_xlsx,

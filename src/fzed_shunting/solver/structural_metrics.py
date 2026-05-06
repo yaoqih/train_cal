@@ -4,6 +4,12 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from fzed_shunting.domain.work_positions import (
+    allowed_spotting_south_ranks,
+    north_rank,
+    preview_work_positions_after_prepend,
+    south_rank,
+)
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.goal_logic import goal_is_satisfied
 from fzed_shunting.solver.purity import STAGING_TRACKS, compute_state_purity
@@ -22,6 +28,8 @@ class StructuralMetrics:
     work_position_unfinished_count: int
     front_blocker_count: int
     front_blocker_by_track: dict[str, int]
+    target_sequence_defect_count: int
+    target_sequence_defect_by_track: dict[str, int]
     goal_track_blocker_count: int
     goal_track_blocker_by_track: dict[str, int]
     capacity_overflow_track_count: int
@@ -74,6 +82,12 @@ def compute_structural_metrics(
         state=state,
         vehicle_by_no=vehicle_by_no,
     )
+    target_sequence_defect_by_track = _target_sequence_defects(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        current_track_by_vehicle=track_by_vehicle,
+    )
     capacity_debt_by_track = _capacity_debt_by_track(plan_input, state)
 
     return StructuralMetrics(
@@ -85,6 +99,8 @@ def compute_structural_metrics(
         work_position_unfinished_count=work_position_unfinished_count,
         front_blocker_count=sum(front_blocker_by_track.values()),
         front_blocker_by_track=dict(sorted(front_blocker_by_track.items())),
+        target_sequence_defect_count=sum(target_sequence_defect_by_track.values()),
+        target_sequence_defect_by_track=dict(sorted(target_sequence_defect_by_track.items())),
         goal_track_blocker_count=sum(goal_track_blocker_by_track.values()),
         goal_track_blocker_by_track=dict(sorted(goal_track_blocker_by_track.items())),
         capacity_overflow_track_count=len(capacity_debt_by_track),
@@ -173,6 +189,113 @@ def _goal_track_blockers(
             ):
                 blockers[track] += 1
     return dict(blockers)
+
+
+def _target_sequence_defects(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    vehicle_by_no: dict,
+    current_track_by_vehicle: dict[str, str],
+) -> dict[str, int]:
+    defects: Counter[str] = Counter()
+    unfinished_work_by_track: dict[str, list[tuple[Any, str | None]]] = {}
+    for vehicle in plan_input.vehicles:
+        if vehicle.goal.work_position_kind is None:
+            continue
+        current_track = current_track_by_vehicle.get(vehicle.vehicle_no)
+        if current_track is not None and goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=state,
+            plan_input=plan_input,
+        ):
+            continue
+        for target_track in vehicle.goal.allowed_target_tracks:
+            unfinished_work_by_track.setdefault(target_track, []).append((vehicle, current_track))
+
+    for target_track, vehicle_entries in unfinished_work_by_track.items():
+        seq = state.track_sequences.get(target_track, [])
+        defects[target_track] = max(
+            _work_position_sequence_defect(
+                vehicle,
+                current_track=current_track,
+                target_track=target_track,
+                target_seq=seq,
+                vehicle_by_no=vehicle_by_no,
+            )
+            for vehicle, current_track in vehicle_entries
+        )
+    return dict(defects)
+
+
+def _work_position_sequence_defect(
+    vehicle: Any,
+    *,
+    current_track: str | None,
+    target_track: str,
+    target_seq: list[str],
+    vehicle_by_no: dict,
+) -> int:
+    if current_track == target_track:
+        return _work_position_rank_defect(vehicle, target_track=target_track, seq=target_seq)
+    return _work_position_insertion_defect(
+        vehicle,
+        target_track=target_track,
+        target_seq=target_seq,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+
+def _work_position_insertion_defect(
+    vehicle: Any,
+    *,
+    target_track: str,
+    target_seq: list[str],
+    vehicle_by_no: dict,
+) -> int:
+    kind = vehicle.goal.work_position_kind
+    for clear_count in range(len(target_seq) + 1):
+        preview = preview_work_positions_after_prepend(
+            target_track=target_track,
+            incoming_vehicle_nos=[vehicle.vehicle_no],
+            existing_vehicle_nos=target_seq[clear_count:],
+            vehicle_by_no=vehicle_by_no,
+        )
+        if not preview.valid:
+            continue
+        evaluation = preview.evaluations.get(vehicle.vehicle_no)
+        if evaluation is None:
+            continue
+        if kind == "SPOTTING" and not evaluation.satisfied_now:
+            continue
+        return clear_count
+    if kind == "SPOTTING":
+        ranks = allowed_spotting_south_ranks(target_track)
+        if not ranks:
+            return 0
+    return 0
+
+
+def _work_position_rank_defect(vehicle: Any, *, target_track: str, seq: list[str]) -> int:
+    kind = vehicle.goal.work_position_kind
+    if kind == "SPOTTING":
+        rank = south_rank(seq, vehicle.vehicle_no)
+        ranks = allowed_spotting_south_ranks(target_track)
+        if rank is None or not ranks or rank in ranks:
+            return 0
+        if rank > max(ranks):
+            return rank - max(ranks)
+        return min(ranks) - rank
+    if kind in {"EXACT_NORTH_RANK", "EXACT_WORK_SLOT"}:
+        rank = north_rank(seq, vehicle.vehicle_no)
+        target_rank = vehicle.goal.target_rank
+        if rank is None or target_rank is None:
+            return 0
+        if kind == "EXACT_WORK_SLOT":
+            return max(0, rank - target_rank)
+        return abs(rank - target_rank)
+    return 0
 
 
 def _capacity_debt_by_track(

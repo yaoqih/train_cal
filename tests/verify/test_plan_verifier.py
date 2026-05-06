@@ -235,6 +235,69 @@ def test_plan_verifier_reports_work_position_rank_mismatch():
     assert any("south_rank=1" in error and "expected one of" in error for error in report.errors)
 
 
+def test_plan_verifier_reports_duplicate_explicit_work_slot():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "洗南", "trackDistance": 88.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "罐车",
+                "vehicleNo": "SLOT_A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SPOT",
+                "targetTrack": "洗南",
+                "targetSpotCode": "2",
+                "isSpotting": "是",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "罐车",
+                "vehicleNo": "SLOT_B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SPOT",
+                "targetTrack": "洗南",
+                "targetSpotCode": "2",
+                "isSpotting": "是",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    plan = [
+        {
+            "hookNo": 1,
+            "actionType": "ATTACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "存5北",
+            "vehicleNos": ["SLOT_A", "SLOT_B"],
+            "pathTracks": ["存5北"],
+        },
+        {
+            "hookNo": 2,
+            "actionType": "DETACH",
+            "sourceTrack": "存5北",
+            "targetTrack": "洗南",
+            "vehicleNos": ["SLOT_A", "SLOT_B"],
+            "pathTracks": ["存5北", "存5南", "渡8", "渡9", "临4", "临3", "洗北", "洗南"],
+        },
+    ]
+
+    report = verify_plan(master, normalized, plan)
+
+    assert report.is_valid is False
+    assert any("duplicate explicit work slot 2 on 洗南" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -287,7 +350,7 @@ def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():
     assert any("DETACH sourceTrack" in error for error in report.errors)
 
 
-def test_plan_verifier_rejects_capacity_overflow():
+def test_plan_verifier_warns_capacity_overflow_without_rejecting_plan():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
@@ -333,8 +396,9 @@ def test_plan_verifier_rejects_capacity_overflow():
         ),
     )
 
-    assert report.is_valid is False
-    assert any("capacity" in error.lower() for error in report.errors)
+    assert report.is_valid is True
+    assert report.errors == []
+    assert any("capacity" in warning.lower() for warning in report.capacity_warnings)
 
 
 def test_plan_verifier_rejects_close_door_front_position_non_cun4bei_when_gt10():
@@ -917,6 +981,39 @@ def test_plan_verifier_rejects_short_random_depot_vehicle_on_3_4_when_1_2_still_
 
     assert report.is_valid is False
     assert any("preferred" in error.lower() or "fallback" in error.lower() for error in report.errors)
+
+
+def test_plan_verifier_accepts_snapshot_fallback_as_soft_preference():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存5南", "trackDistance": 156},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SNAPSHOT_SOFT_FALLBACK",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SNAPSHOT",
+                "targetTrack": "存5南",
+                "targetSource": "END_SNAPSHOT",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+
+    report = verify_plan(master, normalized, [])
+
+    assert report.is_valid is True
+    assert report.errors == []
 
 
 def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_full():

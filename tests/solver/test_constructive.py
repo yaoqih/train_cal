@@ -2,14 +2,21 @@ import json
 from collections import Counter
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.io.normalize_input import normalize_plan_input
-from fzed_shunting.solver.constructive import solve_constructive, ConstructiveResult
+from fzed_shunting.solver.constructive import (
+    ConstructiveResult,
+    _is_better_attempt,
+    _score_native_move,
+    solve_constructive,
+)
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
-from fzed_shunting.solver.state import ReplayState, _state_key
+from fzed_shunting.solver.state import ReplayState, _apply_move, _state_key
+from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 from fzed_shunting.verify.plan_verifier import verify_plan
 
@@ -42,6 +49,113 @@ def _run(payload: dict) -> tuple[ConstructiveResult, object, object, object]:
     initial = build_initial_state(normalized)
     result = solve_constructive(normalized, initial, master=master, max_iterations=500)
     return result, master, normalized, initial
+
+
+def test_constructive_attempt_comparison_handles_progress_tuple_heuristics():
+    shorter_partial = ConstructiveResult(
+        plan=[],
+        reached_goal=False,
+        iterations=1,
+        elapsed_ms=1.0,
+        final_heuristic=12,
+    )
+    better_progress = ConstructiveResult(
+        plan=[],
+        reached_goal=False,
+        iterations=2,
+        elapsed_ms=1.0,
+        final_heuristic=(10, 0, 0, 8),
+    )
+
+    assert _is_better_attempt(better_progress, shorter_partial)
+
+
+def test_score_native_move_prefers_bounded_random_snapshot_attach_over_whole_prefix():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "存1", "trackDistance": 113.0},
+            {"trackName": "存2", "trackDistance": 239.2},
+            {"trackName": "存3", "trackDistance": 258.5},
+            {"trackName": "机北", "trackDistance": 80.0},
+            {"trackName": "调北", "trackDistance": 70.1},
+            {"trackName": "洗北", "trackDistance": 100.0},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": str(index),
+                "vehicleModel": "棚车",
+                "vehicleNo": f"SNAP_RANDOM_{index}",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "SNAPSHOT",
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for index in range(1, 17)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    heuristic = make_state_heuristic_real_hook(normalized)
+    current_h = heuristic(state)
+    chunk = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=[f"SNAP_RANDOM_{index}" for index in range(1, 11)],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    whole = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=[f"SNAP_RANDOM_{index}" for index in range(1, 17)],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    chunk_state = _apply_move(
+        state=state,
+        move=chunk,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+    whole_state = _apply_move(
+        state=state,
+        move=whole,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    chunk_score, chunk_tier = _score_native_move(
+        move=chunk,
+        state=state,
+        next_state=chunk_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(chunk_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed={"存3"},
+        satisfied_by_track={},
+    )
+    whole_score, whole_tier = _score_native_move(
+        move=whole,
+        state=state,
+        next_state=whole_state,
+        plan_input=normalized,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(whole_state),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed={"存3"},
+        satisfied_by_track={},
+    )
+
+    assert chunk_score < whole_score
 
 
 def test_constructive_route_release_scoring_reuses_route_blockage_by_state(monkeypatch):
@@ -3695,3 +3809,213 @@ def test_score_native_move_allows_pushers_to_complete_close_door_cun4bei_sequenc
 
     assert tier == 1
     assert score[3] == 0
+
+
+def test_score_native_move_prioritizes_work_position_progress_over_area_random():
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 80},
+                {"trackName": "存5北", "trackDistance": 120},
+                {"trackName": "调棚", "trackDistance": 120},
+                {"trackName": "修1库内", "trackDistance": 120},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "AREA_DONE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "大库",
+                    "isSpotting": "101",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5北",
+                    "order": "2",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "WP_DONE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "调棚",
+                    "isSpotting": "是",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    goal_tracks_needed = _collect_goal_tracks(normalized)
+    area_move = HookAction(
+        source_track="存5北",
+        target_track="修1库内",
+        vehicle_nos=["AREA_DONE"],
+        path_tracks=["存5北", "修1库内"],
+        action_type="DETACH",
+    )
+    work_position_move = HookAction(
+        source_track="存5北",
+        target_track="调棚",
+        vehicle_nos=["WP_DONE"],
+        path_tracks=["存5北", "调棚"],
+        action_type="DETACH",
+    )
+
+    def score(move: HookAction):
+        state = ReplayState(
+            track_sequences={
+                "存5北": [],
+                "调棚": [],
+                "修1库内": [],
+                "机库": [],
+            },
+            loco_track_name="存5北",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+            loco_carry=tuple(move.vehicle_nos),
+        )
+        next_state = _apply_move(
+            state=state,
+            move=move,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+        return _score_native_move(
+            move=move,
+            state=state,
+            next_state=next_state,
+            plan_input=normalized,
+            current_heuristic=2,
+            next_heuristic=1,
+            current_progress=(2, 0, 0, 2),
+            next_progress=(1, 0, 0, 1),
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks_needed,
+        )[0]
+
+    assert score(work_position_move) < score(area_move)
+
+
+def test_score_native_move_prioritizes_frontier_debt_before_goal_track_blockers(monkeypatch):
+    from fzed_shunting.solver.constructive import _collect_goal_tracks, _score_native_move
+    from fzed_shunting.solver.state import _apply_move
+    from fzed_shunting.solver.types import HookAction
+
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 80},
+                {"trackName": "存5北", "trackDistance": 120},
+                {"trackName": "调棚", "trackDistance": 120},
+                {"trackName": "存2", "trackDistance": 120},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "WORK",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "调棚",
+                    "isSpotting": "是",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5北",
+                    "order": "2",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "TRACK",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存2",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    goal_tracks_needed = _collect_goal_tracks(normalized)
+    work_move = HookAction(
+        source_track="存5北",
+        target_track="调棚",
+        vehicle_nos=["WORK"],
+        path_tracks=["存5北", "调棚"],
+        action_type="DETACH",
+    )
+    track_move = HookAction(
+        source_track="存5北",
+        target_track="存2",
+        vehicle_nos=["TRACK"],
+        path_tracks=["存5北", "存2"],
+        action_type="DETACH",
+    )
+
+    def fake_structural_metrics(_plan_input, next_state):
+        if next_state.track_sequences.get("调棚"):
+            return SimpleNamespace(
+                goal_track_blocker_count=8,
+                front_blocker_count=0,
+                staging_debt_count=0,
+                area_random_unfinished_count=0,
+                work_position_unfinished_count=0,
+            )
+        return SimpleNamespace(
+            goal_track_blocker_count=0,
+            front_blocker_count=1,
+            staging_debt_count=0,
+            area_random_unfinished_count=0,
+            work_position_unfinished_count=1,
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.constructive.compute_structural_metrics",
+        fake_structural_metrics,
+    )
+
+    def score(move: HookAction):
+        state = ReplayState(
+            track_sequences={
+                "存5北": [],
+                "调棚": [],
+                "存2": [],
+                "机库": [],
+            },
+            loco_track_name="存5北",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+            loco_carry=tuple(move.vehicle_nos),
+        )
+        next_state = _apply_move(
+            state=state,
+            move=move,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+        return _score_native_move(
+            move=move,
+            state=state,
+            next_state=next_state,
+            plan_input=normalized,
+            current_heuristic=2,
+            next_heuristic=1,
+            current_progress=(2, 0, 0, 2),
+            next_progress=(1, 0, 0, 1),
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks_needed,
+        )[0]
+
+    assert score(work_move) < score(track_move)

@@ -352,7 +352,7 @@ def test_work_track_numeric_spotting_uses_exact_north_rank():
     assert vehicle.goal.target_rank == 3
 
 
-def test_work_track_explicit_spot_uses_exact_north_rank():
+def test_work_track_explicit_spot_uses_exact_work_slot():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
     payload["vehicleInfo"] = [
@@ -378,7 +378,7 @@ def test_work_track_explicit_spot_uses_exact_north_rank():
     assert vehicle.goal.target_track == "调棚"
     assert vehicle.goal.target_area_code is None
     assert vehicle.goal.target_spot_code is None
-    assert vehicle.goal.work_position_kind == "EXACT_NORTH_RANK"
+    assert vehicle.goal.work_position_kind == "EXACT_WORK_SLOT"
     assert vehicle.goal.target_rank == 4
 
 
@@ -684,6 +684,48 @@ def test_random_depot_long_vehicle_prefers_only_inner_tracks_3_4():
     assert vehicle.goal.fallback_target_tracks == []
 
 
+@pytest.mark.parametrize(
+    ("target_track", "expected_track"),
+    [
+        ("修1", "修1库内"),
+        ("修2", "修2库内"),
+        ("修3", "修3库内"),
+        ("修4", "修4库内"),
+    ],
+)
+def test_short_repair_line_targets_stay_exact_inner_depot_goals(target_track, expected_track):
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["trackInfo"].extend(
+        [
+            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修4库内", "trackDistance": 151.7},
+        ]
+    )
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": f"SHORT_{target_track}",
+            "repairProcess": "厂修",
+            "vehicleLength": 14.3,
+            "targetTrack": target_track,
+            "isSpotting": "",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "TRACK"
+    assert vehicle.goal.target_track == expected_track
+    assert vehicle.goal.allowed_target_tracks == [expected_track]
+    assert vehicle.goal.target_area_code is None
+
+
 def test_numeric_spotting_maps_to_spot_goal():
     master = load_master_data(DATA_DIR)
     payload = _base_payload()
@@ -706,6 +748,32 @@ def test_numeric_spotting_maps_to_spot_goal():
     assert vehicle.goal.target_mode == "SPOT"
     assert vehicle.goal.target_track == "修1库内"
     assert vehicle.goal.target_spot_code == "101"
+
+
+def test_short_repair_line_target_accepts_matching_numeric_spotting():
+    master = load_master_data(DATA_DIR)
+    payload = _base_payload()
+    payload["vehicleInfo"] = [
+        {
+            "trackName": "存5北",
+            "order": "1",
+            "vehicleModel": "棚车",
+            "vehicleNo": "SHORT_SPOT_104",
+            "repairProcess": "厂修",
+            "vehicleLength": 14.3,
+            "targetTrack": "修1",
+            "isSpotting": "104",
+            "vehicleAttributes": "",
+        }
+    ]
+
+    result = normalize_plan_input(payload, master)
+    vehicle = result.vehicles[0]
+
+    assert vehicle.goal.target_mode == "SPOT"
+    assert vehicle.goal.target_track == "修1库内"
+    assert vehicle.goal.allowed_target_tracks == ["修1库内"]
+    assert vehicle.goal.target_spot_code == "104"
 
 
 def test_vehicle_attribute_parsing():

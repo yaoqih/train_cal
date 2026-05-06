@@ -10,7 +10,7 @@ from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
 
-ROUTE_RELEASE_CONTINUATION_BONUS = 8
+ROUTE_RELEASE_CONTINUATION_BONUS = 10
 ROUTE_RELEASE_FOCUS_TTL = 3
 
 

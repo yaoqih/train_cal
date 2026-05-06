@@ -394,6 +394,10 @@ def _build_repair_plan_input(
         plan_input=plan_input,
         snapshot=snapshot,
     )
+    movable_work_position_rank = _work_position_rank_participant_vehicle_nos(
+        plan_input=plan_input,
+        snapshot=snapshot,
+    )
     for vehicle in plan_input.vehicles:
         current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
         if goal_is_satisfied(
@@ -428,6 +432,7 @@ def _build_repair_plan_input(
             and vehicle.vehicle_no not in movable_exact_spot_blockers
             and vehicle.vehicle_no not in movable_front_blockers
             and vehicle.vehicle_no not in movable_capacity_release_front
+            and vehicle.vehicle_no not in movable_work_position_rank
             and vehicle.vehicle_no not in extra_movable_vehicle_nos
         ):
             if vehicle.goal.work_position_kind is not None:
@@ -460,6 +465,40 @@ def _build_repair_plan_input(
             "loco_track_name": snapshot.loco_track_name,
         }
     )
+
+
+def _work_position_rank_participant_vehicle_nos(
+    *,
+    plan_input: NormalizedPlanInput,
+    snapshot: ReplayState,
+) -> set[str]:
+    work_position_target_tracks: set[str] = set()
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    for vehicle in plan_input.vehicles:
+        if vehicle.goal.work_position_kind is None:
+            continue
+        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
+        if not goal_is_satisfied(
+            vehicle,
+            track_name=current_track,
+            state=snapshot,
+            plan_input=plan_input,
+        ):
+            work_position_target_tracks.update(vehicle.goal.allowed_target_tracks)
+
+    movable: set[str] = set()
+    if not work_position_target_tracks:
+        return movable
+    for vehicle in plan_input.vehicles:
+        current_track = _locate_vehicle(snapshot, vehicle.vehicle_no)
+        if vehicle.goal.work_position_kind is not None and (
+            current_track in work_position_target_tracks
+            or any(track in work_position_target_tracks for track in vehicle.goal.allowed_target_tracks)
+        ):
+            movable.add(vehicle.vehicle_no)
+    for track in work_position_target_tracks:
+        movable.update(snapshot.track_sequences.get(track, []))
+    return movable
 
 
 def _capacity_release_front_vehicle_nos(

@@ -77,12 +77,7 @@ def _counts_as_unfinished(
         plan_input=plan_input,
     ):
         return True
-    return _is_fallback_while_preferred_still_feasible(
-        vehicle,
-        current_track=current_track,
-        state=state,
-        plan_input=plan_input,
-    )
+    return False
 
 
 def _counts_as_preferred_violation(
@@ -92,13 +87,20 @@ def _counts_as_preferred_violation(
     state: ReplayState,
     plan_input: NormalizedPlanInput,
 ) -> bool:
+    if not goal_is_satisfied(
+        vehicle,
+        track_name=current_track,
+        state=state,
+        plan_input=plan_input,
+    ):
+        return False
     if _is_fallback_while_preferred_still_feasible(
         vehicle,
         current_track=current_track,
         state=state,
         plan_input=plan_input,
     ):
-        return False
+        return True
     return not goal_is_preferred_satisfied(
         vehicle,
         track_name=current_track,

@@ -379,12 +379,13 @@ from fzed_shunting.solver.search import _priority
 class TestSearchPriorityDepotSecondary:
     def test_flag_off_default_priority_unchanged_exact(self) -> None:
         # Baseline parity: neg_depot_index_sum=0 keeps the classic ordering
-        # after the route-release regression guard prefix.
+        # after the route-release regression guard prefix, with carry-count
+        # convergence ahead of depot-late secondary ordering.
         legacy = _priority(
             cost=3, heuristic=5, blocker_bonus=0,
             solver_mode="exact", heuristic_weight=1.0,
         )
-        assert legacy == (0, 8, 3, 0, 5, (0, 0, 0), 0)
+        assert legacy == (0, 8, 3, 5, (0, 0, 0, 0), 0, 0, 0, 0)
 
     def test_flag_on_smaller_neg_index_sum_preferred(self) -> None:
         # Two nodes same (cost, heuristic). Node A has depot at index 3
@@ -428,6 +429,38 @@ class TestSearchPriorityDepotSecondary:
         )
         # beam: (f, cost, neg_depot, adj_h, purity, -blocker, h)
         assert p[-2] == -1
+
+    def test_beam_mode_uses_depot_late_as_secondary(self) -> None:
+        late_depot = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=-3,
+            carry_count=0,
+        )
+        early_depot = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=-1,
+            carry_count=0,
+        )
+
+        assert late_depot < early_depot
+
+    def test_beam_mode_carry_count_beats_depot_late_secondary(self) -> None:
+        short_carry = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=-1,
+            carry_count=1,
+        )
+        long_carry_late_depot = _priority(
+            cost=3, heuristic=5, blocker_bonus=0,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=-100,
+            carry_count=4,
+        )
+
+        assert short_carry < long_carry_late_depot
 
 
 from fzed_shunting.solver.lns import _is_better_plan, _plan_quality
