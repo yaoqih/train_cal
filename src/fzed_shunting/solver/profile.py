@@ -18,6 +18,9 @@ VALIDATION_RETRY_BEAM_WIDTH_MULTIPLIER = 4
 VALIDATION_RECOVERY_RISKY_MAX_VEHICLE_TOUCH_COUNT = 80
 VALIDATION_RECOVERY_RISKY_STAGING_TO_STAGING_HOOK_COUNT = 8
 VALIDATION_RECOVERY_RISKY_REHANDLED_VEHICLE_COUNT = 80
+VALIDATION_RECOVERY_ESCALATE_MAX_VEHICLE_TOUCH_COUNT = 80
+VALIDATION_RECOVERY_ESCALATE_STAGING_TO_STAGING_HOOK_COUNT = 32
+VALIDATION_RECOVERY_ESCALATE_REHANDLED_VEHICLE_COUNT = 80
 
 
 def validation_time_budget_ms(timeout_seconds: float | None) -> float | None:
@@ -134,6 +137,41 @@ def validation_recovery_should_continue_after_success(
     if (
         rehandled_vehicle_count is not None
         and rehandled_vehicle_count > VALIDATION_RECOVERY_RISKY_REHANDLED_VEHICLE_COUNT
+    ):
+        return True
+    return False
+
+
+def validation_recovery_should_escalate_after_success(
+    *,
+    hook_count: int | None,
+    max_vehicle_touch_count: int | None,
+    staging_to_staging_hook_count: int | None = None,
+    rehandled_vehicle_count: int | None = None,
+) -> bool:
+    """Return True for complete plans that are likely trapped in a bad basin.
+
+    ``continue`` is intentionally sensitive because a cheap same-beam retry can
+    clean up modest churn. Beam widening is different: it spends the reserved
+    recovery budget, so use only structural signals that show repeated
+    rehandling or staging loops are dominating the plan.
+    """
+    if (
+        max_vehicle_touch_count is not None
+        and max_vehicle_touch_count
+        > VALIDATION_RECOVERY_ESCALATE_MAX_VEHICLE_TOUCH_COUNT
+    ):
+        return True
+    if (
+        staging_to_staging_hook_count is not None
+        and staging_to_staging_hook_count
+        >= VALIDATION_RECOVERY_ESCALATE_STAGING_TO_STAGING_HOOK_COUNT
+    ):
+        return True
+    if (
+        rehandled_vehicle_count is not None
+        and rehandled_vehicle_count
+        > VALIDATION_RECOVERY_ESCALATE_REHANDLED_VEHICLE_COUNT
     ):
         return True
     return False

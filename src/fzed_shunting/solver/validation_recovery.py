@@ -8,10 +8,12 @@ from fzed_shunting.io.normalize_input import NormalizedPlanInput
 from fzed_shunting.solver.astar_solver import (
     RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
 )
+from fzed_shunting.solver.complete_selection import complete_result_is_better
 from fzed_shunting.solver.profile import (
     VALIDATION_MIN_RETRY_ATTEMPT_BUDGET_MS,
     prioritized_validation_recovery_beam_widths,
     validation_recovery_should_continue_after_success,
+    validation_recovery_should_escalate_after_success,
     validation_retry_beam_widths,
     validation_retry_time_budget_ms,
 )
@@ -96,16 +98,20 @@ def solve_with_validation_recovery_result(
         )
         retry_used_ms += _result_elapsed_ms(candidate)
         if candidate.is_complete:
-            if best_complete is None or len(candidate.plan) < len(best_complete.plan):
+            if (
+                best_complete is None
+                or complete_result_is_better(candidate, best_complete)
+            ):
                 stats: dict[str, Any] = dict(candidate.debug_stats or {})
                 stats["validation_recovery"] = {
                     "recovery_beam_width": retry_beam_width,
                     "recovery_time_budget_ms": retry_budget_ms,
                 }
                 best_complete = replace(candidate, debug_stats=stats)
-            if initial.is_complete and not improve_pathological_success:
-                break
-            if not _should_continue_recovery_after_success(candidate):
+            if not (
+                improve_pathological_success
+                and _should_escalate_recovery_after_success(candidate)
+            ):
                 break
             continue
         if best_partial is None or partial_result_is_better(candidate, best_partial):
@@ -136,12 +142,35 @@ def _recovery_beam_widths_for_result(
     base_beam_width: int,
     time_budget_ms: float | None,
 ) -> list[int]:
+    if result.is_complete:
+        widths = (
+            retry_beam_widths
+            if _should_escalate_recovery_after_success(result)
+            else [base_beam_width]
+        )
+        return prioritized_validation_recovery_beam_widths(
+            list(widths),
+            base_beam_width=base_beam_width,
+            time_budget_ms=time_budget_ms,
+        )
     if partial_result_is_route_clean_tail_candidate(result):
         return list(retry_beam_widths)
     return prioritized_validation_recovery_beam_widths(
         retry_beam_widths,
         base_beam_width=base_beam_width,
         time_budget_ms=time_budget_ms,
+    )
+
+
+def _should_escalate_recovery_after_success(result: SolverResult) -> bool:
+    shape = (result.debug_stats or {}).get("plan_shape_metrics") or {}
+    return validation_recovery_should_escalate_after_success(
+        hook_count=len(result.plan),
+        max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
+        staging_to_staging_hook_count=_as_int(
+            shape.get("staging_to_staging_hook_count")
+        ),
+        rehandled_vehicle_count=_as_int(shape.get("rehandled_vehicle_count")),
     )
 
 

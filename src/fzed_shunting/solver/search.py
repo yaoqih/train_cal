@@ -72,6 +72,9 @@ class QueueItem:
     )
     route_release_focus_bonus: int = field(default=0, compare=False)
     route_release_focus_ttl: int = field(default=0, compare=False)
+    candidate_kind: str = field(default="", compare=False)
+    candidate_focus_tracks: tuple[str, ...] = field(default=(), compare=False)
+    candidate_structural_reserve: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -310,6 +313,9 @@ def _solve_search_result(
                     route_release_focus_tracks=next_focus_tracks,
                     route_release_focus_bonus=next_focus_bonus,
                     route_release_focus_ttl=next_focus_ttl,
+                    candidate_kind=candidate.kind,
+                    candidate_focus_tracks=candidate.focus_tracks,
+                    candidate_structural_reserve=candidate.structural_reserve,
                 ),
             )
             generated_nodes += 1
@@ -784,6 +790,11 @@ def _prune_queue(
             blocker_item = blocker_candidates[0]
             kept.append(blocker_item)
             kept_ids.add(id(blocker_item))
+        for item in _best_work_position_focus_items(ranked, kept_ids):
+            if len(kept) >= beam_width:
+                break
+            kept.append(item)
+            kept_ids.add(id(item))
         if enable_structural_diversity and _has_structural_churn_pressure(ranked[:beam_width]):
             frontier_limit = max(
                 beam_width,
@@ -823,6 +834,24 @@ def _prune_queue(
     for item in pruned:
         if best_cost.get(item.state_key) == len(item.plan):
             del best_cost[item.state_key]
+
+
+def _best_work_position_focus_items(
+    ranked: list[QueueItem],
+    kept_ids: set[int],
+) -> list[QueueItem]:
+    by_track: dict[str, QueueItem] = {}
+    for item in ranked:
+        if (
+            id(item) in kept_ids
+            or item.candidate_kind != "work_position_sequence"
+            or not item.candidate_structural_reserve
+        ):
+            continue
+        for track in item.candidate_focus_tracks:
+            if track not in by_track:
+                by_track[track] = item
+    return list(by_track.values())
 
 
 def _has_structural_churn_pressure(queue: list[QueueItem]) -> bool:
@@ -914,6 +943,7 @@ def _initialize_debug_stats(
             "moves_by_source": {},
             "moves_by_block_size": {},
             "candidate_steps_by_kind": {},
+            "candidate_focus_tracks_by_kind": {},
             "top_expansions": [],
         }
     )
@@ -950,6 +980,10 @@ def _accumulate_move_debug_stats(
         debug_stats["candidate_steps_by_kind"],
         move_stats.get("candidate_steps_by_kind", {}),
     )
+    _merge_nested_counter_dict(
+        debug_stats["candidate_focus_tracks_by_kind"],
+        move_stats.get("candidate_focus_tracks_by_kind", {}),
+    )
     top_expansions = debug_stats["top_expansions"]
     top_expansions.append(
         {
@@ -970,3 +1004,13 @@ def _accumulate_move_debug_stats(
 def _merge_counter_dict(target: dict[str, int], incoming: dict[Any, int]) -> None:
     for key, value in incoming.items():
         target[str(key)] = target.get(str(key), 0) + int(value)
+
+
+def _merge_nested_counter_dict(
+    target: dict[str, dict[str, int]],
+    incoming: dict[Any, dict[Any, int]],
+) -> None:
+    for outer_key, nested in incoming.items():
+        bucket = target.setdefault(str(outer_key), {})
+        for inner_key, value in nested.items():
+            bucket[str(inner_key)] = bucket.get(str(inner_key), 0) + int(value)

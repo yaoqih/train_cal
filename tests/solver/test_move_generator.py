@@ -18,6 +18,7 @@ from fzed_shunting.solver.move_generator import (
     generate_real_hook_moves,
 )
 from fzed_shunting.solver.move_candidates import generate_move_candidates
+from fzed_shunting.solver.purity import STAGING_TRACKS
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
 from fzed_shunting.solver.state import _state_key
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
@@ -227,6 +228,296 @@ def test_work_position_sequence_candidate_prefers_contiguous_spotting_block():
             south_rank(next_state.track_sequences["调棚"], vehicle_no)
             in allowed_spotting_south_ranks("调棚")
         )
+
+
+def test_work_position_sequence_candidate_repairs_internal_rank_window_debt():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            _vehicle("SPOT1", "调棚", "调棚", order=1, spotting="是"),
+            _vehicle("FREE1", "调棚", "调棚", order=2),
+            _vehicle("FREE2", "调棚", "调棚", order=3),
+            _vehicle("FREE3", "调棚", "调棚", order=4),
+            _vehicle("FREE4", "调棚", "调棚", order=5),
+            _vehicle("FREE5", "调棚", "调棚", order=6),
+            _vehicle("FREE6", "调棚", "调棚", order=7),
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    before = compute_structural_metrics(normalized, state)
+
+    candidates = [
+        candidate
+        for candidate in generate_move_candidates(
+            normalized,
+            state,
+            master=master,
+            route_oracle=RouteOracle(master),
+        )
+        if candidate.kind == "work_position_sequence"
+    ]
+
+    assert before.target_sequence_defect_by_track == {"调棚": 1}
+    assert candidates
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    next_state = state
+    for step in candidates[0].steps:
+        next_state = move_generator._apply_move(
+            state=next_state,
+            move=step,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    after = compute_structural_metrics(normalized, next_state)
+
+    assert after.target_sequence_defect_count == 0
+    assert after.work_position_unfinished_count == 0
+    assert south_rank(next_state.track_sequences["调棚"], "SPOT1") in allowed_spotting_south_ranks("调棚")
+    assert next_state.track_sequences["调棚"].index("FREE1") < next_state.track_sequences["调棚"].index("SPOT1")
+    assert not next_state.loco_carry
+
+
+def test_work_position_sequence_candidate_repairs_rank_window_with_order_buffer():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/online/validation_20260401Z.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    before = compute_structural_metrics(normalized, state)
+
+    initial_candidates = [
+        candidate
+        for candidate in generate_move_candidates(
+            normalized,
+            state,
+            master=master,
+            route_oracle=RouteOracle(master),
+        )
+        if candidate.kind == "work_position_sequence"
+    ]
+
+    assert initial_candidates[0].reason.startswith("油 ")
+
+    oil_candidate = next(
+        candidate
+        for candidate in initial_candidates
+        if candidate.reason.startswith("油 ")
+    )
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    after_oil_state = state
+    for step in oil_candidate.steps:
+        after_oil_state = move_generator._apply_move(
+            state=after_oil_state,
+            move=step,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    after_oil = compute_structural_metrics(normalized, after_oil_state)
+    assert after_oil.target_sequence_defect_by_track.get("油", 0) == 0
+    assert after_oil.target_sequence_defect_by_track.get("调棚", 0) > 0
+
+    followup_candidates = [
+        candidate
+        for candidate in generate_move_candidates(
+            normalized,
+            after_oil_state,
+            master=master,
+            route_oracle=RouteOracle(master),
+        )
+        if candidate.kind == "work_position_sequence"
+    ]
+    shed_candidates = [
+        candidate
+        for candidate in followup_candidates
+        if candidate.reason.startswith("调棚 ")
+    ]
+    assert shed_candidates
+
+    best = shed_candidates[0]
+    assert best.structural_reserve
+    assert any(
+        step.action_type == "DETACH"
+        and step.target_track in STAGING_TRACKS
+        and "5327856" in step.vehicle_nos
+        for step in best.steps
+    )
+    assert any(
+        step.action_type == "DETACH"
+        and step.target_track == "调棚"
+        and step.vehicle_nos == ["5324224"]
+        for step in best.steps
+    )
+    assert any(
+        step.action_type == "DETACH"
+        and step.target_track in STAGING_TRACKS
+        and {"4872364", "5270499", "5331124", "5334574"}.issubset(set(step.vehicle_nos))
+        for step in best.steps
+    )
+
+    next_state = after_oil_state
+    for step in best.steps:
+        next_state = move_generator._apply_move(
+            state=next_state,
+            move=step,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    after = compute_structural_metrics(normalized, next_state)
+
+    assert after.target_sequence_defect_by_track.get("调棚", 0) == 0
+    assert after.target_sequence_defect_count < after_oil.target_sequence_defect_count
+    assert after.work_position_unfinished_count < after_oil.work_position_unfinished_count
+    for vehicle_no in ["3834139", "5324224", "5321345", "5323182"]:
+        assert (
+            south_rank(next_state.track_sequences["调棚"], vehicle_no)
+            in allowed_spotting_south_ranks("调棚")
+        )
+    assert "5327856" in next_state.track_sequences["调棚"]
+    assert set(next_state.track_sequences["临3"]) >= {
+        "4872364",
+        "5270499",
+        "5331124",
+        "5334574",
+    }
+    assert not next_state.loco_carry
+
+
+def test_work_position_sequence_candidate_releases_source_access_blocker_track():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data/validation_inputs/positive/case_3_2_shed_work_gondola.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    before = compute_structural_metrics(normalized, state)
+
+    candidates = [
+        candidate
+        for candidate in generate_move_candidates(
+            normalized,
+            state,
+            master=master,
+            route_oracle=RouteOracle(master),
+        )
+        if candidate.kind == "work_position_sequence"
+        and candidate.reason.startswith("调棚 ")
+    ]
+
+    assert candidates
+    best = candidates[0]
+    assert any(
+        step.action_type == "ATTACH"
+        and step.source_track == "存5北"
+        and "1663291" in step.vehicle_nos
+        for step in best.steps
+    )
+    assert any(
+        step.action_type == "DETACH"
+        and step.target_track == "调棚"
+        and step.vehicle_nos == ["T003"]
+        for step in best.steps
+    )
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    next_state = state
+    for step in best.steps:
+        next_state = move_generator._apply_move(
+            state=next_state,
+            move=step,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    after = compute_structural_metrics(normalized, next_state)
+
+    assert not next_state.track_sequences.get("存5北")
+    assert goal_is_satisfied(
+        vehicle_by_no["T003"],
+        track_name="调棚",
+        state=next_state,
+        plan_input=normalized,
+    )
+    assert after.target_sequence_defect_count < before.target_sequence_defect_count
+    assert after.work_position_unfinished_count < before.work_position_unfinished_count
+    assert not next_state.loco_carry
+
+
+def test_work_position_sequence_candidate_preserves_source_spotting_order_buffer():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            _vehicle("KEEP1", "调棚", "调棚", order=1),
+            _vehicle("KEEP2", "调棚", "调棚", order=2),
+            _vehicle("KEEP3", "调棚", "调棚", order=3),
+            _vehicle("KEEP4", "调棚", "调棚", order=4),
+            _vehicle("KEEP5", "调棚", "调棚", order=5),
+            _vehicle("KEEP6", "调棚", "调棚", order=6),
+            _vehicle("SPOT_A", "存5北", "调棚", order=1, spotting="是"),
+            _vehicle("MID_FREE", "存5北", "调棚", order=2),
+            _vehicle("SPOT_B", "存5北", "调棚", order=3, spotting="是"),
+            _vehicle("SPOT_C", "存5北", "调棚", order=4, spotting="是"),
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    before = compute_structural_metrics(normalized, state)
+
+    candidates = [
+        candidate
+        for candidate in generate_move_candidates(
+            normalized,
+            state,
+            master=master,
+            route_oracle=RouteOracle(master),
+        )
+        if candidate.kind == "work_position_sequence"
+    ]
+
+    assert before.target_sequence_defect_by_track.get("调棚", 0) > 0
+    assert candidates
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    next_state = state
+    for step in candidates[0].steps:
+        next_state = move_generator._apply_move(
+            state=next_state,
+            move=step,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    after = compute_structural_metrics(normalized, next_state)
+
+    assert after.target_sequence_defect_by_track.get("调棚", 0) == 0
+    assert after.work_position_unfinished_count == 0
+    for vehicle_no in ["SPOT_A", "SPOT_B", "SPOT_C"]:
+        assert (
+            south_rank(next_state.track_sequences["调棚"], vehicle_no)
+            in allowed_spotting_south_ranks("调棚")
+        )
+    assert not next_state.loco_carry
 
 
 class _SyntheticRouteBlockagePlan:

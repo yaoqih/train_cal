@@ -522,7 +522,64 @@ def test_validation_recovery_retries_pathological_success_when_requested():
     assert len(result.plan) == 40
 
 
-def test_validation_recovery_continues_after_churny_recovery_success():
+def test_validation_recovery_keeps_clean_success_over_shorter_churny_retry():
+    calls: list[dict] = []
+
+    def fake_solve_result_fn(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SolverResult(
+                plan=[_move("CLEAN")] * 150,
+                partial_plan=[],
+                expanded_nodes=0,
+                generated_nodes=0,
+                closed_nodes=0,
+                elapsed_ms=1.0,
+                is_complete=True,
+                fallback_stage=kwargs.get("solver_mode"),
+                debug_stats={
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 22,
+                        "staging_to_staging_hook_count": 8,
+                        "rehandled_vehicle_count": 18,
+                    }
+                },
+            )
+        return SolverResult(
+            plan=[_move("CHURN")] * 120,
+            partial_plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=1.0,
+            is_complete=True,
+            fallback_stage=kwargs.get("solver_mode"),
+            debug_stats={
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 55,
+                    "staging_to_staging_hook_count": 7,
+                    "rehandled_vehicle_count": 36,
+                }
+            },
+        )
+
+    result = solve_with_validation_recovery_result(
+        plan_input=None,  # type: ignore[arg-type]
+        initial_state=None,  # type: ignore[arg-type]
+        master=None,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+        beam_width=8,
+        time_budget_ms=55_000.0,
+        solve_result_fn=fake_solve_result_fn,
+        improve_pathological_success=True,
+    )
+
+    assert [call["beam_width"] for call in calls] == [8, 8]
+    assert len(result.plan) == 150
+
+
+def test_validation_recovery_continues_after_churny_recovery_success_in_quality_mode():
     calls: list[dict] = []
 
     def fake_solve_result_fn(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -598,6 +655,7 @@ def test_validation_recovery_continues_after_churny_recovery_success():
         beam_width=8,
         time_budget_ms=75_000.0,
         solve_result_fn=fake_solve_result_fn,
+        improve_pathological_success=True,
     )
 
     assert [call["beam_width"] for call in calls] == [8, 8, 16]

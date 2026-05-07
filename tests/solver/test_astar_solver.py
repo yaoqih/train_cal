@@ -18390,6 +18390,132 @@ def test_route_clean_tail_clearance_uses_constructive_before_returning_partial(m
     assert calls[0][1].loco_carry == ()
 
 
+def test_route_clean_tail_clearance_compares_complete_frontier_with_constructive(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "ROUTE_CLEAN_COMPARE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["ROUTE_CLEAN_COMPARE"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    churny_frontier = SolverResult(
+        plan=[move] * 40,
+        expanded_nodes=40,
+        generated_nodes=40,
+        closed_nodes=0,
+        elapsed_ms=40.0,
+        is_complete=True,
+        fallback_stage="goal_frontier_tail_completion",
+        debug_stats={
+            "plan_shape_metrics": {
+                "staging_to_staging_hook_count": 24,
+                "max_vehicle_touch_count": 60,
+            }
+        },
+    )
+    clean_constructive = SolverResult(
+        plan=[move] * 43,
+        expanded_nodes=43,
+        generated_nodes=43,
+        closed_nodes=0,
+        elapsed_ms=43.0,
+        is_complete=True,
+        fallback_stage="constructive_tail_rescue",
+        debug_stats={
+            "plan_shape_metrics": {
+                "staging_to_staging_hook_count": 2,
+                "max_vehicle_touch_count": 12,
+            }
+        },
+    )
+    calls: list[str] = []
+
+    def fake_goal_frontier(**_kwargs):
+        calls.append("frontier")
+        return churny_frontier
+
+    def fake_constructive(**_kwargs):
+        calls.append("constructive")
+        return clean_constructive
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_parked_work_position_blocker_clearance_resume",
+            lambda **_kwargs: None,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_route_clean_random_area_tail_completion_from_state",
+            lambda **_kwargs: None,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_direct_blocked_tail_completion_from_state",
+            lambda **_kwargs: None,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_goal_frontier_tail_completion_from_state",
+            fake_goal_frontier,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_route_clean_structural_tail_cleanup_from_state",
+            lambda **_kwargs: None,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_constructive_tail_rescue_from_state",
+            fake_constructive,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_localized_resume_completion",
+            lambda **_kwargs: None,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._attach_verification",
+            lambda result, **_kwargs: result,
+        )
+
+        result = _try_tail_clearance_resume_from_state(
+            plan_input=normalized,
+            original_initial_state=initial,
+            prefix_plan=[],
+            clearing_plan=[],
+            state=initial,
+            initial_blockage=SimpleNamespace(total_blockage_pressure=0),
+            master=master,
+            time_budget_ms=5_000.0,
+            expanded_nodes=0,
+            generated_nodes=0,
+            enable_depot_late_scheduling=False,
+        )
+
+    assert result is clean_constructive
+    assert calls == ["frontier", "constructive"]
+
+
 def test_route_clean_tail_clearance_continues_after_incomplete_constructive_tail(monkeypatch):
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -20372,6 +20498,50 @@ def test_shorter_complete_result_keeps_better_failed_partial():
     selected = _shorter_complete_result(inferior_partial, better_partial)
 
     assert selected is better_partial
+
+
+def test_shorter_complete_result_prefers_clean_complete_plan_over_churny_plan():
+    move = HookAction(
+        source_track="存5北",
+        target_track="存4北",
+        vehicle_nos=["CLEAN"],
+        path_tracks=["存5北", "存4北"],
+        action_type="DETACH",
+    )
+    churny = SolverResult(
+        plan=[move] * 101,
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=True,
+        fallback_stage="route_blockage_tail_clearance",
+        debug_stats={
+            "plan_shape_metrics": {
+                "staging_to_staging_hook_count": 30,
+                "max_vehicle_touch_count": 70,
+            }
+        },
+    )
+    clean = SolverResult(
+        plan=[move] * 104,
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="goal_frontier_tail_completion",
+        debug_stats={
+            "plan_shape_metrics": {
+                "staging_to_staging_hook_count": 6,
+                "max_vehicle_touch_count": 18,
+            }
+        },
+    )
+
+    selected = _shorter_complete_result(churny, clean)
+
+    assert selected is clean
 
 
 def test_partial_result_score_can_compare_unannotated_partials_by_replaying_state():
@@ -24509,6 +24679,91 @@ def test_prune_queue_reserves_lower_target_sequence_defect_under_churn_pressure(
     assert ("second",) in kept_keys
     assert ("lower_sequence_defect",) in kept_keys
     assert ("churn",) not in best_cost
+
+
+def test_prune_queue_reserves_best_work_position_sequence_candidate_per_focus_track():
+    def build_item(
+        seq: int,
+        priority_value: int,
+        state_key: tuple[str],
+        focus_tracks: tuple[str, ...] = (),
+        reserve: bool = True,
+    ) -> QueueItem:
+        return QueueItem(
+            priority=(priority_value, 0, 0, priority_value, (0, 0, 0), 0, priority_value),
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"调棚": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[],
+            structural_key=(4, priority_value, 0, 0, 0, 0, 0),
+            candidate_kind="work_position_sequence" if focus_tracks else "primitive",
+            candidate_focus_tracks=focus_tracks,
+            candidate_structural_reserve=bool(focus_tracks and reserve),
+        )
+
+    best = build_item(1, 10, ("best",))
+    second = build_item(2, 11, ("second",))
+    shed_sequence = build_item(3, 18, ("shed_sequence",), ("调棚",))
+    oil_sequence = build_item(4, 19, ("oil_sequence",), ("油",))
+    primitive = build_item(5, 12, ("primitive",))
+    queue = [oil_sequence, primitive, shed_sequence, second, best]
+    best_cost = {item.state_key: 0 for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=4)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("best",) in kept_keys
+    assert ("second",) in kept_keys
+    assert ("shed_sequence",) in kept_keys
+    assert ("oil_sequence",) in kept_keys
+    assert ("primitive",) not in best_cost
+
+
+def test_prune_queue_does_not_reserve_unqualified_work_position_sequence_candidate():
+    def build_item(
+        seq: int,
+        priority_value: int,
+        state_key: tuple[str],
+        focus_tracks: tuple[str, ...] = (),
+    ) -> QueueItem:
+        return QueueItem(
+            priority=(priority_value, 0, 0, priority_value, (0, 0, 0), 0, priority_value),
+            seq=seq,
+            state_key=state_key,
+            state=ReplayState(
+                track_sequences={"调棚": [state_key[0]]},
+                loco_track_name="机库",
+                weighed_vehicle_nos=set(),
+                spot_assignments={},
+            ),
+            plan=[],
+            structural_key=(4, priority_value, 0, 0, 0, 0, 0),
+            candidate_kind="work_position_sequence" if focus_tracks else "primitive",
+            candidate_focus_tracks=focus_tracks,
+            candidate_structural_reserve=False,
+        )
+
+    best = build_item(1, 10, ("best",))
+    second = build_item(2, 11, ("second",))
+    third = build_item(3, 12, ("third",))
+    unqualified_sequence = build_item(4, 18, ("unqualified_sequence",), ("调棚",))
+    queue = [unqualified_sequence, third, second, best]
+    best_cost = {item.state_key: 0 for item in queue}
+
+    _prune_queue(queue, best_cost, beam_width=3)
+
+    kept_keys = {item.state_key for item in queue}
+
+    assert ("best",) in kept_keys
+    assert ("second",) in kept_keys
+    assert ("third",) in kept_keys
+    assert ("unqualified_sequence",) not in best_cost
 
 
 def test_prune_queue_reserves_route_blockage_release_state_when_churn_pressure_is_high():

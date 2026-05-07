@@ -755,6 +755,82 @@ def test_parse_args_defaults_to_baseline_settings():
     assert args.max_workers == VALIDATION_DEFAULT_MAX_WORKERS
     assert args.timeout_seconds == int(VALIDATION_DEFAULT_TIMEOUT_SECONDS)
     assert args.retry_no_solution_beam_width is None
+    assert args.validation_mode == "full"
+
+
+def test_validation_runner_defaults_to_full_mode_same_beam_recovery(monkeypatch, tmp_path: Path):
+    scenario = tmp_path / "validation_budget.json"
+    scenario.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    captured = {}
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        return [{"scenario": scenario.name, "solved": False, "error_category": "no_solution"}]
+
+    def fake_recover_no_solution_results(**kwargs):  # noqa: ANN003
+        captured["recover"] = kwargs
+        return kwargs["initial_results"]
+
+    monkeypatch.setattr(module, "run_parallel_scenarios", fake_run_parallel_scenarios)
+    monkeypatch.setattr(module, "recover_no_solution_results", fake_recover_no_solution_results)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "run_external_validation_parallel.py",
+            "--scenario",
+            str(scenario),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    module.main()
+
+    assert captured["recover"]["retry_no_solution_beam_width"] == VALIDATION_DEFAULT_BEAM_WIDTH
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["validation_mode"] == "full"
+    assert summary["retry_no_solution_beam_width"] == VALIDATION_DEFAULT_BEAM_WIDTH
+
+
+def test_validation_runner_research_mode_keeps_progressive_wide_recovery(
+    monkeypatch,
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_budget.json"
+    scenario.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    captured = {}
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        return [{"scenario": scenario.name, "solved": False, "error_category": "no_solution"}]
+
+    def fake_recover_no_solution_results(**kwargs):  # noqa: ANN003
+        captured["recover"] = kwargs
+        return kwargs["initial_results"]
+
+    monkeypatch.setattr(module, "run_parallel_scenarios", fake_run_parallel_scenarios)
+    monkeypatch.setattr(module, "recover_no_solution_results", fake_recover_no_solution_results)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "run_external_validation_parallel.py",
+            "--scenario",
+            str(scenario),
+            "--output-dir",
+            str(output_dir),
+            "--validation-mode",
+            "research",
+        ],
+    )
+
+    module.main()
+
+    assert captured["recover"]["retry_no_solution_beam_width"] is None
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["validation_mode"] == "research"
+    assert summary["retry_no_solution_beam_width"] is None
 
 
 def test_validation_runner_uses_shared_solver_time_budget_default(monkeypatch, tmp_path: Path):
@@ -2505,6 +2581,145 @@ def test_recover_no_solution_results_retries_pathological_initial_success(tmp_pa
     assert results[0]["recovery_beam_width"] == 8
 
 
+def test_recover_no_solution_results_escalates_extreme_success_to_wide_quality_retry(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": True,
+            "hook_count": 431,
+            "is_valid": True,
+            "debug_stats": {
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 142,
+                    "staging_to_staging_hook_count": 88,
+                    "rehandled_vehicle_count": 80,
+                }
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        beam_width = kwargs["beam_width"]
+        calls.append(beam_width)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 429 if beam_width == 8 else 128,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 144 if beam_width == 8 else 18,
+                        "staging_to_staging_hook_count": 84 if beam_width == 8 else 11,
+                        "rehandled_vehicle_count": 80 if beam_width == 8 else 12,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=180,
+            max_workers=4,
+            retry_no_solution_beam_width=8,
+            initial_results=initial_results,
+            time_budget_ms=validation_time_budget_ms(180),
+            improve_pathological_success=True,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [32]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 128
+    assert results[0]["recovery_beam_width"] == 32
+
+
+def test_recover_no_solution_results_keeps_clean_success_over_shorter_churny_retry(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": True,
+            "hook_count": 150,
+            "is_valid": True,
+            "debug_stats": {
+                "plan_shape_metrics": {
+                    "max_vehicle_touch_count": 22,
+                    "staging_to_staging_hook_count": 16,
+                    "rehandled_vehicle_count": 18,
+                }
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        calls.append(kwargs["beam_width"])
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 120,
+                "is_valid": True,
+                "verifier_errors": [],
+                "expanded_nodes": 10,
+                "generated_nodes": 20,
+                "closed_nodes": 10,
+                "elapsed_ms": 12.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 55,
+                        "staging_to_staging_hook_count": 20,
+                        "rehandled_vehicle_count": 36,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=8,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+            improve_pathological_success=True,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8]
+    assert results[0] == initial_results[0]
+
+
 def test_recover_no_solution_results_does_not_retry_pathological_success_by_default(
     tmp_path: Path,
 ):
@@ -2677,6 +2892,69 @@ def test_recover_no_solution_results_does_not_retry_high_hook_low_churn_success(
     assert results[0] == initial_results[0]
 
 
+def test_recover_no_solution_results_does_not_chase_success_without_quality_mode(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_a.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_a.json",
+            "solved": False,
+            "error": "no solution within budget",
+            "debug_stats": {},
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(
+        *,
+        beam_width,  # noqa: ANN001
+        **_kwargs,  # noqa: ANN003
+    ):
+        calls.append(beam_width)
+        return [
+            {
+                "scenario": "validation_a.json",
+                "solved": True,
+                "hook_count": 333 if beam_width == 8 else 80,
+                "is_valid": True,
+                "elapsed_ms": 40_000.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 90,
+                        "staging_to_staging_hook_count": 24,
+                        "rehandled_vehicle_count": 42,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=60,
+            max_workers=2,
+            retry_no_solution_beam_width=16,
+            initial_results=initial_results,
+            time_budget_ms=30_000,
+            improve_pathological_success=False,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 333
+    assert results[0]["recovery_beam_width"] == 8
+
+
 def test_recover_no_solution_results_stops_after_healthy_success(tmp_path: Path):
     scenario = tmp_path / "validation_a.json"
     scenario.write_text("{}", encoding="utf-8")
@@ -2736,7 +3014,7 @@ def test_recover_no_solution_results_stops_after_healthy_success(tmp_path: Path)
     assert results[0]["recovery_beam_width"] == 8
 
 
-def test_recover_no_solution_results_continues_after_churny_recovery_success(
+def test_recover_no_solution_results_continues_after_churny_recovery_success_in_quality_mode(
     tmp_path: Path,
 ):
     scenario = tmp_path / "validation_sequence_tail.json"
@@ -2822,14 +3100,107 @@ def test_recover_no_solution_results_continues_after_churny_recovery_success(
             retry_no_solution_beam_width=16,
             initial_results=initial_results,
             time_budget_ms=validation_time_budget_ms(180),
+            improve_pathological_success=True,
         )
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == [8, 16]
+    assert calls == [8, 32]
     assert results[0]["solved"] is True
     assert results[0]["hook_count"] == 156
-    assert results[0]["recovery_beam_width"] == 16
+    assert results[0]["recovery_beam_width"] == 32
+
+
+def test_recover_no_solution_results_switches_unsolved_tail_to_wide_quality_retry(
+    tmp_path: Path,
+):
+    scenario = tmp_path / "validation_sequence_tail.json"
+    scenario.write_text("{}", encoding="utf-8")
+    initial_results = [
+        {
+            "scenario": "validation_sequence_tail.json",
+            "solved": False,
+            "error": "no solution within budget",
+            "error_category": "no_solution",
+            "partial_hook_count": 142,
+            "debug_stats": {
+                "partial_structural_metrics": {
+                    "unfinished_count": 4,
+                    "staging_debt_count": 3,
+                    "work_position_unfinished_count": 2,
+                    "front_blocker_count": 1,
+                    "target_sequence_defect_count": 0,
+                    "goal_track_blocker_count": 0,
+                    "loco_carry_count": 0,
+                },
+                "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+            },
+        },
+    ]
+    calls: list[int | None] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        beam_width = kwargs["beam_width"]
+        calls.append(beam_width)
+        if beam_width == 8:
+            return [
+                {
+                    "scenario": "validation_sequence_tail.json",
+                    "solved": True,
+                    "hook_count": 277,
+                    "is_valid": True,
+                    "verifier_errors": [],
+                    "elapsed_ms": 87_000.0,
+                    "debug_stats": {
+                        "plan_shape_metrics": {
+                            "max_vehicle_touch_count": 52,
+                            "staging_to_staging_hook_count": 39,
+                            "rehandled_vehicle_count": 45,
+                        }
+                    },
+                }
+            ]
+        return [
+            {
+                "scenario": "validation_sequence_tail.json",
+                "solved": True,
+                "hook_count": 137,
+                "is_valid": True,
+                "verifier_errors": [],
+                "elapsed_ms": 44_000.0,
+                "debug_stats": {
+                    "plan_shape_metrics": {
+                        "max_vehicle_touch_count": 38,
+                        "staging_to_staging_hook_count": 14,
+                        "rehandled_vehicle_count": 31,
+                    }
+                },
+            }
+        ]
+
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    module.run_parallel_scenarios = fake_run_parallel_scenarios
+    try:
+        results = module.recover_no_solution_results(
+            master_dir=Path("data/master"),
+            scenario_paths=[scenario],
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            timeout_seconds=180,
+            max_workers=4,
+            retry_no_solution_beam_width=8,
+            initial_results=initial_results,
+            time_budget_ms=validation_time_budget_ms(180),
+            improve_pathological_success=True,
+        )
+    finally:
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+
+    assert calls == [8, 32]
+    assert results[0]["solved"] is True
+    assert results[0]["hook_count"] == 137
+    assert results[0]["recovery_beam_width"] == 32
 
 
 def test_recover_no_solution_results_enables_recovery_partial_resume_profile(tmp_path: Path):
@@ -3087,6 +3458,7 @@ def test_main_honors_scenario_and_recovery_settings(tmp_path: Path):
             timeout_seconds=60,
             scenario=scenario,
             retry_no_solution_beam_width=12,
+            validation_mode="full",
             improve_pathological_success=False,
             near_goal_partial_resume_max_final_heuristic=10,
             worker=False,
@@ -3136,6 +3508,7 @@ def test_main_leaves_initial_run_on_solver_default_near_goal_profile(tmp_path: P
             timeout_seconds=60,
             scenario=scenario,
             retry_no_solution_beam_width=0,
+            validation_mode="strict",
             improve_pathological_success=False,
             near_goal_partial_resume_max_final_heuristic=None,
             worker=False,

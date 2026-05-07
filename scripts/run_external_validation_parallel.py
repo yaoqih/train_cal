@@ -19,6 +19,7 @@ from fzed_shunting.solver.astar_solver import (
     SolverResult,
     solve_with_simple_astar_result,
 )
+from fzed_shunting.solver.complete_selection import complete_dict_is_better
 from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
     VALIDATION_DEFAULT_MAX_WORKERS,
@@ -30,6 +31,7 @@ from fzed_shunting.solver.profile import (
     VALIDATION_TOTAL_TIMEOUT_SECONDS,
     prioritized_validation_recovery_beam_widths,
     validation_recovery_should_continue_after_success,
+    validation_recovery_should_escalate_after_success,
     validation_retry_beam_widths,
     validation_retry_time_budget_ms,
     validation_time_budget_ms,
@@ -49,6 +51,7 @@ DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_inputs"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "artifacts" / "external_validation_parallel_runs"
 DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH = None
+DEFAULT_VALIDATION_MODE = "full"
 RECOVERY_MAX_WORKERS = 4
 RETRY_BUDGET_BUCKET_MS = 1_000.0
 PRIMARY_FIRST_BEAM_BUDGET_MS = 20_000.0
@@ -85,6 +88,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scenario", type=Path)
     parser.add_argument("--retry-no-solution-beam-width", type=int, default=DEFAULT_RETRY_NO_SOLUTION_BEAM_WIDTH)
+    parser.add_argument(
+        "--validation-mode",
+        choices=("strict", "full", "research"),
+        default=DEFAULT_VALIDATION_MODE,
+        help=(
+            "strict disables recovery, full retries within the base beam, "
+            "research enables progressive wider recovery"
+        ),
+    )
     parser.add_argument(
         "--improve-pathological-success",
         action="store_true",
@@ -668,6 +680,12 @@ def recover_no_solution_results(
         beam_width=beam_width,
         retry_no_solution_beam_width=effective_retry_beam_width,
     )
+    quality_retry_beam_widths = _build_quality_retry_beam_widths(
+        beam_width=beam_width,
+        retry_beam_widths=retry_beam_widths,
+        improve_pathological_success=improve_pathological_success,
+        time_budget_ms=time_budget_ms,
+    )
     if not retry_beam_widths:
         return initial_results
 
@@ -697,6 +715,7 @@ def recover_no_solution_results(
         result["scenario"]: _recovery_beam_widths_for_result(
             result,
             retry_beam_widths=retry_beam_widths,
+            quality_retry_beam_widths=quality_retry_beam_widths,
             base_beam_width=beam_width,
             time_budget_ms=time_budget_ms,
         )
@@ -764,12 +783,12 @@ def recover_no_solution_results(
                 used_total_solver_ms_by_scenario=used_total_solver_ms_by_scenario,
                 used_total_worker_ms_by_scenario=used_total_worker_ms_by_scenario,
                 deadline_at=deadline_at,
-            enable_anytime_fallback=enable_anytime_fallback,
-            enable_depot_late_scheduling=enable_depot_late_scheduling,
-            enable_worker_recovery=enable_worker_recovery,
-            near_goal_partial_resume_max_final_heuristic=(
-                RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
-            ),
+                enable_anytime_fallback=enable_anytime_fallback,
+                enable_depot_late_scheduling=enable_depot_late_scheduling,
+                enable_worker_recovery=enable_worker_recovery,
+                near_goal_partial_resume_max_final_heuristic=(
+                    RECOVERY_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
+                ),
             )
             returned_scenario_names = {result["scenario"] for result in retry_results}
             for scenario_name in attempted_scenario_names - returned_scenario_names:
@@ -828,17 +847,21 @@ def recover_no_solution_results(
                     used_total_worker_ms_by_scenario[scenario_name],
                     3,
                 )
-                if (
-                    not current.get("solved")
-                    or int(recovered.get("hook_count", 10**9))
-                    < int(current.get("hook_count", 10**9))
-                ):
+                if complete_dict_is_better(recovered, current):
                     merged_results[retry_result["scenario"]] = recovered
-                should_keep_searching_complete = _should_continue_recovery_after_success(
-                    recovered
+                should_keep_searching_complete = (
+                    improve_pathological_success
+                    and _should_escalate_recovery_after_success(recovered)
                 )
-                if current.get("solved") and not improve_pathological_success:
-                    should_keep_searching_complete = False
+                if should_keep_searching_complete:
+                    _ensure_quality_retry_beam_widths(
+                        retry_beam_widths_by_scenario,
+                        scenario_name=scenario_name,
+                        quality_retry_beam_widths=quality_retry_beam_widths,
+                        completed_retry_beam_width=retry_beam_width,
+                        base_beam_width=beam_width,
+                        time_budget_ms=time_budget_ms,
+                    )
                 if not should_keep_searching_complete:
                     retryable_scenario_names.discard(retry_result["scenario"])
                     continue
@@ -1035,6 +1058,16 @@ def _should_continue_recovery_after_success(result: dict[str, Any]) -> bool:
     )
 
 
+def _should_escalate_recovery_after_success(result: dict[str, Any]) -> bool:
+    shape = (result.get("debug_stats") or {}).get("plan_shape_metrics") or {}
+    return validation_recovery_should_escalate_after_success(
+        hook_count=_as_int(result.get("hook_count")),
+        max_vehicle_touch_count=_as_int(shape.get("max_vehicle_touch_count")),
+        staging_to_staging_hook_count=_as_int(shape.get("staging_to_staging_hook_count")),
+        rehandled_vehicle_count=_as_int(shape.get("rehandled_vehicle_count")),
+    )
+
+
 def _retry_max_workers(
     *,
     base_beam_width: int,
@@ -1155,6 +1188,23 @@ def _resolve_retry_no_solution_beam_width(
     return retry_widths[-1]
 
 
+def _effective_retry_no_solution_beam_width(
+    *,
+    validation_mode: str,
+    beam_width: int | None,
+    retry_no_solution_beam_width: int | None,
+) -> int | None:
+    if retry_no_solution_beam_width is not None:
+        return retry_no_solution_beam_width
+    if validation_mode == "strict":
+        return 0
+    if validation_mode == "full":
+        return beam_width
+    if validation_mode == "research":
+        return None
+    raise ValueError(f"Unsupported validation mode: {validation_mode}")
+
+
 def _build_retry_beam_widths(
     *,
     beam_width: int,
@@ -1166,13 +1216,47 @@ def _build_retry_beam_widths(
     )
 
 
+def _build_quality_retry_beam_widths(
+    *,
+    beam_width: int,
+    retry_beam_widths: list[int],
+    improve_pathological_success: bool,
+    time_budget_ms: float | None,
+) -> list[int]:
+    if not improve_pathological_success:
+        return list(retry_beam_widths)
+    primary_validation_budget_ms = validation_time_budget_ms(
+        VALIDATION_TOTAL_TIMEOUT_SECONDS
+    )
+    if (
+        time_budget_ms is not None
+        and primary_validation_budget_ms is not None
+        and time_budget_ms < primary_validation_budget_ms
+    ):
+        return list(retry_beam_widths)
+    progressive_widths = validation_retry_beam_widths(beam_width=beam_width)
+    return sorted({*retry_beam_widths, *progressive_widths})
+
+
 def _recovery_beam_widths_for_result(
     result: dict[str, Any],
     *,
     retry_beam_widths: list[int],
+    quality_retry_beam_widths: list[int],
     base_beam_width: int,
     time_budget_ms: float | None,
 ) -> list[int]:
+    if result.get("solved"):
+        widths = (
+            quality_retry_beam_widths
+            if _should_escalate_recovery_after_success(result)
+            else retry_beam_widths
+        )
+        return _prioritized_recovery_beam_widths(
+            list(widths),
+            base_beam_width=base_beam_width,
+            time_budget_ms=time_budget_ms,
+        )
     if _result_is_route_clean_tail_candidate(result):
         return list(retry_beam_widths)
     return _prioritized_recovery_beam_widths(
@@ -1230,6 +1314,37 @@ def _consume_next_retry_beam_width(
         widths.remove(retry_beam_width)
     except ValueError:
         return
+
+
+def _ensure_quality_retry_beam_widths(
+    retry_beam_widths_by_scenario: dict[str, list[int]],
+    *,
+    scenario_name: str,
+    quality_retry_beam_widths: list[int],
+    completed_retry_beam_width: int,
+    base_beam_width: int,
+    time_budget_ms: float | None,
+) -> None:
+    pending = retry_beam_widths_by_scenario.get(scenario_name)
+    if pending is None:
+        return
+    current_pending = list(pending)
+    ordered_quality_widths = _prioritized_recovery_beam_widths(
+        list(quality_retry_beam_widths),
+        base_beam_width=base_beam_width,
+        time_budget_ms=time_budget_ms,
+    )
+    additional_widths = [
+        width
+        for width in ordered_quality_widths
+        if width != completed_retry_beam_width and width not in current_pending
+    ]
+    if not additional_widths:
+        return
+    retry_beam_widths_by_scenario[scenario_name] = [
+        *additional_widths,
+        *current_pending,
+    ]
 
 
 def _prioritized_recovery_beam_widths(
@@ -1305,6 +1420,11 @@ def main() -> None:
         "near_goal_partial_resume_max_final_heuristic",
         None,
     )
+    retry_no_solution_beam_width = _effective_retry_no_solution_beam_width(
+        validation_mode=args.validation_mode,
+        beam_width=args.beam_width,
+        retry_no_solution_beam_width=args.retry_no_solution_beam_width,
+    )
     results = run_parallel_scenarios(
         master_dir=args.master_dir,
         scenario_paths=scenario_paths,
@@ -1331,7 +1451,7 @@ def main() -> None:
         heuristic_weight=args.heuristic_weight,
         timeout_seconds=args.timeout_seconds,
         max_workers=args.max_workers,
-        retry_no_solution_beam_width=args.retry_no_solution_beam_width,
+        retry_no_solution_beam_width=retry_no_solution_beam_width,
         initial_results=results,
         time_budget_ms=time_budget_ms,
         enable_anytime_fallback=enable_anytime_fallback,
@@ -1355,6 +1475,8 @@ def main() -> None:
         ),
         "primary_first_beam": primary_first_beam,
         "enable_worker_recovery": enable_worker_recovery,
+        "validation_mode": args.validation_mode,
+        "retry_no_solution_beam_width": retry_no_solution_beam_width,
         "scenario_count": len(results),
         "generated_cases": len(scenario_paths),
         "solved_cases": solved_cases,
