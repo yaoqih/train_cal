@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from fzed_shunting.domain.route_oracle import RouteOracle
@@ -56,6 +56,24 @@ class ResourceDebt:
 
 
 @dataclass(frozen=True)
+class DebtCluster:
+    track_name: str
+    order_debt: OrderDebt | None
+    resource_debts: tuple[ResourceDebt, ...]
+    pressure: float
+    buffer_roles: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "track_name": self.track_name,
+            "order_debt": None if self.order_debt is None else self.order_debt.to_dict(),
+            "resource_debts": [debt.to_dict() for debt in self.resource_debts],
+            "pressure": self.pressure,
+            "buffer_roles": list(self.buffer_roles),
+        }
+
+
+@dataclass(frozen=True)
 class StagingBuffer:
     track_name: str
     free_length: float
@@ -94,8 +112,9 @@ class StructuralIntent:
     committed_blocks_by_track: dict[str, tuple[CommittedBlock, ...]]
     order_debts_by_track: dict[str, OrderDebt]
     resource_debts: tuple[ResourceDebt, ...]
-    staging_buffers: tuple[StagingBuffer, ...]
-    delayed_commitments: tuple[DelayedCommitment, ...]
+    debt_clusters_by_track: dict[str, DebtCluster] = field(default_factory=dict)
+    staging_buffers: tuple[StagingBuffer, ...] = ()
+    delayed_commitments: tuple[DelayedCommitment, ...] = ()
     buffer_leases: tuple[BufferLease, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +128,10 @@ class StructuralIntent:
                 for track, debt in sorted(self.order_debts_by_track.items())
             },
             "resource_debts": [debt.to_dict() for debt in self.resource_debts],
+            "debt_clusters_by_track": {
+                track: cluster.to_dict()
+                for track, cluster in sorted(self.debt_clusters_by_track.items())
+            },
             "staging_buffers": [buffer.to_dict() for buffer in self.staging_buffers],
             "delayed_commitments": [
                 delayed.to_dict() for delayed in self.delayed_commitments
@@ -134,6 +157,23 @@ def build_structural_intent(
         vehicle_by_no=vehicle_by_no,
         track_by_vehicle=track_by_vehicle,
     )
+    order_debts = _order_debts_by_track(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        track_by_vehicle=track_by_vehicle,
+        defect_by_track=metrics.target_sequence_defect_by_track,
+    )
+    resource_debts = _resource_debts(
+        plan_input=plan_input,
+        route_plan=route_plan,
+        capacity_plan=capacity_plan,
+        front_blocker_by_track=metrics.front_blocker_by_track,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        work_position_unfinished_count=metrics.work_position_unfinished_count,
+        target_sequence_defect_count=metrics.target_sequence_defect_count,
+    )
 
     return StructuralIntent(
         committed_blocks_by_track=_committed_blocks_by_track(
@@ -141,22 +181,11 @@ def build_structural_intent(
             state=state,
             vehicle_by_no=vehicle_by_no,
         ),
-        order_debts_by_track=_order_debts_by_track(
-            plan_input=plan_input,
-            state=state,
-            vehicle_by_no=vehicle_by_no,
-            track_by_vehicle=track_by_vehicle,
-            defect_by_track=metrics.target_sequence_defect_by_track,
-        ),
-        resource_debts=_resource_debts(
-            plan_input=plan_input,
-            route_plan=route_plan,
-            capacity_plan=capacity_plan,
-            front_blocker_by_track=metrics.front_blocker_by_track,
-            state=state,
-            vehicle_by_no=vehicle_by_no,
-            work_position_unfinished_count=metrics.work_position_unfinished_count,
-            target_sequence_defect_count=metrics.target_sequence_defect_count,
+        order_debts_by_track=order_debts,
+        resource_debts=resource_debts,
+        debt_clusters_by_track=build_debt_clusters_by_track(
+            order_debts_by_track=order_debts,
+            resource_debts=resource_debts,
         ),
         staging_buffers=_staging_buffers(plan_input=plan_input, state=state),
         delayed_commitments=delayed_commitments,
@@ -712,3 +741,77 @@ def _make_buffer_lease(
         required_length=round(required_length, 3),
         reason=reason,
     )
+
+
+def build_debt_clusters_by_track(
+    *,
+    order_debts_by_track: dict[str, OrderDebt],
+    resource_debts: tuple[ResourceDebt, ...],
+) -> dict[str, DebtCluster]:
+    resource_by_track: dict[str, list[ResourceDebt]] = {}
+    for debt in resource_debts:
+        resource_by_track.setdefault(debt.track_name, []).append(debt)
+    clusters: dict[str, DebtCluster] = {}
+    for track_name in sorted(set(order_debts_by_track) | set(resource_by_track)):
+        order_debt = order_debts_by_track.get(track_name)
+        track_resource_debts = tuple(
+            sorted(
+                resource_by_track.get(track_name, []),
+                key=_resource_debt_cluster_priority,
+            )
+        )
+        pressure = 0.0
+        buffer_roles: list[str] = []
+        if order_debt is not None:
+            pressure += float(order_debt.defect_count) * 10.0
+            pressure += float(len(order_debt.pending_vehicle_nos))
+            pressure += float(len(order_debt.blocking_prefix_vehicle_nos)) * 2.0
+            buffer_roles.append("ORDER_BUFFER")
+        for debt in track_resource_debts:
+            pressure += _resource_debt_cluster_pressure(debt)
+            buffer_roles.extend(_resource_debt_cluster_roles(debt))
+        clusters[track_name] = DebtCluster(
+            track_name=track_name,
+            order_debt=order_debt,
+            resource_debts=track_resource_debts,
+            pressure=round(pressure, 3),
+            buffer_roles=tuple(sorted(set(buffer_roles))),
+        )
+    return dict(sorted(clusters.items(), key=lambda item: (-item[1].pressure, item[0])))
+
+
+def _resource_debt_cluster_priority(debt: ResourceDebt) -> tuple[int, float, str]:
+    return (
+        {
+            "ROUTE_RELEASE": 0,
+            "CAPACITY_RELEASE": 1,
+            "FRONT_CLEARANCE": 2,
+            "EXACT_SPOT_RELEASE": 3,
+        }.get(debt.kind, 4),
+        -float(debt.pressure),
+        debt.kind,
+    )
+
+
+def _resource_debt_cluster_pressure(debt: ResourceDebt) -> float:
+    if debt.kind == "ROUTE_RELEASE":
+        return float(debt.pressure) * 3.0
+    if debt.kind == "CAPACITY_RELEASE":
+        return float(debt.pressure) * 1.5
+    if debt.kind == "FRONT_CLEARANCE":
+        return float(debt.pressure) * 2.0
+    if debt.kind == "EXACT_SPOT_RELEASE":
+        return max(1.0, float(debt.pressure)) * 5.0
+    return float(debt.pressure)
+
+
+def _resource_debt_cluster_roles(debt: ResourceDebt) -> tuple[str, ...]:
+    if debt.kind == "ROUTE_RELEASE":
+        return ("ROUTE_RELEASE",)
+    if debt.kind == "CAPACITY_RELEASE":
+        return ("CAPACITY_RELEASE",)
+    if debt.kind == "FRONT_CLEARANCE":
+        return ("SOURCE_REMAINDER",)
+    if debt.kind == "EXACT_SPOT_RELEASE":
+        return ("ORDER_BUFFER",)
+    return ()

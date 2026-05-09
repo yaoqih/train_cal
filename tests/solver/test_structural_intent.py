@@ -219,13 +219,37 @@ def test_structural_intent_delays_work_position_vehicle_that_would_break_unfinis
         and delayed.reason == "would_precede_unfinished_work_position_window"
         for delayed in intent.delayed_commitments
     )
-    assert any(
-        lease.role == "ORDER_BUFFER"
-        and lease.vehicle_nos == ("FREE_FIRST",)
-        and lease.source_track == "存5北"
-        and lease.target_track == "调棚"
-        for lease in intent.buffer_leases
+
+
+def test_structural_intent_clusters_by_track_from_existing_debts():
+    master, normalized, state = _normalize(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "调棚", "trackDistance": 174.3},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "存1", "trackDistance": 113.0},
+            ],
+            "vehicleInfo": [
+                _vehicle("SPOT_A", "存5北", "调棚", order=1, spotting="是"),
+                _vehicle("FREE_A", "存5北", "调棚", order=2),
+                _vehicle("CAP_A", "存1", "存1", order=1, length=20.0),
+                _vehicle("CAP_B", "存1", "存4北", order=2, length=15.0),
+            ],
+            "locoTrackName": "机库",
+        }
     )
+
+    intent = build_structural_intent(
+        normalized,
+        state,
+        route_oracle=RouteOracle(master),
+    )
+
+    assert set(intent.debt_clusters_by_track) == {"调棚", "存1", "存5北"}
+    assert intent.debt_clusters_by_track["调棚"].order_debt is not None
+    assert intent.debt_clusters_by_track["调棚"].buffer_roles == ("ORDER_BUFFER",)
+    assert intent.debt_clusters_by_track["存1"].order_debt is None
 
 
 def test_structural_intent_delays_spotting_vehicle_that_is_not_ready_for_window():

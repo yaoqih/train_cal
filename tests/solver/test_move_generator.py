@@ -205,6 +205,36 @@ def test_release_structural_candidate_ranking_prioritizes_route_and_resource_rel
     ]
 
 
+def test_ordered_debt_clusters_prioritize_tracks_with_order_debt():
+    from fzed_shunting.solver.move_candidates import _ordered_debt_clusters
+    from fzed_shunting.solver.structural_intent import OrderDebt, ResourceDebt, StructuralIntent
+
+    intent = StructuralIntent(
+        committed_blocks_by_track={},
+        order_debts_by_track={
+            "调棚": OrderDebt(
+                track_name="调棚",
+                defect_count=1,
+                pending_vehicle_nos=("SPOT",),
+                blocking_prefix_vehicle_nos=("PAD1",),
+                kind_counts=(("SPOTTING", 1),),
+            )
+        },
+        resource_debts=(
+            ResourceDebt(
+                kind="CAPACITY_RELEASE",
+                track_name="存1",
+                vehicle_nos=("A",),
+                pressure=10.0,
+            ),
+        ),
+    )
+
+    ordered = _ordered_debt_clusters(intent)
+
+    assert [cluster.track_name for cluster in ordered] == ["调棚", "存1"]
+
+
 def test_structural_generation_keeps_resource_debt_when_track_has_order_debt(monkeypatch):
     from fzed_shunting.solver import move_candidates
     from fzed_shunting.solver.move_candidates import MoveCandidate

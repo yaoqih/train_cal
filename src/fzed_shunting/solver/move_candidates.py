@@ -14,7 +14,12 @@ from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import STAGING_TRACKS
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
 from fzed_shunting.solver.state import _vehicle_track_lookup
-from fzed_shunting.solver.structural_intent import BufferLease, StructuralIntent, build_structural_intent
+from fzed_shunting.solver.structural_intent import (
+    BufferLease,
+    StructuralIntent,
+    build_debt_clusters_by_track,
+    build_structural_intent,
+)
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -136,6 +141,7 @@ def generate_move_candidates(
             delayed_staging_churn_rejected_count
         )
         debug_stats["structural_intent_candidate_count"] = len(structural_candidates)
+        debug_stats["structural_debt_cluster_count"] = len(intent.debt_clusters_by_track)
         debug_stats["structural_candidate_steps_total"] = sum(
             len(candidate.steps) for candidate in structural_candidates
         )
@@ -371,19 +377,11 @@ def _generate_structural_candidates(
     }
     candidates: list[MoveCandidate] = []
     resource_candidates: list[MoveCandidate] = []
-    for target_track, debt in intent.order_debts_by_track.items():
-        candidate = _build_work_position_source_opening_candidate(
-            plan_input=plan_input,
-            state=state,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-            track_by_vehicle=track_by_vehicle,
-            target_track=target_track,
-            pending_vehicle_nos=list(debt.pending_vehicle_nos),
-            blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-        )
-        if candidate is None:
-            candidate = _build_work_position_window_candidate(
+    for cluster in _ordered_debt_clusters(intent):
+        target_track = cluster.track_name
+        debt = cluster.order_debt
+        if debt is not None:
+            candidate = _build_work_position_source_opening_candidate(
                 plan_input=plan_input,
                 state=state,
                 route_oracle=route_oracle,
@@ -393,35 +391,68 @@ def _generate_structural_candidates(
                 pending_vehicle_nos=list(debt.pending_vehicle_nos),
                 blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
             )
-        if candidate is not None:
-            candidates.append(candidate)
-        front_candidate = _build_work_position_window_candidate(
-            plan_input=plan_input,
-            state=state,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-            track_by_vehicle=track_by_vehicle,
-            target_track=target_track,
-            pending_vehicle_nos=list(debt.pending_vehicle_nos),
-            blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-            front_block_only=True,
-        )
-        if front_candidate is not None:
-            candidates.append(front_candidate)
-        fill_candidate = _build_work_position_free_fill_candidate(
-            plan_input=plan_input,
-            state=state,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-            track_by_vehicle=track_by_vehicle,
-            target_track=target_track,
-            pending_vehicle_nos=list(debt.pending_vehicle_nos),
-        )
-        if fill_candidate is not None:
-            candidates.append(fill_candidate)
-    for debt in intent.resource_debts:
-        if debt.kind == "ROUTE_RELEASE":
-            route_candidate = _build_route_release_frontier_candidate(
+            if candidate is None:
+                candidate = _build_work_position_window_candidate(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    track_by_vehicle=track_by_vehicle,
+                    target_track=target_track,
+                    pending_vehicle_nos=list(debt.pending_vehicle_nos),
+                    blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
+                )
+            if candidate is not None:
+                candidates.append(candidate)
+            front_candidate = _build_work_position_window_candidate(
+                plan_input=plan_input,
+                state=state,
+                route_oracle=route_oracle,
+                vehicle_by_no=vehicle_by_no,
+                track_by_vehicle=track_by_vehicle,
+                target_track=target_track,
+                pending_vehicle_nos=list(debt.pending_vehicle_nos),
+                blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
+                front_block_only=True,
+            )
+            if front_candidate is not None:
+                candidates.append(front_candidate)
+            fill_candidate = _build_work_position_free_fill_candidate(
+                plan_input=plan_input,
+                state=state,
+                route_oracle=route_oracle,
+                vehicle_by_no=vehicle_by_no,
+                track_by_vehicle=track_by_vehicle,
+                target_track=target_track,
+                pending_vehicle_nos=list(debt.pending_vehicle_nos),
+            )
+            if fill_candidate is not None:
+                candidates.append(fill_candidate)
+        for debt in cluster.resource_debts:
+            if debt.kind == "ROUTE_RELEASE":
+                route_candidate = _build_route_release_frontier_candidate(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    debt=debt,
+                    delayed_target_pairs=delayed_target_pairs,
+                    buffer_leases=intent.buffer_leases,
+                )
+                if route_candidate is not None:
+                    resource_candidates.append(route_candidate)
+            if debt.kind == "FRONT_CLEARANCE":
+                frontier_candidate = _build_goal_frontier_source_opening_candidate(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=debt.track_name,
+                )
+                if frontier_candidate is not None:
+                    resource_candidates.append(frontier_candidate)
+                    continue
+            candidate = _build_resource_release_candidate(
                 plan_input=plan_input,
                 state=state,
                 route_oracle=route_oracle,
@@ -430,32 +461,28 @@ def _generate_structural_candidates(
                 delayed_target_pairs=delayed_target_pairs,
                 buffer_leases=intent.buffer_leases,
             )
-            if route_candidate is not None:
-                resource_candidates.append(route_candidate)
-        if debt.kind == "FRONT_CLEARANCE":
-            frontier_candidate = _build_goal_frontier_source_opening_candidate(
-                plan_input=plan_input,
-                state=state,
-                route_oracle=route_oracle,
-                vehicle_by_no=vehicle_by_no,
-                source_track=debt.track_name,
-            )
-            if frontier_candidate is not None:
-                resource_candidates.append(frontier_candidate)
-                continue
-        candidate = _build_resource_release_candidate(
-            plan_input=plan_input,
-            state=state,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-            debt=debt,
-            delayed_target_pairs=delayed_target_pairs,
-            buffer_leases=intent.buffer_leases,
-        )
-        if candidate is not None:
-            resource_candidates.append(candidate)
+            if candidate is not None:
+                resource_candidates.append(candidate)
     candidates.extend(_rank_release_structural_candidates(resource_candidates))
     return _select_structural_candidates(candidates)
+
+
+def _ordered_debt_clusters(intent: StructuralIntent):
+    debt_clusters_by_track = intent.debt_clusters_by_track or build_debt_clusters_by_track(
+        order_debts_by_track=intent.order_debts_by_track,
+        resource_debts=intent.resource_debts,
+    )
+    return tuple(
+        sorted(
+            debt_clusters_by_track.values(),
+            key=lambda cluster: (
+                0 if cluster.order_debt is not None else 1,
+                -cluster.pressure,
+                len(cluster.resource_debts),
+                cluster.track_name,
+            ),
+        )
+    )
 
 
 def _build_route_release_frontier_candidate(
