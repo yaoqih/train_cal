@@ -26,6 +26,7 @@ from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
 from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
 )
+from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
 from fzed_shunting.solver.move_candidates import MoveCandidate, generate_move_candidates
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
@@ -72,14 +73,18 @@ class QueueItem:
     )
     route_release_focus_bonus: int = field(default=0, compare=False)
     route_release_focus_ttl: int = field(default=0, compare=False)
-    candidate_kind: str = field(default="", compare=False)
-    candidate_focus_tracks: tuple[str, ...] = field(default=(), compare=False)
-    candidate_structural_reserve: bool = field(default=False, compare=False)
+    structural_reserve_tracks: frozenset[str] = field(
+        default_factory=frozenset,
+        compare=False,
+    )
+    blocker_reserve: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)
 class CandidateScoring:
     blocker_bonus: int
+    structural_progress_bonus: int
+    exact_spot_priority: int
     route_release_regression_penalty: int
     route_release_focus_tracks: frozenset[str]
     route_release_focus_bonus: int
@@ -156,7 +161,7 @@ def _solve_search_result(
     _initialize_debug_stats(debug_stats, generated_nodes=generated_nodes)
     best_goal_plan: list[HookAction] | None = None
     best_partial_plan: list[HookAction] = []
-    best_partial_score: tuple[int, int, int] | None = None
+    best_partial_score: tuple[int, ...] | None = None
     budget_exhausted = False
     while queue:
         if budget.exhausted():
@@ -172,10 +177,17 @@ def _solve_search_result(
         if current.plan:
             partial_purity = compute_state_purity(plan_input, current.state)
             partial_structural = compute_structural_metrics(plan_input, current.state)
-            partial_score = (
-                state_heuristic(current.state),
-                partial_purity.unfinished_count + partial_structural.target_sequence_defect_count,
-                -len(current.plan),
+            partial_route_pressure = (
+                compute_route_blockage_plan(plan_input, current.state, route_oracle).total_blockage_pressure
+                if route_oracle is not None
+                else 0
+            )
+            partial_score = _search_partial_score(
+                heuristic=state_heuristic(current.state),
+                purity=partial_purity,
+                structural=partial_structural,
+                route_pressure=partial_route_pressure,
+                plan_len=len(current.plan),
             )
             if best_partial_score is None or partial_score < best_partial_score:
                 best_partial_score = partial_score
@@ -232,95 +244,112 @@ def _solve_search_result(
                 state=current.state,
                 plan_input=plan_input,
                 vehicle_by_no=vehicle_by_no,
+                route_oracle=route_oracle,
             )
             if applied_candidate is None:
                 continue
-            next_state = applied_candidate.final_state
-            candidate_steps = applied_candidate.steps
-            next_plan = current.plan + candidate_steps
-            cost = len(next_plan)
-            state_key = _state_key(
-                next_state,
-                canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
-            )
-            if state_key in best_cost and best_cost[state_key] <= cost:
-                continue
-            best_cost[state_key] = cost
-            heuristic = state_heuristic(next_state)
-            next_purity = compute_state_purity(plan_input, next_state)
-            candidate_scoring = _evaluate_candidate_steps(
-                plan_input=plan_input,
-                state=current.state,
-                candidate_kind=candidate.kind,
-                transitions=applied_candidate.transitions,
-                vehicle_by_no=vehicle_by_no,
-                goal_by_vehicle=goal_by_vehicle,
-                route_oracle=route_oracle,
-                blocking_goal_targets_by_source=blocking_goal_targets_by_source,
-                route_blockage_plan=route_blockage_plan,
-                prior_focus_tracks=(
-                    current.route_release_focus_tracks
-                    if current.route_release_focus_ttl > 0
-                    else frozenset()
-                ),
-                prior_focus_bonus=current.route_release_focus_bonus,
-                prior_focus_ttl=current.route_release_focus_ttl,
-            )
-            blocker_bonus = candidate_scoring.blocker_bonus
-            next_focus_tracks = candidate_scoring.route_release_focus_tracks
-            next_focus_bonus = candidate_scoring.route_release_focus_bonus
-            next_focus_ttl = candidate_scoring.route_release_focus_ttl
-            route_release_regression_penalty = candidate_scoring.route_release_regression_penalty
-            route_release_regression_penalty += _route_release_regression_penalty(
-                state=next_state,
-                route_oracle=route_oracle,
-                focus_tracks=next_focus_tracks,
-                focus_ttl=next_focus_ttl,
-            )
-            neg_depot_index_sum = 0
-            if enable_depot_late_scheduling and solver_mode == "exact":
-                from fzed_shunting.solver.depot_late import weighted_depot_index_sum
-                neg_depot_index_sum = -weighted_depot_index_sum(next_plan, vehicle_by_no)
-            heappush(
-                queue,
-                QueueItem(
-                    priority=_priority(
-                        cost=cost,
-                        heuristic=heuristic,
-                        blocker_bonus=blocker_bonus,
-                        route_release_regression_penalty=route_release_regression_penalty,
-                        solver_mode=solver_mode,
-                        heuristic_weight=heuristic_weight,
-                        neg_depot_index_sum=neg_depot_index_sum,
-                        purity_metrics=(
-                            next_purity.unfinished_count,
-                            0,
-                            next_purity.preferred_violation_count,
-                            next_purity.staging_pollution_count,
-                        ),
-                        carry_count=len(next_state.loco_carry),
-                        carry_growth_penalty=candidate_scoring.carry_growth_penalty,
+            for branch in _candidate_queue_branches(candidate, applied_candidate):
+                next_state = branch.final_state
+                candidate_steps = branch.steps
+                next_plan = current.plan + candidate_steps
+                cost = len(next_plan)
+                state_key = _state_key(
+                    next_state,
+                    canonical_random_depot_vehicle_nos=canonical_random_depot_vehicle_nos,
+                )
+                if solver_mode == "beam" and _is_goal(plan_input, next_state):
+                    if best_goal_plan is None or len(next_plan) < len(best_goal_plan):
+                        best_goal_plan = next_plan
+                    generated_nodes += 1
+                    if debug_stats is not None:
+                        debug_stats["generated_nodes"] = generated_nodes
+                    continue
+                if state_key in best_cost and best_cost[state_key] <= cost:
+                    continue
+                best_cost[state_key] = cost
+                heuristic = state_heuristic(next_state)
+                next_purity = compute_state_purity(plan_input, next_state)
+                candidate_scoring = _evaluate_candidate_steps(
+                    plan_input=plan_input,
+                    state=current.state,
+                    final_state=next_state,
+                    transitions=branch.transitions,
+                    vehicle_by_no=vehicle_by_no,
+                    goal_by_vehicle=goal_by_vehicle,
+                    route_oracle=route_oracle,
+                    blocking_goal_targets_by_source=blocking_goal_targets_by_source,
+                    route_blockage_plan=route_blockage_plan,
+                    prior_focus_tracks=(
+                        current.route_release_focus_tracks
+                        if current.route_release_focus_ttl > 0
+                        else frozenset()
                     ),
-                    seq=next(counter),
-                    state_key=state_key,
+                    prior_focus_bonus=current.route_release_focus_bonus,
+                    prior_focus_ttl=current.route_release_focus_ttl,
+                )
+                blocker_bonus = candidate_scoring.blocker_bonus
+                structural_progress_bonus = candidate_scoring.structural_progress_bonus
+                next_focus_tracks = candidate_scoring.route_release_focus_tracks
+                next_focus_bonus = candidate_scoring.route_release_focus_bonus
+                next_focus_ttl = candidate_scoring.route_release_focus_ttl
+                route_release_regression_penalty = (
+                    candidate_scoring.route_release_regression_penalty
+                )
+                route_release_regression_penalty += _route_release_regression_penalty(
                     state=next_state,
-                    plan=next_plan,
-                    cost=cost,
-                    structural_key=_approximate_beam_structural_key(
-                        next_plan,
-                        next_state,
+                    route_oracle=route_oracle,
+                    focus_tracks=next_focus_tracks,
+                    focus_ttl=next_focus_ttl,
+                )
+                neg_depot_index_sum = 0
+                if enable_depot_late_scheduling and solver_mode == "exact":
+                    from fzed_shunting.solver.depot_late import weighted_depot_index_sum
+                    neg_depot_index_sum = -weighted_depot_index_sum(next_plan, vehicle_by_no)
+                heappush(
+                    queue,
+                    QueueItem(
+                        priority=_priority(
+                            cost=cost,
+                            heuristic=heuristic,
+                            blocker_bonus=blocker_bonus,
+                            structural_progress_bonus=structural_progress_bonus,
+                            exact_spot_priority=candidate_scoring.exact_spot_priority,
+                            route_release_regression_penalty=route_release_regression_penalty,
+                            solver_mode=solver_mode,
+                            heuristic_weight=heuristic_weight,
+                            neg_depot_index_sum=neg_depot_index_sum,
+                            purity_metrics=(
+                                next_purity.unfinished_count,
+                                0,
+                                next_purity.preferred_violation_count,
+                                next_purity.staging_pollution_count,
+                            ),
+                            carry_count=len(next_state.loco_carry),
+                            carry_growth_penalty=candidate_scoring.carry_growth_penalty,
+                        ),
+                        seq=next(counter),
+                        state_key=state_key,
+                        state=next_state,
+                        plan=next_plan,
+                        cost=cost,
+                        structural_key=_approximate_beam_structural_key(
+                            next_plan,
+                            next_state,
+                        ),
+                        route_release_focus_tracks=next_focus_tracks,
+                        route_release_focus_bonus=next_focus_bonus,
+                        route_release_focus_ttl=next_focus_ttl,
+                        structural_reserve_tracks=(
+                            frozenset(candidate.focus_tracks)
+                            if candidate.structural_reserve
+                            else frozenset()
+                        ),
+                        blocker_reserve=blocker_bonus > 0,
                     ),
-                    route_release_focus_tracks=next_focus_tracks,
-                    route_release_focus_bonus=next_focus_bonus,
-                    route_release_focus_ttl=next_focus_ttl,
-                    candidate_kind=candidate.kind,
-                    candidate_focus_tracks=candidate.focus_tracks,
-                    candidate_structural_reserve=candidate.structural_reserve,
-                ),
-            )
-            generated_nodes += 1
-            if debug_stats is not None:
-                debug_stats["generated_nodes"] = generated_nodes
+                )
+                generated_nodes += 1
+                if debug_stats is not None:
+                    debug_stats["generated_nodes"] = generated_nodes
         if solver_mode == "beam" and beam_width is not None:
             _prune_queue(
                 queue,
@@ -367,36 +396,52 @@ def _apply_candidate_steps(
     state: ReplayState,
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict[str, NormalizedVehicle],
+    route_oracle: RouteOracle | None = None,
 ) -> AppliedCandidate | None:
     steps = list(candidate.steps)
     if not steps:
         return None
-    next_state = state
-    transitions: list[tuple[ReplayState, HookAction, ReplayState]] = []
-    for step in steps:
-        try:
-            before_state = next_state
-            next_state = _apply_move(
-                state=before_state,
-                move=step,
-                plan_input=plan_input,
-                vehicle_by_no=vehicle_by_no,
-            )
-        except Exception:  # noqa: BLE001
-            return None
-        transitions.append((before_state, step, next_state))
-    return AppliedCandidate(
-        final_state=next_state,
+    compiled = replay_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
         steps=steps,
-        transitions=transitions,
+        route_oracle=route_oracle,
+        apply_move=_apply_move,
     )
+    if compiled is None:
+        return None
+    return AppliedCandidate(
+        final_state=compiled.final_state,
+        steps=steps,
+        transitions=list(compiled.transitions),
+    )
+
+
+def _candidate_queue_branches(
+    candidate: MoveCandidate,
+    applied_candidate: AppliedCandidate,
+) -> list[AppliedCandidate]:
+    branches = [applied_candidate]
+    if not candidate.structural_reserve or len(applied_candidate.transitions) <= 1:
+        return branches
+    for step_index in range(1, len(applied_candidate.transitions)):
+        prefix_transitions = applied_candidate.transitions[:step_index]
+        branches.append(
+            AppliedCandidate(
+                final_state=prefix_transitions[-1][2],
+                steps=applied_candidate.steps[:step_index],
+                transitions=prefix_transitions,
+            )
+        )
+    return branches
 
 
 def _evaluate_candidate_steps(
     *,
     plan_input: NormalizedPlanInput,
     state: ReplayState,
-    candidate_kind: str,
+    final_state: ReplayState,
     transitions: list[tuple[ReplayState, HookAction, ReplayState]],
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_by_vehicle: dict[str, Any],
@@ -408,16 +453,20 @@ def _evaluate_candidate_steps(
     prior_focus_ttl: int,
 ) -> CandidateScoring:
     blocker_bonus = 0
+    exact_spot_priority = 0
     route_release_regression_penalty = 0
     carry_growth_penalty = 0
     focus_tracks = frozenset(prior_focus_tracks)
     focus_bonus = prior_focus_bonus
     focus_ttl = prior_focus_ttl
+    structural_progress_bonus = _structural_progress_bonus(
+        plan_input=plan_input,
+        before_state=state,
+        after_state=final_state,
+        step_count=len(transitions),
+    )
     current_blocking_goal_targets = blocking_goal_targets_by_source
     current_route_blockage_plan = route_blockage_plan
-    if candidate_kind == "work_position_sequence":
-        blocker_bonus += max(4, len(transitions))
-
     for step_index, (current_state, step, next_state) in enumerate(transitions):
         if step_index > 0:
             current_blocking_goal_targets = _collect_interfering_goal_targets_by_source(
@@ -442,18 +491,20 @@ def _evaluate_candidate_steps(
             route_release_focus_tracks=active_focus_tracks,
             route_release_focus_bonus=focus_bonus,
         )
-        blocker_bonus += exact_spot_clearance_bonus(
+        exact_clearance_bonus = exact_spot_clearance_bonus(
             plan_input=plan_input,
             state=current_state,
             move=step,
             next_state=next_state,
         )
-        blocker_bonus += exact_spot_seeker_exposure_bonus(
+        exact_exposure_bonus = exact_spot_seeker_exposure_bonus(
             plan_input=plan_input,
             state=current_state,
             move=step,
             next_state=next_state,
         )
+        exact_spot_priority += exact_clearance_bonus + exact_exposure_bonus
+        blocker_bonus += exact_clearance_bonus + exact_exposure_bonus
         blocker_bonus += _carry_exposure_bonus(
             move=step,
             state=current_state,
@@ -488,6 +539,8 @@ def _evaluate_candidate_steps(
 
     return CandidateScoring(
         blocker_bonus=blocker_bonus,
+        structural_progress_bonus=structural_progress_bonus,
+        exact_spot_priority=exact_spot_priority,
         route_release_regression_penalty=route_release_regression_penalty,
         route_release_focus_tracks=frozenset(focus_tracks),
         route_release_focus_bonus=focus_bonus,
@@ -501,6 +554,8 @@ def _priority(
     cost: int,
     heuristic: int,
     blocker_bonus: int = 0,
+    structural_progress_bonus: int = 0,
+    exact_spot_priority: int = 0,
     route_release_regression_penalty: int = 0,
     solver_mode: str,
     heuristic_weight: float,
@@ -509,13 +564,17 @@ def _priority(
     carry_count: int = 0,
     carry_growth_penalty: int = 0,
 ) -> tuple:
-    progress_bonus = min(max(blocker_bonus, 0), max(cost + heuristic, 1) // 2)
+    combined_bonus = max(blocker_bonus, 0) + max(structural_progress_bonus, 0)
+    progress_bonus = min(combined_bonus, max(cost + heuristic, 1) // 2)
     if solver_mode == "beam":
         score = cost + heuristic
         adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
+            0 if exact_spot_priority > 0 else 1,
+            0 if structural_progress_bonus > 0 else 1,
             0 if blocker_bonus > 0 else 1,
+            -structural_progress_bonus,
             adjusted_score,
             score,
             cost,
@@ -525,6 +584,7 @@ def _priority(
             carry_count,
             neg_depot_index_sum,
             -blocker_bonus,
+            -exact_spot_priority,
             heuristic,
         )
     if solver_mode in ("weighted", "real_hook"):
@@ -532,7 +592,10 @@ def _priority(
         adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
+            0 if exact_spot_priority > 0 else 1,
+            0 if structural_progress_bonus > 0 else 1,
             0 if blocker_bonus > 0 else 1,
+            -structural_progress_bonus,
             adjusted_score,
             cost,
             heuristic,
@@ -541,6 +604,7 @@ def _priority(
             carry_count,
             neg_depot_index_sum,
             -blocker_bonus,
+            -exact_spot_priority,
         )
     return (
         route_release_regression_penalty,
@@ -552,7 +616,58 @@ def _priority(
         carry_count,
         neg_depot_index_sum,
         -blocker_bonus,
+        -exact_spot_priority,
+        -structural_progress_bonus,
     )
+
+
+def _search_partial_score(
+    *,
+    heuristic: int,
+    purity: Any,
+    structural: Any,
+    route_pressure: int,
+    plan_len: int,
+) -> tuple[int, ...]:
+    return (
+        structural.target_sequence_defect_count,
+        route_pressure,
+        structural.staging_debt_count,
+        structural.capacity_overflow_track_count,
+        structural.work_position_unfinished_count,
+        structural.goal_track_blocker_count,
+        purity.preferred_violation_count,
+        purity.unfinished_count,
+        heuristic,
+        -plan_len,
+    )
+
+
+def _structural_progress_bonus(
+    *,
+    plan_input: NormalizedPlanInput,
+    before_state: ReplayState,
+    after_state: ReplayState,
+    step_count: int,
+) -> int:
+    if step_count <= 1:
+        return 0
+    before = compute_structural_metrics(plan_input, before_state)
+    after = compute_structural_metrics(plan_input, after_state)
+    return _structural_metric_progress_bonus(before, after, step_count=step_count)
+
+def _structural_metric_progress_bonus(before: Any, after: Any, *, step_count: int) -> int:
+    progress = 0
+    progress += max(0, before.target_sequence_defect_count - after.target_sequence_defect_count) * 18
+    progress += max(0, before.work_position_unfinished_count - after.work_position_unfinished_count) * 12
+    progress += max(0, before.capacity_overflow_track_count - after.capacity_overflow_track_count) * 16
+    progress += max(0, before.goal_track_blocker_count - after.goal_track_blocker_count) * 3
+    progress += max(0, before.unfinished_count - after.unfinished_count)
+    staging_regression = max(0, after.staging_debt_count - before.staging_debt_count)
+    progress -= staging_regression
+    if progress <= 0:
+        return 0
+    return min(progress, step_count * 12)
 
 
 def _carry_growth_penalty_for_move(
@@ -784,17 +899,27 @@ def _prune_queue(
         blocker_candidates = [
             item
             for item in ranked
-            if item.priority[-2] < 0 and id(item) not in kept_ids
+            if item.blocker_reserve and id(item) not in kept_ids
         ]
         if blocker_candidates:
             blocker_item = blocker_candidates[0]
             kept.append(blocker_item)
             kept_ids.add(id(blocker_item))
-        for item in _best_work_position_focus_items(ranked, kept_ids):
-            if len(kept) >= beam_width:
-                break
+        structural_reserve_candidates = [
+            item
+            for item in ranked
+            if item.structural_reserve_tracks and id(item) not in kept_ids
+        ]
+        kept_structural_tracks: set[str] = set()
+        for item in structural_reserve_candidates:
+            tracks = sorted(item.structural_reserve_tracks - kept_structural_tracks)
+            if not tracks:
+                continue
             kept.append(item)
             kept_ids.add(id(item))
+            kept_structural_tracks.update(item.structural_reserve_tracks)
+            if len(kept) >= beam_width:
+                break
         if enable_structural_diversity and _has_structural_churn_pressure(ranked[:beam_width]):
             frontier_limit = max(
                 beam_width,
@@ -834,24 +959,6 @@ def _prune_queue(
     for item in pruned:
         if best_cost.get(item.state_key) == len(item.plan):
             del best_cost[item.state_key]
-
-
-def _best_work_position_focus_items(
-    ranked: list[QueueItem],
-    kept_ids: set[int],
-) -> list[QueueItem]:
-    by_track: dict[str, QueueItem] = {}
-    for item in ranked:
-        if (
-            id(item) in kept_ids
-            or item.candidate_kind != "work_position_sequence"
-            or not item.candidate_structural_reserve
-        ):
-            continue
-        for track in item.candidate_focus_tracks:
-            if track not in by_track:
-                by_track[track] = item
-    return list(by_track.values())
 
 
 def _has_structural_churn_pressure(queue: list[QueueItem]) -> bool:
@@ -934,6 +1041,8 @@ def _initialize_debug_stats(
             "move_generation_calls": 0,
             "candidate_moves_total": 0,
             "candidate_steps_total": 0,
+            "structural_intent_candidate_count": 0,
+            "structural_candidate_steps_total": 0,
             "candidate_direct_moves": 0,
             "candidate_staging_moves": 0,
             "max_candidate_moves_per_state": 0,
@@ -943,7 +1052,6 @@ def _initialize_debug_stats(
             "moves_by_source": {},
             "moves_by_block_size": {},
             "candidate_steps_by_kind": {},
-            "candidate_focus_tracks_by_kind": {},
             "top_expansions": [],
         }
     )
@@ -961,6 +1069,12 @@ def _accumulate_move_debug_stats(
     debug_stats["move_generation_calls"] += 1
     debug_stats["candidate_moves_total"] += move_count
     debug_stats["candidate_steps_total"] += step_count
+    debug_stats["structural_intent_candidate_count"] += int(
+        move_stats.get("structural_intent_candidate_count", 0)
+    )
+    debug_stats["structural_candidate_steps_total"] += int(
+        move_stats.get("structural_candidate_steps_total", 0)
+    )
     debug_stats["candidate_direct_moves"] += int(move_stats.get("direct_moves", 0))
     debug_stats["candidate_staging_moves"] += int(move_stats.get("staging_moves", 0))
     debug_stats["max_candidate_moves_per_state"] = max(
@@ -979,10 +1093,6 @@ def _accumulate_move_debug_stats(
     _merge_counter_dict(
         debug_stats["candidate_steps_by_kind"],
         move_stats.get("candidate_steps_by_kind", {}),
-    )
-    _merge_nested_counter_dict(
-        debug_stats["candidate_focus_tracks_by_kind"],
-        move_stats.get("candidate_focus_tracks_by_kind", {}),
     )
     top_expansions = debug_stats["top_expansions"]
     top_expansions.append(
@@ -1004,13 +1114,3 @@ def _accumulate_move_debug_stats(
 def _merge_counter_dict(target: dict[str, int], incoming: dict[Any, int]) -> None:
     for key, value in incoming.items():
         target[str(key)] = target.get(str(key), 0) + int(value)
-
-
-def _merge_nested_counter_dict(
-    target: dict[str, dict[str, int]],
-    incoming: dict[Any, dict[Any, int]],
-) -> None:
-    for outer_key, nested in incoming.items():
-        bucket = target.setdefault(str(outer_key), {})
-        for inner_key, value in nested.items():
-            bucket[str(inner_key)] = bucket.get(str(inner_key), 0) + int(value)

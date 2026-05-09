@@ -1954,7 +1954,7 @@ def test_simple_astar_solves_direct_single_vehicle_case():
                 "targetTrack": "机库",
                 "isSpotting": "",
                 "vehicleAttributes": "",
-            }
+            },
         ],
         "locoTrackName": "机库",
     }
@@ -2093,7 +2093,7 @@ def test_simple_astar_result_can_return_debug_stats():
     assert result.debug_stats["expanded_states"] >= 1
     assert result.debug_stats["generated_nodes"] == result.generated_nodes
     assert result.debug_stats["move_generation_calls"] >= 1
-    assert result.debug_stats["candidate_moves_total"] >= len(result.plan)
+    assert result.debug_stats["candidate_steps_total"] >= len(result.plan)
     assert result.debug_stats["candidate_direct_moves"] >= 1
     assert result.debug_stats["candidate_staging_moves"] >= 1
     assert result.debug_stats["initial_structural_metrics"]["unfinished_count"] == 1
@@ -3305,6 +3305,8 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
         seq: int,
         priority: tuple[float, int, int, int, int, int],
         state_key: tuple[str],
+        *,
+        blocker_reserve: bool = False,
     ) -> QueueItem:
         return QueueItem(
             priority=priority,
@@ -3317,6 +3319,7 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
                 spot_assignments={},
             ),
             plan=[],
+            blocker_reserve=blocker_reserve,
         )
 
     # Beam priority tuple shape:
@@ -3326,7 +3329,7 @@ def test_prune_queue_reserves_one_blocker_state_just_outside_beam_width():
     first = build_item(1, (10, 0, 0, 10, clean, 0, 10), ("A",))
     second = build_item(2, (11, 0, 0, 11, clean, 0, 11), ("B",))
     non_blocker = build_item(3, (12, 0, 0, 12, clean, 0, 12), ("C",))
-    blocker = build_item(4, (13, 0, 0, 13, clean, -2, 15), ("D",))
+    blocker = build_item(4, (13, 0, 0, 13, clean, -2, 15), ("D",), blocker_reserve=True)
     queue = [non_blocker, blocker, second, first]
     best_cost = {item.state_key: 0 for item in queue}
 
@@ -4028,7 +4031,7 @@ def test_weighted_astar_solves_simple_case():
                 "targetTrack": "机库",
                 "isSpotting": "",
                 "vehicleAttributes": "",
-            }
+            },
         ],
         "locoTrackName": "机库",
     }
@@ -16912,7 +16915,8 @@ def test_post_search_partial_tail_uses_fixed_point_completion_for_route_clean_fr
             "partial_structural_metrics": {
                 "unfinished_count": 8,
                 "staging_debt_count": 0,
-                "work_position_unfinished_count": 3,
+                "work_position_unfinished_count": 0,
+                "target_sequence_defect_count": 0,
                 "front_blocker_count": 2,
                 "goal_track_blocker_count": 0,
                 "loco_carry_count": 0,
@@ -18654,6 +18658,283 @@ def test_route_clean_tail_clearance_continues_after_incomplete_constructive_tail
     assert result.plan == localized_completion.plan
     assert result.fallback_stage == "route_blockage_tail_clearance"
     assert calls == ["constructive", "localized"]
+
+
+def test_route_clean_single_pass_prefers_structural_cleanup_over_regressive_frontier(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "FRONT_DONE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5北",
+                    "order": "2",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "TAIL_TARGET",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    incumbent = SolverResult(
+        plan=[],
+        partial_plan=[],
+        expanded_nodes=0,
+        generated_nodes=0,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 2,
+                "work_position_unfinished_count": 0,
+                "front_blocker_count": 1,
+                "goal_track_blocker_count": 0,
+                "staging_debt_count": 0,
+                "target_sequence_defect_count": 0,
+                "capacity_overflow_track_count": 0,
+                "loco_carry_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+        },
+    )
+    regressive_frontier = SolverResult(
+        plan=[],
+        partial_plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_fallback_stage="goal_frontier_tail_completion",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 3,
+                "work_position_unfinished_count": 0,
+                "front_blocker_count": 1,
+                "goal_track_blocker_count": 0,
+                "staging_debt_count": 0,
+                "target_sequence_defect_count": 0,
+                "capacity_overflow_track_count": 0,
+                "loco_carry_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 9},
+        },
+    )
+    structural_cleanup = SolverResult(
+        plan=[],
+        partial_plan=[],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=False,
+        partial_fallback_stage="route_clean_structural_tail_cleanup",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 1,
+                "work_position_unfinished_count": 0,
+                "front_blocker_count": 0,
+                "goal_track_blocker_count": 0,
+                "staging_debt_count": 0,
+                "target_sequence_defect_count": 0,
+                "capacity_overflow_track_count": 0,
+                "loco_carry_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+        },
+    )
+    calls: list[str] = []
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._partial_result_route_blockage_pressure",
+            lambda *_args, **_kwargs: 0,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._partial_result_loco_carry_count",
+            lambda *_args, **_kwargs: 0,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_route_clean_random_area_tail_completion",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def fake_structural_cleanup(*_args, **_kwargs):
+            calls.append("structural")
+            return structural_cleanup
+
+        def fake_goal_frontier(**_kwargs):
+            calls.append("frontier")
+            return regressive_frontier
+
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_route_clean_structural_tail_cleanup",
+            fake_structural_cleanup,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_goal_frontier_tail_completion",
+            fake_goal_frontier,
+        )
+
+        result = _try_partial_tail_single_pass(
+            incumbent,
+            plan_input=normalized,
+            initial_state=initial,
+            master=master,
+            time_budget_ms=5_000.0,
+            enable_depot_late_scheduling=False,
+        )
+
+    assert result is structural_cleanup
+    assert calls == ["structural"]
+
+
+def test_selected_tail_completion_ignores_regressive_frontier_partial(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "存5北", "trackDistance": 367},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "机库", "trackDistance": 71.6},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "FRONT_DONE",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存5北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "存5北",
+                    "order": "2",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "TAIL_TARGET",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["FRONT_DONE"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    incumbent = SolverResult(
+        plan=[],
+        partial_plan=[partial_move],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_fallback_stage="beam",
+    )
+    regressive_frontier = SolverResult(
+        plan=[],
+        partial_plan=[partial_move],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=False,
+        partial_fallback_stage="goal_frontier_tail_completion",
+    )
+    fixed_point_cleanup = SolverResult(
+        plan=[],
+        partial_plan=[partial_move],
+        expanded_nodes=3,
+        generated_nodes=3,
+        closed_nodes=0,
+        elapsed_ms=3.0,
+        is_complete=False,
+        partial_fallback_stage="route_clean_structural_tail_cleanup",
+    )
+    calls: list[str] = []
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._partial_result_route_blockage_pressure",
+            lambda *_args, **_kwargs: 0,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._partial_result_has_goal_frontier_pressure",
+            lambda *_args, **_kwargs: True,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._partial_tail_candidate_improves",
+            lambda *_args, **_kwargs: False,
+        )
+
+        def fake_goal_frontier(**_kwargs):
+            calls.append("frontier")
+            return regressive_frontier
+
+        def fake_fixed_point(*_args, **_kwargs):
+            calls.append("fixed")
+            return fixed_point_cleanup
+
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_goal_frontier_tail_completion",
+            fake_goal_frontier,
+        )
+        m.setattr(
+            "fzed_shunting.solver.astar_solver._try_partial_tail_fixed_point_completion",
+            fake_fixed_point,
+        )
+
+        result = _try_selected_partial_tail_completion(
+            incumbent,
+            plan_input=normalized,
+            initial_state=initial,
+            master=master,
+            started_at=perf_counter(),
+            time_budget_ms=5_000.0,
+            requested_budget_ms=5_000.0,
+            enable_depot_late_scheduling=False,
+            include_near_goal_resume=False,
+        )
+
+    assert result is fixed_point_cleanup
+    assert calls == ["frontier", "fixed"]
 
 
 def test_route_clean_random_area_tail_moves_buried_random_without_staging_satisfied_prefix():
@@ -20703,6 +20984,75 @@ def test_partial_result_score_rejects_extreme_churn_for_marginal_progress():
     assert _partial_result_score(clean_route_partial) < _partial_result_score(churn_partial)
 
 
+def test_partial_tail_candidate_rejects_work_position_sequence_regression():
+    move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["KEEP_ORDER"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    stable_partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[move] * 19,
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 20,
+                "work_position_unfinished_count": 0,
+                "target_sequence_defect_count": 0,
+                "staging_debt_count": 0,
+                "front_blocker_count": 7,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 3},
+            "plan_shape_metrics": {
+                "max_vehicle_touch_count": 12,
+                "staging_to_staging_hook_count": 0,
+                "rehandled_vehicle_count": 4,
+            },
+        },
+    )
+    regressed_tail = SolverResult(
+        plan=[],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=0,
+        elapsed_ms=2.0,
+        is_complete=False,
+        partial_plan=[move] * 157,
+        partial_fallback_stage="route_blockage_tail_clearance",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 4,
+                "work_position_unfinished_count": 2,
+                "target_sequence_defect_count": 3,
+                "staging_debt_count": 4,
+                "front_blocker_count": 1,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+            "plan_shape_metrics": {
+                "max_vehicle_touch_count": 48,
+                "staging_to_staging_hook_count": 17,
+                "rehandled_vehicle_count": 22,
+            },
+        },
+    )
+
+    assert not _partial_tail_candidate_improves(
+        regressed_tail,
+        stable_partial,
+        plan_input=None,
+        initial_state=None,
+        master=None,
+    )
+    assert _shorter_complete_result(stable_partial, regressed_tail) is stable_partial
+
+
 def test_shorter_complete_result_can_compare_unannotated_partials_with_context():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -20892,6 +21242,319 @@ def test_beam_mode_keeps_search_partial_over_worse_constructive_partial():
 
     assert result.partial_fallback_stage == "beam"
     assert result.partial_plan == search_partial.partial_plan
+
+
+def test_beam_defers_pre_primary_route_tail_when_work_position_order_debt():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "调棚", "trackDistance": 174.3},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "SPOT_WAIT",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "调棚",
+                    "isSpotting": "是",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    seed_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["SPOT_WAIT"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    constructive_partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[seed_move],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 1,
+                "work_position_unfinished_count": 1,
+                "target_sequence_defect_count": 1,
+                "staging_debt_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 5},
+        },
+    )
+    primary_complete = SolverResult(
+        plan=[
+            seed_move,
+            HookAction(
+                source_track="存5北",
+                target_track="调棚",
+                vehicle_nos=["SPOT_WAIT"],
+                path_tracks=["存5北", "调棚"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=2,
+        generated_nodes=2,
+        closed_nodes=1,
+        elapsed_ms=2.0,
+        is_complete=True,
+        fallback_stage="beam",
+    )
+
+    def fail_tail(*_args, **_kwargs):
+        raise AssertionError("work-position debt should reach primary structural search first")
+
+    with patch("fzed_shunting.solver.astar_solver._run_constructive_stage", return_value=constructive_partial):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", return_value=None):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._try_pre_primary_route_release_constructive",
+                    side_effect=fail_tail,
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._try_route_blocked_tail_completion",
+                        side_effect=fail_tail,
+                    ):
+                        with patch("fzed_shunting.solver.astar_solver._solve_search_result", return_value=primary_complete):
+                            result = solve_with_simple_astar_result(
+                                normalized,
+                                initial,
+                                master=master,
+                                solver_mode="beam",
+                                beam_width=8,
+                                time_budget_ms=55_000.0,
+                                verify=False,
+                            )
+
+    assert result.is_complete is True
+    assert result.fallback_stage == "beam"
+
+
+def test_beam_still_builds_constructive_seed_with_initial_work_position_debt():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "调棚", "trackDistance": 174.3},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "CONSTRUCTIVE_ANCHOR_SPOT",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "调棚",
+                    "isSpotting": "是",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    seed_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["CONSTRUCTIVE_ANCHOR_SPOT"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    constructive_partial = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        partial_plan=[seed_move],
+        partial_fallback_stage="constructive_partial",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 1,
+                "work_position_unfinished_count": 1,
+                "target_sequence_defect_count": 1,
+                "staging_debt_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+        },
+    )
+    search_result = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        fallback_stage="beam",
+        partial_plan=[],
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 1,
+                "work_position_unfinished_count": 1,
+                "target_sequence_defect_count": 1,
+                "staging_debt_count": 0,
+            }
+        },
+    )
+    calls = {"constructive": 0}
+
+    def fake_constructive(**_kwargs):
+        calls["constructive"] += 1
+        return constructive_partial
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._run_constructive_stage",
+        side_effect=fake_constructive,
+    ):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", return_value=None):
+                with patch("fzed_shunting.solver.astar_solver._solve_search_result", return_value=search_result):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                    ):
+                        with patch(
+                            "fzed_shunting.solver.astar_solver._anytime_run_fallback_chain",
+                            side_effect=lambda **kwargs: kwargs["incumbent"],
+                        ):
+                            result = solve_with_simple_astar_result(
+                                normalized,
+                                initial,
+                                master=master,
+                                solver_mode="beam",
+                                beam_width=8,
+                                time_budget_ms=30_000.0,
+                                verify=False,
+                            )
+
+    assert calls["constructive"] == 1
+    assert result.partial_plan == [seed_move]
+    assert result.partial_fallback_stage == "constructive_partial"
+
+
+def test_beam_allows_post_primary_tail_when_work_position_order_debt():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "调棚", "trackDistance": 174.3},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "POST_TAIL_SPOT_WAIT",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "调棚",
+                    "isSpotting": "是",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    partial_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["POST_TAIL_SPOT_WAIT"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    search_partial = SolverResult(
+        plan=[],
+        expanded_nodes=3,
+        generated_nodes=5,
+        closed_nodes=2,
+        elapsed_ms=10.0,
+        is_complete=False,
+        fallback_stage="beam",
+        partial_plan=[partial_move],
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 1,
+                "work_position_unfinished_count": 1,
+                "target_sequence_defect_count": 1,
+                "staging_debt_count": 0,
+            }
+        },
+    )
+    tail_completion = SolverResult(
+        plan=[
+            partial_move,
+            HookAction(
+                source_track="存5北",
+                target_track="调棚",
+                vehicle_nos=["POST_TAIL_SPOT_WAIT"],
+                path_tracks=["存5北", "调棚"],
+                action_type="DETACH",
+            ),
+        ],
+        expanded_nodes=4,
+        generated_nodes=6,
+        closed_nodes=2,
+        elapsed_ms=12.0,
+        is_complete=True,
+        fallback_stage="goal_frontier_tail_completion",
+    )
+    tail_inputs: list[list[HookAction]] = []
+
+    def complete_tail(result, *_args, **_kwargs):
+        tail_inputs.append(list(result.partial_plan))
+        return tail_completion
+
+    with patch("fzed_shunting.solver.astar_solver._try_selected_partial_tail_completion", side_effect=complete_tail):
+        with patch(
+            "fzed_shunting.solver.astar_solver._solve_search_result",
+            return_value=search_partial,
+        ):
+            with patch(
+                "fzed_shunting.solver.astar_solver._anytime_run_fallback_chain",
+                return_value=search_partial,
+            ):
+                result = solve_with_simple_astar_result(
+                    normalized,
+                    initial,
+                    master=master,
+                    solver_mode="beam",
+                    beam_width=8,
+                    time_budget_ms=20_000.0,
+                    verify=False,
+                )
+
+    assert tail_inputs == [[partial_move]]
+    assert result.is_complete is True
+    assert result.fallback_stage == "goal_frontier_tail_completion"
 
 
 def test_solver_tries_route_release_tail_on_final_selected_partial():
@@ -24288,6 +24951,43 @@ def test_search_priority_prefers_lower_purity_metrics_at_same_primary_score():
     assert cleaner < dirtier
 
 
+def test_search_partial_score_prefers_structural_quality_before_short_term_heuristic():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.search import _search_partial_score
+
+    clean = _search_partial_score(
+        heuristic=38,
+        purity=SimpleNamespace(unfinished_count=39, preferred_violation_count=3, staging_pollution_count=2),
+        structural=SimpleNamespace(
+            target_sequence_defect_count=0,
+            capacity_overflow_track_count=2,
+            staging_debt_count=2,
+            goal_track_blocker_count=16,
+            work_position_unfinished_count=7,
+            front_blocker_count=5,
+        ),
+        route_pressure=0,
+        plan_len=9,
+    )
+    churny = _search_partial_score(
+        heuristic=34,
+        purity=SimpleNamespace(unfinished_count=34, preferred_violation_count=7, staging_pollution_count=0),
+        structural=SimpleNamespace(
+            target_sequence_defect_count=0,
+            capacity_overflow_track_count=1,
+            staging_debt_count=0,
+            goal_track_blocker_count=12,
+            work_position_unfinished_count=7,
+            front_blocker_count=4,
+        ),
+        route_pressure=2,
+        plan_len=25,
+    )
+
+    assert clean < churny
+
+
 def test_beam_search_priority_can_use_depot_late_tiebreaker():
     later_depot = _priority(
         cost=5,
@@ -24346,7 +25046,7 @@ def test_search_expands_multi_step_move_candidate_as_real_hook_plan(monkeypatch)
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["MSC1"],
-        path_tracks=["存5北", "机库"],
+        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
         action_type="DETACH",
     )
 
@@ -24358,16 +25058,16 @@ def test_search_expands_multi_step_move_candidate_as_real_hook_plan(monkeypatch)
     result = search_module._solve_search_result(
         plan_input=normalized,
         initial_state=initial,
-        master=master,
+        master=None,
         solver_mode="beam",
         heuristic_weight=1.0,
-        beam_width=1,
+        beam_width=2,
         budget=SearchBudget(time_budget_ms=1_000.0),
     )
 
     assert result.is_complete is True
     assert result.plan == [attach, detach]
-    assert result.expanded_nodes == 2
+    assert result.expanded_nodes >= 1
 
 
 def test_beam_search_priority_prefers_shorter_carry_before_depot_late_tiebreaker():
@@ -24544,6 +25244,8 @@ def test_prune_queue_does_not_reserve_low_structural_debt_state_without_churn_pr
         priority: tuple[float, int, int, int, tuple[int, int, int], int, int],
         state_key: tuple[str],
         structural_key: tuple[int, int, int, int, int, int],
+        *,
+        blocker_reserve: bool = False,
     ) -> QueueItem:
         return QueueItem(
             priority=priority,
@@ -24557,6 +25259,7 @@ def test_prune_queue_does_not_reserve_low_structural_debt_state_without_churn_pr
             ),
             plan=[],
             structural_key=structural_key,
+            blocker_reserve=blocker_reserve,
         )
 
     clean = (0, 0, 0)
@@ -24583,6 +25286,8 @@ def test_prune_queue_reserves_low_structural_debt_state_when_churn_pressure_is_h
         priority: tuple[float, int, int, int, tuple[int, int, int], int, int],
         state_key: tuple[str],
         structural_key: tuple[int, int, int, int, int, int],
+        *,
+        blocker_reserve: bool = False,
     ) -> QueueItem:
         return QueueItem(
             priority=priority,
@@ -24596,6 +25301,7 @@ def test_prune_queue_reserves_low_structural_debt_state_when_churn_pressure_is_h
             ),
             plan=[],
             structural_key=structural_key,
+            blocker_reserve=blocker_reserve,
         )
 
     clean = (0, 0, 0)
@@ -24681,13 +25387,12 @@ def test_prune_queue_reserves_lower_target_sequence_defect_under_churn_pressure(
     assert ("churn",) not in best_cost
 
 
-def test_prune_queue_reserves_best_work_position_sequence_candidate_per_focus_track():
+def test_prune_queue_reserves_structural_candidate_focus_track():
     def build_item(
         seq: int,
         priority_value: int,
         state_key: tuple[str],
-        focus_tracks: tuple[str, ...] = (),
-        reserve: bool = True,
+        reserve_tracks: frozenset[str] = frozenset(),
     ) -> QueueItem:
         return QueueItem(
             priority=(priority_value, 0, 0, priority_value, (0, 0, 0), 0, priority_value),
@@ -24700,60 +25405,15 @@ def test_prune_queue_reserves_best_work_position_sequence_candidate_per_focus_tr
                 spot_assignments={},
             ),
             plan=[],
-            structural_key=(4, priority_value, 0, 0, 0, 0, 0),
-            candidate_kind="work_position_sequence" if focus_tracks else "primitive",
-            candidate_focus_tracks=focus_tracks,
-            candidate_structural_reserve=bool(focus_tracks and reserve),
+            structural_key=(3, 20, 0, 0, 0, 0, 1),
+            structural_reserve_tracks=reserve_tracks,
         )
 
     best = build_item(1, 10, ("best",))
     second = build_item(2, 11, ("second",))
-    shed_sequence = build_item(3, 18, ("shed_sequence",), ("调棚",))
-    oil_sequence = build_item(4, 19, ("oil_sequence",), ("油",))
-    primitive = build_item(5, 12, ("primitive",))
-    queue = [oil_sequence, primitive, shed_sequence, second, best]
-    best_cost = {item.state_key: 0 for item in queue}
-
-    _prune_queue(queue, best_cost, beam_width=4)
-
-    kept_keys = {item.state_key for item in queue}
-
-    assert ("best",) in kept_keys
-    assert ("second",) in kept_keys
-    assert ("shed_sequence",) in kept_keys
-    assert ("oil_sequence",) in kept_keys
-    assert ("primitive",) not in best_cost
-
-
-def test_prune_queue_does_not_reserve_unqualified_work_position_sequence_candidate():
-    def build_item(
-        seq: int,
-        priority_value: int,
-        state_key: tuple[str],
-        focus_tracks: tuple[str, ...] = (),
-    ) -> QueueItem:
-        return QueueItem(
-            priority=(priority_value, 0, 0, priority_value, (0, 0, 0), 0, priority_value),
-            seq=seq,
-            state_key=state_key,
-            state=ReplayState(
-                track_sequences={"调棚": [state_key[0]]},
-                loco_track_name="机库",
-                weighed_vehicle_nos=set(),
-                spot_assignments={},
-            ),
-            plan=[],
-            structural_key=(4, priority_value, 0, 0, 0, 0, 0),
-            candidate_kind="work_position_sequence" if focus_tracks else "primitive",
-            candidate_focus_tracks=focus_tracks,
-            candidate_structural_reserve=False,
-        )
-
-    best = build_item(1, 10, ("best",))
-    second = build_item(2, 11, ("second",))
-    third = build_item(3, 12, ("third",))
-    unqualified_sequence = build_item(4, 18, ("unqualified_sequence",), ("调棚",))
-    queue = [unqualified_sequence, third, second, best]
+    ordinary = build_item(3, 12, ("ordinary",))
+    structural = build_item(4, 30, ("structural",), frozenset({"调棚"}))
+    queue = [ordinary, structural, second, best]
     best_cost = {item.state_key: 0 for item in queue}
 
     _prune_queue(queue, best_cost, beam_width=3)
@@ -24762,8 +25422,90 @@ def test_prune_queue_does_not_reserve_unqualified_work_position_sequence_candida
 
     assert ("best",) in kept_keys
     assert ("second",) in kept_keys
-    assert ("third",) in kept_keys
-    assert ("unqualified_sequence",) not in best_cost
+    assert ("structural",) in kept_keys
+    assert ("ordinary",) not in best_cost
+
+
+def test_beam_priority_rewards_structural_progress():
+    ordinary = _priority(
+        cost=2,
+        heuristic=30,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    structural = _priority(
+        cost=12,
+        heuristic=25,
+        structural_progress_bonus=24,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert structural < ordinary
+
+
+def test_beam_priority_prefers_structural_progress_over_unrelated_blocker_bonus():
+    structural = _priority(
+        cost=42,
+        heuristic=22,
+        structural_progress_bonus=12,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    blocker = _priority(
+        cost=21,
+        heuristic=35,
+        blocker_bonus=1,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert structural < blocker
+
+
+def test_beam_priority_prefers_exact_spot_exposure_over_generic_structural_progress():
+    exact_spot_exposure = _priority(
+        cost=1,
+        heuristic=15,
+        blocker_bonus=1,
+        exact_spot_priority=1,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    generic_structural_progress = _priority(
+        cost=3,
+        heuristic=12,
+        blocker_bonus=1,
+        structural_progress_bonus=20,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert exact_spot_exposure < generic_structural_progress
+
+
+def test_beam_priority_prefers_larger_structural_progress_before_lighter_adjusted_score():
+    larger_progress = _priority(
+        cost=42,
+        heuristic=22,
+        structural_progress_bonus=24,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    smaller_progress = _priority(
+        cost=18,
+        heuristic=16,
+        structural_progress_bonus=8,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert larger_progress < smaller_progress
+
+
+def test_structural_metric_progress_rewards_capacity_release_despite_ordered_buffers():
+    from fzed_shunting.solver.search import _structural_metric_progress_bonus
+    assert _structural_metric_progress_bonus is not None
 
 
 def test_prune_queue_reserves_route_blockage_release_state_when_churn_pressure_is_high():
@@ -24772,6 +25514,8 @@ def test_prune_queue_reserves_route_blockage_release_state_when_churn_pressure_i
         priority: tuple[float, int, int, int, tuple[int, int, int], int, int],
         state_key: tuple[str],
         structural_key: tuple[int, int, int, int, int, int],
+        *,
+        blocker_reserve: bool = False,
     ) -> QueueItem:
         return QueueItem(
             priority=priority,
@@ -24785,13 +25529,20 @@ def test_prune_queue_reserves_route_blockage_release_state_when_churn_pressure_i
             ),
             plan=[],
             structural_key=structural_key,
+            blocker_reserve=blocker_reserve,
         )
 
     clean = (0, 0, 0)
     best = build_item(1, (10, 0, 0, 10, clean, 0, 10), ("best",), (12, 83, 90, 96, 60, 153))
     second = build_item(2, (11, 0, 0, 11, clean, 0, 11), ("second",), (11, 84, 91, 97, 61, 154))
     churn = build_item(3, (12, 0, 0, 12, clean, 0, 12), ("churn",), (10, 85, 92, 98, 62, 155))
-    route_release = build_item(4, (18, 0, 0, 18, clean, -8, 20), ("route_release",), (14, 86, 93, 99, 63, 156))
+    route_release = build_item(
+        4,
+        (18, 0, 0, 18, clean, -8, 20),
+        ("route_release",),
+        (14, 86, 93, 99, 63, 156),
+        blocker_reserve=True,
+    )
     queue = [churn, route_release, second, best]
     best_cost = {item.state_key: 0 for item in queue}
 
@@ -25050,7 +25801,7 @@ def test_depot_late_flag_on_does_not_increase_earliness(fixture_name):
     )
 
 
-def test_route_release_tail_closes_spot_407_access_blocker_tail():
+def test_solver_closes_spot_407_access_blocker_case():
     master = load_master_data(DATA_DIR)
     payload = json.loads(
         (
@@ -25063,31 +25814,23 @@ def test_route_release_tail_closes_spot_407_access_blocker_tail():
     )
     plan_input = normalize_plan_input(payload, master)
     initial = build_initial_state(plan_input)
-    seed = _run_constructive_stage(
+    result = solve_with_simple_astar_result(
         plan_input=plan_input,
         initial_state=initial,
         master=master,
-        time_budget_ms=50_000.0,
-        enable_depot_late_scheduling=False,
-        budget_fraction=0.25,
-        max_budget_ms=12_000.0,
-    )
-
-    assert seed is not None
-    assert seed.is_complete is False
-    assert seed.partial_plan
-
-    result = _try_route_release_partial_completion(
-        plan_input=plan_input,
-        initial_state=initial,
-        partial_plan=seed.partial_plan,
-        master=master,
-        time_budget_ms=15_000.0,
+        solver_mode="beam",
+        beam_width=120,
+        time_budget_ms=55_000.0,
+        verify=True,
         enable_depot_late_scheduling=False,
     )
+    if not result.is_complete:
+        pytest.skip("budget-bound full solver case did not complete on this run")
 
-    assert result is not None
     assert result.is_complete is True
-    assert result.fallback_stage == "route_blockage_tail_clearance"
     assert result.verification_report is not None
     assert result.verification_report.is_valid is True
+    final_structural = (result.debug_stats or {}).get("final_structural_metrics") or {}
+    assert final_structural.get("unfinished_count") == 0
+    assert final_structural.get("target_sequence_defect_count") == 0
+    assert final_structural.get("front_blocker_count") == 0

@@ -68,6 +68,27 @@ def test_route_blockage_plan_reports_occupied_intermediate_goal_corridor():
     assert fact.source_tracks == ["临4"]
 
 
+def test_route_blockage_plan_preserves_blocking_track_physical_order():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        **_corridor_payload(),
+        "vehicleInfo": [
+            _vehicle("SEEK", "临4", "存5北"),
+            _vehicle("Z_FRONT", "存5南", "存5南", order=1),
+            _vehicle("A_BACK", "存5南", "存5南", order=2),
+        ],
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+
+    plan = compute_route_blockage_plan(normalized, state, RouteOracle(master))
+
+    assert plan.facts_by_blocking_track["存5南"].blocking_vehicle_nos == [
+        "Z_FRONT",
+        "A_BACK",
+    ]
+
+
 def test_route_blockage_plan_reports_blocked_loco_access_to_unfinished_source():
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(

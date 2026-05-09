@@ -4,17 +4,17 @@ Priority-rule dispatcher that always returns a plan (or a best-effort partial
 plan) for any legal input. Used as the rock-bottom SLA guarantee beneath the
 A* / anytime-fallback optimisation layers.
 
-The algorithm is a greedy event-driven loop:
+The algorithm is a greedy event-driven loop over move candidates:
 
 1. If the current state already satisfies ``_is_goal``, return the plan.
-2. Ask ``move_generator.generate_real_hook_moves`` for all legal candidates.
+2. Ask ``move_candidates.generate_move_candidates`` for legal primitive and
+   structural candidates.
 3. Score each candidate with a tuple-based priority and pick the minimum.
-4. Apply the move, repeat until goal or the budget is exhausted.
+4. Apply every hook in the chosen candidate, repeat until goal or budget.
 
-Because candidate generation already honours every hard business constraint
-(traction limits, path interference, close-door pruning, capacity tolerance,
-spot availability, etc.), any plan the dispatcher emits is legal by
-construction. Verification still happens on the solver entry point.
+Because candidates compile to ordinary hooks and are replayed before scoring,
+the dispatcher shares the same route/capacity/work-position legality surface as
+the search layer. Verification still happens on the solver entry point.
 
 Bounded backtracking (W3-N): If greedy_forward gets stuck in a local minimum
 (heuristic stale for ``stuck_threshold`` rounds) without reaching the goal,
@@ -48,6 +48,8 @@ from fzed_shunting.solver.exact_spot import (
     exact_spot_seeker_exposure_bonus,
 )
 from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
+from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
+from fzed_shunting.solver.move_candidates import MoveCandidate, generate_move_candidates
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.route_blockage import (
@@ -59,6 +61,7 @@ from fzed_shunting.solver.route_blockage import (
 )
 from fzed_shunting.solver.state import _is_goal, _state_key
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
+from fzed_shunting.solver.structural_intent import build_structural_intent
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -86,6 +89,7 @@ class ConstructiveResult:
     stuck_reason: str | None = None
     debug_stats: dict[str, Any] | None = None
     final_heuristic: float | None = None
+    decision_indices: tuple[int, ...] = ()
 
 
 def solve_constructive(
@@ -154,7 +158,7 @@ def solve_constructive(
                 break
 
         # Find a step to rewind to and try an alternative there.
-        stuck_at = len(result.plan)
+        stuck_at = len(result.decision_indices)
         rewind_candidate: int | None = None
 
         # Preferred: LATEST step in the last REWIND_WINDOW that hasn't yet
@@ -205,6 +209,7 @@ def solve_constructive(
         stuck_reason=best_attempt.stuck_reason,
         debug_stats=merged_stats,
         final_heuristic=best_attempt.final_heuristic,
+        decision_indices=best_attempt.decision_indices,
     )
 
 
@@ -269,8 +274,10 @@ def _greedy_forward(
 
     state = initial_state
     plan: list[HookAction] = []
+    decision_indices: list[int] = []
     best_heuristic = _progress_score(plan_input, state, state_heuristic)
     last_safe_plan: list[HookAction] = []
+    last_safe_decision_indices: list[int] = []
     last_safe_iterations = 0
     last_safe_heuristic = best_heuristic
     stale_rounds = 0
@@ -305,6 +312,7 @@ def _greedy_forward(
         if not state.loco_carry:
             return _build_result(
                 plan=plan,
+                decision_indices=decision_indices,
                 reached_goal=False,
                 iterations=iterations,
                 started_at=started_at,
@@ -314,6 +322,7 @@ def _greedy_forward(
             )
         return _build_result(
             plan=last_safe_plan,
+            decision_indices=last_safe_decision_indices,
             reached_goal=False,
             iterations=last_safe_iterations,
             started_at=started_at,
@@ -321,6 +330,22 @@ def _greedy_forward(
             stuck_reason=f"{stuck_reason}; rewound to empty-carry checkpoint",
             final_heuristic=last_safe_heuristic,
         )
+
+    route_blockage_cache: dict[tuple, RouteBlockagePlan] = {}
+
+    def _cached_route_blockage_plan(candidate_state: ReplayState) -> RouteBlockagePlan | None:
+        if not route_release_bias or route_oracle is None:
+            return None
+        key = _state_key(candidate_state, plan_input)
+        cached = route_blockage_cache.get(key)
+        if cached is None:
+            cached = compute_route_blockage_plan(
+                plan_input,
+                candidate_state,
+                route_oracle,
+            )
+            route_blockage_cache[key] = cached
+        return cached
 
     def _has_forced_attach_horizon_drop(probe_state: ReplayState) -> bool:
         base_heuristic = state_heuristic(probe_state)
@@ -340,11 +365,7 @@ def _greedy_forward(
             and route_release_bias
             and route_oracle is not None
         ):
-            route_blockage_plan = compute_route_blockage_plan(
-                plan_input,
-                probe_state,
-                route_oracle,
-            )
+            route_blockage_plan = _cached_route_blockage_plan(probe_state)
             if any(
                 _route_blockage_release_score(
                     move=first_move,
@@ -379,10 +400,13 @@ def _greedy_forward(
                     return True
         return False
 
-    for iteration in range(max_iterations):
+    iteration = 0
+
+    while len(plan) < max_iterations:
         if _is_goal(plan_input, state):
             return _build_result(
                 plan=plan,
+                decision_indices=decision_indices,
                 reached_goal=True,
                 iterations=iteration,
                 started_at=started_at,
@@ -397,16 +421,39 @@ def _greedy_forward(
                     final_heuristic=state_heuristic(state),
                 )
 
-        moves = generate_real_hook_moves(
-            plan_input,
-            state,
-            master=master,
-            route_oracle=route_oracle,
+        structural_metrics = compute_structural_metrics(plan_input, state)
+        use_structural_candidates = (
+            route_release_bias
+            or _has_order_sequence_pressure(
+                plan_input=plan_input,
+                state=state,
+                route_oracle=route_oracle,
+                structural_metrics=structural_metrics,
+            )
         )
-        if not moves:
+        if use_structural_candidates:
+            move_stats: dict[str, Any] = {}
+            candidates = generate_move_candidates(
+                plan_input,
+                state,
+                master=master,
+                route_oracle=route_oracle,
+                debug_stats=move_stats,
+            )
+        else:
+            candidates = [
+                MoveCandidate(steps=(move,), kind="primitive")
+                for move in generate_real_hook_moves(
+                    plan_input,
+                    state,
+                    master=master,
+                    route_oracle=route_oracle,
+                )
+            ]
+        if not candidates:
             return _build_partial_result(
                 iterations=iteration,
-                stuck_reason="no legal moves",
+                stuck_reason="no legal candidates",
                 final_heuristic=state_heuristic(state),
             )
 
@@ -427,55 +474,47 @@ def _greedy_forward(
             for track, seq in state.track_sequences.items()
             if seq
         }
-        scored: list[tuple[tuple, int, HookAction, bool, bool]] = []
+        scored: list[
+            tuple[
+                tuple,
+                int,
+                MoveCandidate,
+                bool,
+                bool,
+                ReplayState,
+                tuple[tuple[ReplayState, HookAction, ReplayState], ...],
+            ]
+        ] = []
         current_heuristic = state_heuristic(state)
         current_progress = _progress_score(plan_input, state, state_heuristic)
-        route_blockage_plan = (
-            compute_route_blockage_plan(
-                plan_input,
-                state,
-                route_oracle,
-            )
-            if route_release_bias and route_oracle is not None
-            else None
-        )
-        for move in moves:
-            next_state = _apply_move(
-                state=state,
-                move=move,
+        route_blockage_plan = _cached_route_blockage_plan(state)
+        for candidate in candidates:
+            if len(candidate.steps) > 1 and len(plan) + len(candidate.steps) >= max_iterations:
+                continue
+            if len(plan) + len(candidate.steps) > max_iterations:
+                continue
+            compiled = replay_candidate_steps(
                 plan_input=plan_input,
+                state=state,
                 vehicle_by_no=vehicle_by_no,
+                steps=candidate.steps,
+                route_oracle=route_oracle,
+                apply_move=_apply_move,
             )
+            if compiled is None:
+                continue
+            next_state = compiled.final_state
             next_heuristic = state_heuristic(next_state)
             next_progress = _progress_score(plan_input, next_state, state_heuristic)
             repeats_recent_state = _state_key(next_state, plan_input) in recent_state_key_set
-            next_route_blockage_plan = (
-                compute_route_blockage_plan(
-                    plan_input,
-                next_state,
-                route_oracle,
-            )
-            if route_blockage_plan is not None
-            else None
-        )
-            route_blockage_parking_pressure = (
-                _route_blockage_parking_pressure(
-                    move=move,
-                    state=state,
-                    next_state=next_state,
-                    plan_input=plan_input,
-                    route_oracle=route_oracle,
-                    route_blockage_plan=route_blockage_plan,
-                    next_route_blockage_plan=next_route_blockage_plan,
-                )
-                if route_blockage_plan is not None
-                else 0
-            )
-            score, tier = _score_native_move(
-                move=move,
+            next_route_blockage_plan = _cached_route_blockage_plan(next_state)
+            score, tier = _score_candidate(
+                candidate=candidate,
                 state=state,
-                next_state=next_state,
+                final_state=next_state,
+                transitions=list(compiled.transitions),
                 plan_input=plan_input,
+                state_heuristic=state_heuristic,
                 current_heuristic=current_heuristic,
                 next_heuristic=next_heuristic,
                 current_progress=current_progress,
@@ -489,65 +528,111 @@ def _greedy_forward(
                 route_blockage_plan=route_blockage_plan,
                 next_route_blockage_plan=next_route_blockage_plan,
                 route_oracle=route_oracle,
-                route_blockage_parking_pressure=route_blockage_parking_pressure,
                 route_release_focus_tracks=route_release_focus_tracks
                 if route_release_focus_ttl > 0
                 else frozenset(),
                 route_release_focus_bonus=route_release_focus_bonus,
+                route_release_focus_ttl=route_release_focus_ttl,
                 defer_extra_attach_for_satisfied_carry=route_release_bias,
+                route_blockage_plan_for_state=_cached_route_blockage_plan,
             )
-            is_inverse = _is_inverse_of_recent(move, recent_moves)
-            scored.append((score, tier, move, is_inverse, repeats_recent_state))
-        scored.sort(key=lambda entry: entry[0])
-
-        pool = _candidate_selection_pool(scored)
-
-        step_idx = len(plan)
-        alt_idx = alternatives.get(step_idx, 0)
-        if alt_idx >= len(pool):
+            is_inverse = _candidate_is_inverse_of_recent(candidate, recent_moves)
+            scored.append(
+                (
+                    score,
+                    tier,
+                    candidate,
+                    is_inverse,
+                    repeats_recent_state,
+                    next_state,
+                    compiled.transitions,
+                )
+            )
+        scored.sort(key=lambda entry: _score_sort_key(entry[0]))
+        if not scored:
             return _build_partial_result(
                 iterations=iteration,
-                stuck_reason=f"alternative exhausted at step {step_idx}",
+                stuck_reason="no compilable candidates",
                 final_heuristic=state_heuristic(state),
             )
 
-        chosen_score, chosen_tier, chosen_move, _is_inv, _repeats = pool[alt_idx]
+        pool = _candidate_selection_pool(scored)
+
+        decision_idx = len(decision_indices)
+        alt_idx = alternatives.get(decision_idx, 0)
+        if alt_idx >= len(pool):
+            return _build_partial_result(
+                iterations=iteration,
+                stuck_reason=f"alternative exhausted at decision {decision_idx}",
+                final_heuristic=state_heuristic(state),
+            )
+
+        (
+            chosen_score,
+            chosen_tier,
+            chosen_candidate,
+            _is_inv,
+            _repeats,
+            chosen_state,
+            chosen_transitions,
+        ) = pool[alt_idx]
 
         tier_key = f"tier{chosen_tier}_" + _TIER_NAMES[min(chosen_tier, 6)]
         stats[tier_key] = stats.get(tier_key, 0) + 1
+        stats["candidate_decisions"] = stats.get("candidate_decisions", 0) + 1
+        if chosen_candidate.kind == "structural":
+            stats["structural_candidate_decisions"] = (
+                stats.get("structural_candidate_decisions", 0) + 1
+            )
+            stats[f"structural_{chosen_candidate.reason}"] = (
+                stats.get(f"structural_{chosen_candidate.reason}", 0) + 1
+            )
+        if len(chosen_candidate.steps) > 1:
+            stats["multi_step_candidate_decisions"] = (
+                stats.get("multi_step_candidate_decisions", 0) + 1
+            )
 
-        state = _apply_move(
-            state=state,
-            move=chosen_move,
-            plan_input=plan_input,
-            vehicle_by_no=vehicle_by_no,
-        )
-        (
-            route_release_focus_tracks,
-            route_release_focus_bonus,
-            route_release_focus_ttl,
-        ) = route_release_focus_after_move(
-            prior_focus_tracks=route_release_focus_tracks,
-            prior_focus_bonus=route_release_focus_bonus,
-            prior_focus_ttl=route_release_focus_ttl,
-            move=chosen_move,
-            route_blockage_plan=route_blockage_plan,
-        )
-        plan.append(chosen_move)
-        recent_moves.append(
-            (chosen_move.source_track, chosen_move.target_track, tuple(chosen_move.vehicle_nos))
-        )
-        chosen_state_key = _state_key(state, plan_input)
-        if len(recent_state_keys) == recent_state_keys.maxlen:
-            evicted_key = recent_state_keys.popleft()
-            recent_state_key_set.discard(evicted_key)
-        recent_state_keys.append(chosen_state_key)
-        recent_state_key_set.add(chosen_state_key)
+        previous_plan_len = len(plan)
+        current_route_blockage_plan = route_blockage_plan
+        for _before_step_state, chosen_move, after_step_state in chosen_transitions:
+            (
+                route_release_focus_tracks,
+                route_release_focus_bonus,
+                route_release_focus_ttl,
+            ) = route_release_focus_after_move(
+                prior_focus_tracks=route_release_focus_tracks,
+                prior_focus_bonus=route_release_focus_bonus,
+                prior_focus_ttl=route_release_focus_ttl,
+                move=chosen_move,
+                route_blockage_plan=current_route_blockage_plan,
+            )
+            plan.append(chosen_move)
+            recent_moves.append(
+                (
+                    chosen_move.source_track,
+                    chosen_move.target_track,
+                    tuple(chosen_move.vehicle_nos),
+                )
+            )
+            after_step_key = _state_key(after_step_state, plan_input)
+            if len(recent_state_keys) == recent_state_keys.maxlen:
+                evicted_key = recent_state_keys.popleft()
+                recent_state_key_set.discard(evicted_key)
+            recent_state_keys.append(after_step_key)
+            recent_state_key_set.add(after_step_key)
+            current_route_blockage_plan = (
+                _cached_route_blockage_plan(after_step_state)
+                if current_route_blockage_plan is not None
+                else None
+            )
+        decision_indices.append(previous_plan_len)
+        state = chosen_state
         current_heuristic = state_heuristic(state)
         current_progress = _progress_score(plan_input, state, state_heuristic)
         final_heuristic = current_heuristic
         if not state.loco_carry:
             last_safe_plan = list(plan)
+            last_safe_decision_indices = list(decision_indices)
             last_safe_iterations = iteration + 1
             last_safe_heuristic = current_heuristic
         if current_progress < best_heuristic:
@@ -565,6 +650,7 @@ def _greedy_forward(
         if stale_rounds >= stuck_threshold:
             if _has_forced_attach_horizon_drop(state):
                 stale_rounds = 0
+                iteration += 1
                 continue
             return _build_partial_result(
                 iterations=iteration + 1,
@@ -577,6 +663,7 @@ def _greedy_forward(
                 stuck_reason=f"heuristic stale for {_PURPOSEFUL_STUCK_THRESHOLD} purposeful rounds",
                 final_heuristic=final_heuristic,
             )
+        iteration += 1
 
     return _build_partial_result(
         iterations=max_iterations,
@@ -599,6 +686,7 @@ _TIER_NAMES = {
 def _build_result(
     *,
     plan: list[HookAction],
+    decision_indices: list[int] | tuple[int, ...],
     reached_goal: bool,
     iterations: int,
     started_at: float,
@@ -615,6 +703,7 @@ def _build_result(
         stuck_reason=stuck_reason,
         debug_stats=dict(stats),
         final_heuristic=final_heuristic,
+        decision_indices=tuple(decision_indices),
     )
 
 
@@ -637,6 +726,32 @@ def _progress_score(
         purity.preferred_violation_count,
         purity.staging_pollution_count,
         purity.unfinished_count + structural.target_sequence_defect_count,
+    )
+
+
+def _has_order_sequence_pressure(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle | None,
+    structural_metrics: Any,
+) -> bool:
+    if structural_metrics.target_sequence_defect_count > 0:
+        return True
+    if not structural_metrics.target_sequence_defect_by_track:
+        return False
+    intent = build_structural_intent(
+        plan_input,
+        state,
+        route_oracle=route_oracle,
+    )
+    if intent.delayed_commitments:
+        return True
+    if intent.buffer_leases:
+        return True
+    return any(
+        debt.defect_count > 0 or bool(debt.blocking_prefix_vehicle_nos)
+        for debt in intent.order_debts_by_track.values()
     )
 
 
@@ -693,9 +808,16 @@ def _is_inverse_of_recent(
     return False
 
 
+def _candidate_is_inverse_of_recent(
+    candidate: MoveCandidate,
+    recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None,
+) -> bool:
+    return any(_is_inverse_of_recent(move, recent_moves) for move in candidate.steps)
+
+
 def _candidate_selection_pool(
-    scored: list[tuple[tuple, int, HookAction, bool, bool]],
-) -> list[tuple[tuple, int, HookAction, bool, bool]]:
+    scored: list[tuple],
+) -> list[tuple]:
     clean_pool = [entry for entry in scored if not entry[3] and not entry[4]]
     if clean_pool:
         non_repeat_pool = [entry for entry in scored if not entry[4]]
@@ -719,10 +841,228 @@ def _candidate_selection_pool(
 
 
 def _candidate_materially_beats_clean_pool(
-    candidate: tuple[tuple, int, HookAction, bool, bool],
-    clean_best: tuple[tuple, int, HookAction, bool, bool],
+    candidate: tuple,
+    clean_best: tuple,
 ) -> bool:
     return candidate[1] < clean_best[1]
+
+
+def _score_sort_key(score: tuple) -> tuple:
+    return tuple(_score_sort_component(item) for item in score)
+
+
+def _score_sort_component(item: Any) -> tuple:
+    if isinstance(item, tuple):
+        return (2, _score_sort_key(item))
+    if isinstance(item, (int, float)):
+        return (0, item)
+    return (1, str(item))
+
+
+def _score_candidate(
+    *,
+    candidate: MoveCandidate,
+    state: ReplayState,
+    final_state: ReplayState,
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]],
+    plan_input: NormalizedPlanInput,
+    state_heuristic,
+    current_heuristic: int,
+    next_heuristic: int,
+    current_progress: tuple[int, int, int, int],
+    next_progress: tuple[int, int, int, int],
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    goal_tracks_needed: set[str],
+    satisfied_by_track: dict[str, int] | None = None,
+    recent_moves: deque[tuple[str, str, tuple[str, ...]]] | None = None,
+    repeats_recent_state: bool = False,
+    strict_staging_regrab: bool = True,
+    route_blockage_plan: RouteBlockagePlan | None = None,
+    next_route_blockage_plan: RouteBlockagePlan | None = None,
+    route_oracle: RouteOracle | None = None,
+    route_release_focus_tracks: frozenset[str] | set[str] | None = None,
+    route_release_focus_bonus: int = 0,
+    route_release_focus_ttl: int = 0,
+    defer_extra_attach_for_satisfied_carry: bool = False,
+    route_blockage_plan_for_state=None,
+) -> tuple[tuple, int]:
+    if len(transitions) == 1:
+        step_state, move, step_next_state = transitions[0]
+        return _score_native_move(
+            move=move,
+            state=step_state,
+            next_state=step_next_state,
+            plan_input=plan_input,
+            current_heuristic=current_heuristic,
+            next_heuristic=next_heuristic,
+            current_progress=current_progress,
+            next_progress=next_progress,
+            vehicle_by_no=vehicle_by_no,
+            goal_tracks_needed=goal_tracks_needed,
+            satisfied_by_track=satisfied_by_track,
+            recent_moves=recent_moves,
+            repeats_recent_state=repeats_recent_state,
+            strict_staging_regrab=strict_staging_regrab,
+            route_blockage_plan=route_blockage_plan,
+            next_route_blockage_plan=next_route_blockage_plan,
+            route_oracle=route_oracle,
+            route_blockage_parking_pressure=(
+                _route_blockage_parking_pressure(
+                    move=move,
+                    state=step_state,
+                    next_state=step_next_state,
+                    plan_input=plan_input,
+                    route_oracle=route_oracle,
+                    route_blockage_plan=route_blockage_plan,
+                    next_route_blockage_plan=next_route_blockage_plan,
+                )
+                if route_blockage_plan is not None
+                else 0
+            ),
+            route_release_focus_tracks=route_release_focus_tracks,
+            route_release_focus_bonus=route_release_focus_bonus,
+            defer_extra_attach_for_satisfied_carry=defer_extra_attach_for_satisfied_carry,
+        )
+
+    first_step_state, first_move, first_next_state = transitions[0]
+    first_score, first_tier = _score_native_move(
+        move=first_move,
+        state=first_step_state,
+        next_state=first_next_state,
+        plan_input=plan_input,
+        current_heuristic=current_heuristic,
+        next_heuristic=state_heuristic(first_next_state),
+        current_progress=current_progress,
+        next_progress=_progress_score(plan_input, first_next_state, state_heuristic),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=goal_tracks_needed,
+        satisfied_by_track=satisfied_by_track,
+        recent_moves=recent_moves,
+        repeats_recent_state=False,
+        strict_staging_regrab=strict_staging_regrab,
+        route_blockage_plan=route_blockage_plan,
+        next_route_blockage_plan=(
+            route_blockage_plan_for_state(first_next_state)
+            if route_blockage_plan_for_state is not None
+            and route_blockage_plan is not None
+            else None
+        ),
+        route_oracle=route_oracle,
+        route_blockage_parking_pressure=0,
+        route_release_focus_tracks=route_release_focus_tracks,
+        route_release_focus_bonus=route_release_focus_bonus,
+        defer_extra_attach_for_satisfied_carry=defer_extra_attach_for_satisfied_carry,
+    )
+    step_tiers = [first_tier]
+    for _step_state, move, step_next_state in transitions[1:]:
+        if (
+            move.action_type == "DETACH"
+            and _native_detach_hits_effective_goal(
+                move=move,
+                state=_step_state,
+                plan_input=plan_input,
+                vehicle_by_no=vehicle_by_no,
+            )
+        ):
+            step_tiers.append(1)
+        elif _progress_score(plan_input, step_next_state, state_heuristic) < current_progress:
+            step_tiers.append(2)
+        else:
+            step_tiers.append(5 if move.action_type == "DETACH" else 6)
+
+    before_structure = compute_structural_metrics(plan_input, state)
+    after_structure = compute_structural_metrics(plan_input, final_state)
+    before_purity = compute_state_purity(plan_input, state)
+    after_purity = compute_state_purity(plan_input, final_state)
+    structural_progress = (
+        max(0, before_structure.target_sequence_defect_count - after_structure.target_sequence_defect_count) * 18
+        + max(0, before_structure.work_position_unfinished_count - after_structure.work_position_unfinished_count) * 12
+        + max(0, before_structure.capacity_overflow_track_count - after_structure.capacity_overflow_track_count) * 16
+        + max(0, before_structure.goal_track_blocker_count - after_structure.goal_track_blocker_count) * 3
+        + max(0, before_structure.unfinished_count - after_structure.unfinished_count)
+    )
+    structural_progress -= max(
+        0,
+        after_structure.staging_debt_count - before_structure.staging_debt_count,
+    )
+    best_tier = min(step_tiers)
+    final_delta = tuple(after - before for before, after in zip(current_progress, next_progress))
+    pinpoint_staging_penalty = _candidate_pinpoint_staging_penalty(
+        transitions=transitions,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
+    score = (
+        best_tier,
+        1 if structural_progress <= 0 else 0,
+        pinpoint_staging_penalty,
+        -structural_progress,
+        0 if candidate.kind == "structural" else 1,
+        len(transitions),
+        final_delta,
+        after_structure.target_sequence_defect_count,
+        after_structure.work_position_unfinished_count,
+        after_structure.front_blocker_count,
+        after_structure.goal_track_blocker_count,
+        after_structure.staging_debt_count,
+        after_purity.preferred_violation_count,
+        after_purity.staging_pollution_count,
+        after_purity.unfinished_count,
+        next_heuristic,
+        first_score,
+        tuple(move.source_track for _, move, _ in transitions),
+        tuple(move.target_track for _, move, _ in transitions),
+    )
+    if structural_progress <= 0:
+        score = (
+            2,
+            best_tier,
+            pinpoint_staging_penalty,
+            len(transitions),
+            first_score,
+            final_delta,
+            candidate.reason,
+        )
+    return score, min(best_tier, 4 if structural_progress > 0 else 6)
+
+
+def _candidate_pinpoint_staging_penalty(
+    *,
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]],
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    penalty = 0
+    for step_state, move, _next_state in transitions:
+        if move.action_type != "DETACH":
+            continue
+        for vehicle_no in move.vehicle_nos:
+            vehicle = vehicle_by_no.get(vehicle_no)
+            if vehicle is None or not _vehicle_has_pinpoint_goal(vehicle):
+                continue
+            if goal_is_satisfied(
+                vehicle,
+                track_name=move.target_track,
+                state=step_state,
+                plan_input=plan_input,
+            ):
+                continue
+            if move.target_track in goal_effective_allowed_tracks(
+                vehicle,
+                state=step_state,
+                plan_input=plan_input,
+            ):
+                continue
+            penalty += 1
+    return penalty
+
+
+def _vehicle_has_pinpoint_goal(vehicle: NormalizedVehicle) -> bool:
+    return (
+        vehicle.goal.target_mode == "SPOT"
+        or vehicle.goal.target_area_code is not None
+        or vehicle.goal.work_position_kind is not None
+    )
 
 
 def _score_move(

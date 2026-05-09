@@ -252,7 +252,7 @@ def route_release_focus_after_move(
 @dataclass
 class _RouteBlockageFactBuilder:
     blocking_track: str
-    blocking_vehicle_nos: set[str] | None = None
+    blocking_vehicle_nos: list[str] | None = None
     blocked_vehicle_nos: set[str] | None = None
     source_tracks: set[str] | None = None
     target_tracks: set[str] | None = None
@@ -267,14 +267,19 @@ class _RouteBlockageFactBuilder:
         target_track: str,
     ) -> None:
         if self.blocking_vehicle_nos is None:
-            self.blocking_vehicle_nos = set()
+            self.blocking_vehicle_nos = []
         if self.blocked_vehicle_nos is None:
             self.blocked_vehicle_nos = set()
         if self.source_tracks is None:
             self.source_tracks = set()
         if self.target_tracks is None:
             self.target_tracks = set()
-        self.blocking_vehicle_nos.update(blocking_vehicle_nos)
+        seen = set(self.blocking_vehicle_nos)
+        for vehicle_no in blocking_vehicle_nos:
+            if vehicle_no in seen:
+                continue
+            self.blocking_vehicle_nos.append(vehicle_no)
+            seen.add(vehicle_no)
         self.blocked_vehicle_nos.add(blocked_vehicle_no)
         self.source_tracks.add(source_track)
         self.target_tracks.add(target_track)
@@ -283,7 +288,7 @@ class _RouteBlockageFactBuilder:
     def build(self) -> RouteBlockageFact:
         return RouteBlockageFact(
             blocking_track=self.blocking_track,
-            blocking_vehicle_nos=sorted(self.blocking_vehicle_nos or set()),
+            blocking_vehicle_nos=list(self.blocking_vehicle_nos or []),
             blocked_vehicle_nos=sorted(self.blocked_vehicle_nos or set()),
             source_tracks=sorted(self.source_tracks or set()),
             target_tracks=sorted(self.target_tracks or set()),

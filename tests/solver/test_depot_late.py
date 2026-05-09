@@ -385,7 +385,7 @@ class TestSearchPriorityDepotSecondary:
             cost=3, heuristic=5, blocker_bonus=0,
             solver_mode="exact", heuristic_weight=1.0,
         )
-        assert legacy == (0, 8, 3, 5, (0, 0, 0, 0), 0, 0, 0, 0)
+        assert legacy[:8] == (0, 8, 3, 5, (0, 0, 0, 0), 0, 0, 0)
 
     def test_flag_on_smaller_neg_index_sum_preferred(self) -> None:
         # Two nodes same (cost, heuristic). Node A has depot at index 3
@@ -419,16 +419,19 @@ class TestSearchPriorityDepotSecondary:
         # B has cost=3 < A's cost=4, so B < A.
         assert priority_b < priority_a
 
-    def test_beam_mode_preserves_blocker_index(self) -> None:
-        # Regression guard for _prune_queue: it reads priority[?] for blocker.
-        # After purity insertion, blocker_bonus lives at index -2.
+    def test_beam_mode_prioritizes_blocker_before_ordinary_candidates(self) -> None:
         p = _priority(
             cost=2, heuristic=3, blocker_bonus=1,
             solver_mode="beam", heuristic_weight=1.0,
             neg_depot_index_sum=0,
         )
-        # beam: (f, cost, neg_depot, adj_h, purity, -blocker, h)
-        assert p[-2] == -1
+        ordinary = _priority(
+            cost=2, heuristic=3, blocker_bonus=0,
+            solver_mode="beam", heuristic_weight=1.0,
+            neg_depot_index_sum=0,
+        )
+
+        assert p < ordinary
 
     def test_beam_mode_uses_depot_late_as_secondary(self) -> None:
         late_depot = _priority(

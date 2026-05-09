@@ -24,7 +24,6 @@ from fzed_shunting.solver.lns import (
     _improve_incumbent_result,
     _solve_with_lns_result,
 )
-from fzed_shunting.solver.move_candidates import generate_work_position_sequence_candidates
 from fzed_shunting.solver.purity import STAGING_TRACKS, compute_state_purity
 from fzed_shunting.solver.result import (
     PlanVerificationError,
@@ -199,7 +198,6 @@ def solve_with_simple_astar_result(
     attempted_resume_partial_keys: set[tuple] = set()
     attempted_route_tail_partial_keys: set[tuple] = set()
     attempted_route_release_constructive = False
-
     # Stage 0: constructive baseline (always returns a plan — SLA safety net).
     # Run for both "exact" and "beam" so beam search has a fallback when the
     # LIFO-aware state space makes beam exploration fail to find a solution.
@@ -285,6 +283,11 @@ def solve_with_simple_astar_result(
             if (
                 route_blockage_pressure > 0
                 and remaining_ms >= EARLY_ROUTE_RELEASE_MIN_REMAINING_MS
+                and not _partial_has_work_position_order_debt(
+                    constructive_seed,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                )
                 and _route_blocked_partial_should_try_tail_before_route_release(
                     constructive_seed,
                     plan_input=plan_input,
@@ -335,6 +338,11 @@ def solve_with_simple_astar_result(
             if (
                 route_blockage_pressure <= 0
                 and not constructive_seed.is_complete
+                and not _partial_has_work_position_order_debt(
+                    constructive_seed,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
+                )
                 and _partial_result_has_goal_frontier_pressure(
                     constructive_seed,
                     plan_input=plan_input,
@@ -436,14 +444,20 @@ def solve_with_simple_astar_result(
         )
         if route_blockage_pressure > 0:
             should_try_route_tail_before_release = (
-                route_blockage_pressure
-                < ROUTE_RELEASE_CONSTRUCTIVE_HIGH_PRESSURE_SKIP_THRESHOLD
-                or
-                _route_blocked_partial_should_try_tail_before_route_release(
+                not _partial_has_work_position_order_debt(
                     constructive_seed,
                     plan_input=plan_input,
                     initial_state=initial_state,
-                    max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+                )
+                and (
+                    route_blockage_pressure
+                    < ROUTE_RELEASE_CONSTRUCTIVE_HIGH_PRESSURE_SKIP_THRESHOLD
+                    or _route_blocked_partial_should_try_tail_before_route_release(
+                        constructive_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                        max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+                    )
                 )
             )
             if (
@@ -451,6 +465,11 @@ def solve_with_simple_astar_result(
                     allow_deep_pre_primary_route_release
                     or route_blockage_pressure
                     >= ROUTE_RELEASE_CONSTRUCTIVE_HIGH_PRESSURE_SKIP_THRESHOLD
+                )
+                and not _partial_has_work_position_order_debt(
+                    constructive_seed,
+                    plan_input=plan_input,
+                    initial_state=initial_state,
                 )
                 and not _skip_route_release_constructive_for_near_goal_pressure(
                     constructive_seed,
@@ -684,6 +703,11 @@ def solve_with_simple_astar_result(
         and constructive_seed.partial_plan
         and time_budget_ms is not None
         and not attempted_route_release_constructive
+        and not _partial_has_work_position_order_debt(
+            constructive_seed,
+            plan_input=plan_input,
+            initial_state=initial_state,
+        )
     ):
         if not _skip_route_release_constructive_for_near_goal_pressure(
             constructive_seed,
@@ -740,6 +764,11 @@ def solve_with_simple_astar_result(
         and not constructive_seed.is_complete
         and constructive_seed.partial_plan
         and time_budget_ms is not None
+        and not _partial_has_work_position_order_debt(
+            constructive_seed,
+            plan_input=plan_input,
+            initial_state=initial_state,
+        )
     ):
         _ts = perf_counter()
         goal_frontier_seed = _try_pre_primary_goal_frontier_completion(
@@ -1440,6 +1469,16 @@ def _attach_structural_debug_stats(
         ).to_dict()
     active_plan = result.plan if result.is_complete else result.partial_plan
     stats["plan_shape_metrics"] = summarize_plan_shape(active_plan)
+    tail_stage = result.fallback_stage if result.is_complete else result.partial_fallback_stage
+    stats["tail_completion_invocation_count"] = (
+        1 if tail_stage in {
+            "goal_frontier_tail_completion",
+            "route_blockage_tail_clearance",
+            "route_clean_random_area_tail_completion",
+            "route_clean_structural_tail_cleanup",
+        }
+        else 0
+    )
     final_state = _replay_solver_moves(
         plan_input=plan_input,
         initial_state=initial_state,
@@ -2645,7 +2684,16 @@ def _try_selected_partial_tail_completion(
             enable_depot_late_scheduling=enable_depot_late_scheduling,
         )
         if goal_frontier_completion is not None:
-            return goal_frontier_completion
+            if goal_frontier_completion.is_complete:
+                return goal_frontier_completion
+            if _partial_tail_candidate_improves(
+                goal_frontier_completion,
+                result,
+                plan_input=plan_input,
+                initial_state=initial_state,
+                master=master,
+            ):
+                return goal_frontier_completion
     if _partial_result_loco_carry_count(
         result,
         plan_input=plan_input,
@@ -3023,6 +3071,14 @@ def _partial_tail_candidate_improves(
     initial_state: ReplayState,
     master: MasterData | None,
 ) -> bool:
+    if _partial_candidate_regresses_work_position_commitment(
+        candidate,
+        incumbent,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    ):
+        return False
     if _route_clean_carried_tail_regression(
         candidate,
         incumbent,
@@ -3115,6 +3171,39 @@ def _partial_tail_candidate_improves(
         initial_state=initial_state,
         master=master,
     )
+
+
+def _partial_candidate_regresses_work_position_commitment(
+    candidate: SolverResult,
+    incumbent: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput | None,
+    initial_state: ReplayState | None,
+    master: MasterData | None,
+) -> bool:
+    candidate_structural, _candidate_route = _partial_result_structural_route_stats(
+        candidate,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    )
+    incumbent_structural, _incumbent_route = _partial_result_structural_route_stats(
+        incumbent,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    )
+    for metric in (
+        "target_sequence_defect_count",
+        "work_position_unfinished_count",
+    ):
+        candidate_value = _optional_int(candidate_structural.get(metric))
+        incumbent_value = _optional_int(incumbent_structural.get(metric))
+        if candidate_value is None or incumbent_value is None:
+            continue
+        if candidate_value > incumbent_value:
+            return True
+    return False
 
 
 def _partial_replacement_candidate_improves(
@@ -3414,6 +3503,19 @@ def _try_partial_tail_single_pass(
         )
         if route_clean_random_area_completion is not None:
             return route_clean_random_area_completion
+        structural_budget_ms = remaining_budget_ms()
+        if structural_budget_ms is None:
+            return None
+        structural_cleanup = _try_route_clean_structural_tail_cleanup(
+            result,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            time_budget_ms=structural_budget_ms,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+        )
+        if structural_cleanup is not None:
+            return structural_cleanup
     if _partial_result_has_goal_frontier_pressure(
         result,
         plan_input=plan_input,
@@ -3523,6 +3625,44 @@ def _try_constructive_tail_rescue_completion(
     )
 
 
+def _try_route_clean_structural_tail_cleanup(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData,
+    time_budget_ms: float,
+    enable_depot_late_scheduling: bool,
+) -> SolverResult | None:
+    if result.is_complete or not result.partial_plan:
+        return None
+    state = _replay_solver_moves(
+        plan_input=plan_input,
+        initial_state=initial_state,
+        plan=result.partial_plan,
+    )
+    if state is None or state.loco_carry:
+        return None
+    route_oracle = RouteOracle(master)
+    if compute_route_blockage_plan(
+        plan_input,
+        state,
+        route_oracle,
+    ).total_blockage_pressure > 0:
+        return None
+    return _try_route_clean_structural_tail_cleanup_from_state(
+        plan_input=plan_input,
+        original_initial_state=initial_state,
+        prefix_plan=list(result.partial_plan),
+        state=state,
+        master=master,
+        time_budget_ms=time_budget_ms,
+        expanded_nodes=result.expanded_nodes,
+        generated_nodes=result.generated_nodes,
+        enable_depot_late_scheduling=enable_depot_late_scheduling,
+    )
+
+
 def _partial_result_score(
     result: SolverResult,
     *,
@@ -3551,8 +3691,8 @@ def _partial_result_score(
         unfinished_score + max(0, blockage_score - 3) + churn_penalty,
         blockage_score,
         target_sequence_defect,
-        staging_debt if staging_debt is not None else 10**9,
         capacity_overflow if capacity_overflow is not None else 10**9,
+        staging_debt if staging_debt is not None else 10**9,
         len(result.partial_plan),
         _stage_rank(result.partial_fallback_stage or result.fallback_stage),
         _optional_int(shape.get("rehandled_vehicle_count")) or 0,
@@ -3700,6 +3840,37 @@ def _partial_result_has_goal_frontier_pressure(
     return metrics.unfinished_count > 0 and (
         metrics.front_blocker_count > 0
         or metrics.work_position_unfinished_count > 0
+    )
+
+
+def _partial_has_work_position_order_debt(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+) -> bool:
+    structural = (result.debug_stats or {}).get("partial_structural_metrics") or {}
+    work_position_unfinished = _optional_int(
+        structural.get("work_position_unfinished_count")
+    )
+    target_sequence_defect = _optional_int(
+        structural.get("target_sequence_defect_count")
+    )
+    if work_position_unfinished is not None or target_sequence_defect is not None:
+        return (work_position_unfinished or 0) > 0 or (target_sequence_defect or 0) > 0
+    if not result.partial_plan:
+        return False
+    final_state = _replay_solver_moves(
+        plan_input=plan_input,
+        initial_state=initial_state,
+        plan=result.partial_plan,
+    )
+    if final_state is None:
+        return False
+    metrics = compute_structural_metrics(plan_input, final_state)
+    return (
+        metrics.work_position_unfinished_count > 0
+        or metrics.target_sequence_defect_count > 0
     )
 
 
@@ -7961,21 +8132,6 @@ def _try_work_position_rank_padding_completion_from_state(
         remaining_ms = _remaining_child_budget_ms(started_at, time_budget_ms)
         if remaining_ms <= MIN_CHILD_STAGE_BUDGET_MS:
             return None
-        sequence_completion = _best_work_position_sequence_completion_step(
-            plan_input=plan_input,
-            state=current_state,
-            master=master,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-        )
-        if sequence_completion is not None:
-            next_state, step_plan = sequence_completion
-            if _state_key(next_state, plan_input) == _state_key(current_state, plan_input):
-                return None
-            current_state = next_state
-            local_plan.extend(step_plan)
-            generated_nodes += len(step_plan)
-            continue
         unfinished = _unfinished_work_position_vehicles(plan_input, current_state, vehicle_by_no)
         if not unfinished:
             break
@@ -8118,72 +8274,6 @@ def _try_work_position_rank_padding_completion_from_state(
         )
     except Exception:  # noqa: BLE001
         return None
-
-
-def _best_work_position_sequence_completion_step(
-    *,
-    plan_input: NormalizedPlanInput,
-    state: ReplayState,
-    master: MasterData,
-    route_oracle: RouteOracle,
-    vehicle_by_no: dict[str, Any],
-) -> tuple[ReplayState, list[HookAction]] | None:
-    before = compute_structural_metrics(plan_input, state)
-    if before.work_position_unfinished_count <= 0 and before.target_sequence_defect_count <= 0:
-        return None
-    candidates = generate_work_position_sequence_candidates(
-        plan_input,
-        state,
-        master=master,
-        route_oracle=route_oracle,
-    )
-    ranked: list[tuple[tuple[int, int, int, int, tuple], ReplayState, list[HookAction]]] = []
-    for candidate in candidates:
-        next_state = state
-        for move in candidate.steps:
-            try:
-                next_state = _apply_move(
-                    state=next_state,
-                    move=move,
-                    plan_input=plan_input,
-                    vehicle_by_no=vehicle_by_no,
-                )
-            except Exception:  # noqa: BLE001
-                next_state = None
-                break
-        if next_state is None:
-            continue
-        after = compute_structural_metrics(plan_input, next_state)
-        if (
-            after.target_sequence_defect_count > before.target_sequence_defect_count
-            or after.work_position_unfinished_count >= before.work_position_unfinished_count
-        ):
-            continue
-        ranked.append(
-            (
-                (
-                    after.target_sequence_defect_count,
-                    after.work_position_unfinished_count,
-                    after.unfinished_count,
-                    len(candidate.steps),
-                    tuple(
-                        (
-                            move.action_type,
-                            move.source_track,
-                            move.target_track,
-                            tuple(move.vehicle_nos),
-                        )
-                        for move in candidate.steps
-                    ),
-                ),
-                next_state,
-                list(candidate.steps),
-            )
-        )
-    if not ranked:
-        return None
-    ranked.sort(key=lambda item: item[0])
-    return ranked[0][1], ranked[0][2]
 
 
 def _try_route_clean_direct_prefix_tail_completion_from_state(
@@ -9084,15 +9174,6 @@ def _build_work_position_tail_step(
     if source_track is None:
         return None
     if vehicle.goal.work_position_kind == "SPOTTING":
-        sequence_step = _best_work_position_sequence_completion_step(
-            plan_input=plan_input,
-            state=state,
-            master=master,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-        )
-        if sequence_step is not None:
-            return sequence_step
         return _build_work_position_spotting_insert_step(
             plan_input=plan_input,
             state=state,
