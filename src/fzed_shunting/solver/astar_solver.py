@@ -18,6 +18,7 @@ from fzed_shunting.solver.complete_selection import (
     complete_result_is_better,
     complete_result_quality_score,
 )
+from fzed_shunting.solver.debt_chain import analyze_debt_chains
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
 from fzed_shunting.solver.lns import (
     _build_repair_plan_input,
@@ -1462,10 +1463,16 @@ def _attach_structural_debug_stats(
         initial_state,
     ).to_dict()
     if master is not None:
+        route_oracle = RouteOracle(master)
         stats["initial_route_blockage_plan"] = compute_route_blockage_plan(
             plan_input,
             initial_state,
-            RouteOracle(master),
+            route_oracle,
+        ).to_dict()
+        stats["initial_debt_chain_summary"] = analyze_debt_chains(
+            plan_input,
+            initial_state,
+            route_oracle=route_oracle,
         ).to_dict()
     active_plan = result.plan if result.is_complete else result.partial_plan
     stats["plan_shape_metrics"] = summarize_plan_shape(active_plan)
@@ -1488,6 +1495,7 @@ def _attach_structural_debug_stats(
         key = "final_structural_metrics" if result.is_complete else "partial_structural_metrics"
         stats[key] = compute_structural_metrics(plan_input, final_state).to_dict()
         if master is not None:
+            route_oracle = RouteOracle(master)
             route_key = (
                 "final_route_blockage_plan"
                 if result.is_complete
@@ -1497,9 +1505,19 @@ def _attach_structural_debug_stats(
                 compute_route_blockage_plan(
                     plan_input,
                     final_state,
-                    RouteOracle(master),
+                    route_oracle,
                 )
             )
+            chain_key = (
+                "final_debt_chain_summary"
+                if result.is_complete
+                else "partial_debt_chain_summary"
+            )
+            stats[chain_key] = analyze_debt_chains(
+                plan_input,
+                final_state,
+                route_oracle=route_oracle,
+            ).to_dict()
     return replace(result, debug_stats=stats)
 
 
@@ -4864,6 +4882,42 @@ def _try_route_blockage_tail_clearance_from_state(
                 if completion.is_complete:
                     return completion
                 remember_outer_partial(completion)
+                if _partial_result_has_goal_frontier_pressure(
+                    completion,
+                    plan_input=plan_input,
+                    initial_state=original_initial_state,
+                ):
+                    frontier_budget_ms = _remaining_child_budget_ms(
+                        started_at,
+                        time_budget_ms,
+                    )
+                    if frontier_budget_ms > MIN_CHILD_STAGE_BUDGET_MS:
+                        partial_state = _replay_solver_moves(
+                            plan_input=plan_input,
+                            initial_state=original_initial_state,
+                            plan=completion.partial_plan,
+                        )
+                        if partial_state is None:
+                            partial_state = state
+                        frontier_completion = _try_goal_frontier_tail_completion_from_state(
+                            plan_input=plan_input,
+                            original_initial_state=original_initial_state,
+                            prefix_plan=[],
+                            state=partial_state,
+                            master=master,
+                            time_budget_ms=frontier_budget_ms,
+                            enable_depot_late_scheduling=enable_depot_late_scheduling,
+                        )
+                        if frontier_completion is not None:
+                            if frontier_completion.is_complete:
+                                return frontier_completion
+                            return _shorter_complete_result(
+                                completion,
+                                frontier_completion,
+                                plan_input=plan_input,
+                                initial_state=original_initial_state,
+                                master=master,
+                            )
         elif clearing_plan and (
             current_blockage.total_blockage_pressure
             < initial_blockage.total_blockage_pressure

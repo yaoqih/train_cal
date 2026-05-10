@@ -6,9 +6,13 @@ from typing import Any
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
-from fzed_shunting.domain.work_positions import preview_work_positions_after_prepend
+from fzed_shunting.domain.work_positions import (
+    WORK_POSITION_TRACKS,
+    preview_work_positions_after_prepend,
+)
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
+from fzed_shunting.solver.debt_chain import DebtChainSummary, summarize_debt_chains
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import STAGING_TRACKS
@@ -65,6 +69,11 @@ def generate_move_candidates(
         state,
         route_oracle=route_oracle,
     )
+    debt_chain_summary = summarize_debt_chains(
+        plan_input,
+        state,
+        intent=intent,
+    )
     protected_rejected_count = 0
     protected_allowed_by_debt_count = 0
     mixed_resource_primitive_rejected_count = 0
@@ -110,10 +119,11 @@ def generate_move_candidates(
         master=master,
         route_oracle=route_oracle,
         intent=intent,
+        debt_chain_summary=debt_chain_summary,
     )
     candidate_pool = (*structural_candidates, *candidates)
-    all_candidates = _dedup_candidates(
-        tuple(
+    trimmed_candidates = sorted(
+        (
             trimmed
             for candidate in candidate_pool
             if (
@@ -126,8 +136,10 @@ def generate_move_candidates(
                 )
             )
             is not None
-        )
+        ),
+        key=_candidate_search_sort_key,
     )
+    all_candidates = _dedup_candidates(tuple(trimmed_candidates))
     if debug_stats is not None:
         debug_stats.clear()
         debug_stats.update(primitive_debug or {})
@@ -142,6 +154,10 @@ def generate_move_candidates(
         )
         debug_stats["structural_intent_candidate_count"] = len(structural_candidates)
         debug_stats["structural_debt_cluster_count"] = len(intent.debt_clusters_by_track)
+        debug_stats["structural_debt_chain_count"] = debt_chain_summary.chain_count
+        debug_stats["structural_debt_chain_max_pressure"] = (
+            debt_chain_summary.max_chain_pressure
+        )
         debug_stats["structural_candidate_steps_total"] = sum(
             len(candidate.steps) for candidate in structural_candidates
         )
@@ -223,12 +239,23 @@ def _move_breaks_protected_commitment(
     *,
     intent: StructuralIntent,
 ) -> bool:
-    if move.action_type != "ATTACH" or not move.vehicle_nos:
+    if not move.vehicle_nos:
         return False
-    for block in intent.committed_blocks_by_track.get(move.source_track, ()):
-        protected = set(block.vehicle_nos)
-        if protected.intersection(move.vehicle_nos):
+    protected_source_blocks = intent.committed_blocks_by_track.get(move.source_track, ())
+    protected_target_blocks = intent.committed_blocks_by_track.get(move.target_track, ())
+    moved = set(move.vehicle_nos)
+    if move.action_type == "ATTACH":
+        return any(
+            moved.intersection(block.vehicle_nos)
+            for block in protected_source_blocks
+        )
+    if move.action_type == "DETACH":
+        if move.target_track in WORK_POSITION_TRACKS and protected_target_blocks:
             return True
+        return any(
+            moved.intersection(block.vehicle_nos)
+            for block in protected_target_blocks
+        )
     return False
 
 
@@ -366,7 +393,15 @@ def _generate_structural_candidates(
     master: MasterData | None,
     route_oracle: RouteOracle | None,
     intent: StructuralIntent,
+    debt_chain_summary: DebtChainSummary | None = None,
+    allow_chain_macros: bool = True,
 ) -> tuple[MoveCandidate, ...]:
+    if debt_chain_summary is None:
+        debt_chain_summary = summarize_debt_chains(
+            plan_input,
+            state,
+            intent=intent,
+        )
     if master is None or route_oracle is None or state.loco_carry:
         return ()
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
@@ -463,8 +498,27 @@ def _generate_structural_candidates(
             )
             if candidate is not None:
                 resource_candidates.append(candidate)
-    candidates.extend(_rank_release_structural_candidates(resource_candidates))
-    return _select_structural_candidates(candidates)
+    ranked_release_candidates = _rank_release_structural_candidates(resource_candidates)
+    candidates.extend(ranked_release_candidates)
+    if allow_chain_macros:
+        candidates.extend(
+            _generate_chain_macro_candidates(
+                plan_input=plan_input,
+                state=state,
+                master=master,
+                route_oracle=route_oracle,
+                intent=intent,
+                debt_chain_summary=debt_chain_summary,
+                base_candidates=tuple((*candidates, *ranked_release_candidates)),
+                vehicle_by_no=vehicle_by_no,
+                track_by_vehicle=track_by_vehicle,
+                delayed_target_pairs=delayed_target_pairs,
+            )
+        )
+    return _select_structural_candidates(
+        candidates,
+        debt_chain_summary=debt_chain_summary,
+    )
 
 
 def _ordered_debt_clusters(intent: StructuralIntent):
@@ -780,15 +834,62 @@ def _select_structural_candidates(
     candidates: list[MoveCandidate],
     *,
     limit: int = 6,
+    debt_chain_summary: DebtChainSummary | None = None,
 ) -> tuple[MoveCandidate, ...]:
     if len(candidates) <= limit:
         return tuple(candidates)
 
     selected: list[MoveCandidate] = []
     selected_ids: set[int] = set()
+    covered_chain_keys: set[tuple[str, ...]] = set()
+    if debt_chain_summary is not None:
+        chain_candidates: dict[tuple[str, ...], MoveCandidate] = {}
+        chain_metadata = {
+            chain.track_names: (index, chain.anchor_track)
+            for index, chain in enumerate(debt_chain_summary.chains)
+        }
+        for candidate in candidates:
+            chain_key = _candidate_chain_key(candidate, debt_chain_summary)
+            if chain_key is None:
+                continue
+            current = chain_candidates.get(chain_key)
+            chain_index, anchor_track = chain_metadata.get(chain_key, (0, ""))
+            if current is None or _structural_chain_candidate_priority(
+                candidate,
+                chain_index,
+                anchor_track,
+            ) < _structural_chain_candidate_priority(
+                current,
+                chain_index,
+                anchor_track,
+            ):
+                chain_candidates[chain_key] = candidate
+        for candidate in sorted(
+            chain_candidates.values(),
+            key=lambda candidate: (
+                -_candidate_chain_pressure(candidate, debt_chain_summary),
+                _structural_chain_candidate_priority(
+                    candidate,
+                    *_candidate_chain_metadata(candidate, debt_chain_summary),
+                ),
+                tuple(candidate.focus_tracks),
+                candidate.reason,
+            ),
+        ):
+            selected.append(candidate)
+            selected_ids.add(id(candidate))
+            covered_chain_keys.add(_candidate_chain_key(candidate, debt_chain_summary) or ())
+            if len(selected) >= limit:
+                return tuple(selected)
+
     covered_focus_tracks: set[tuple[str, ...]] = set()
 
     for candidate in candidates:
+        if id(candidate) in selected_ids:
+            continue
+        chain_key = _candidate_chain_key(candidate, debt_chain_summary) if debt_chain_summary is not None else None
+        if chain_key is not None and chain_key in covered_chain_keys:
+            continue
         key = tuple(candidate.focus_tracks)
         if key in covered_focus_tracks:
             continue
@@ -805,6 +906,9 @@ def _select_structural_candidates(
     for candidate in candidates:
         if id(candidate) in selected_ids:
             continue
+        chain_key = _candidate_chain_key(candidate, debt_chain_summary) if debt_chain_summary is not None else None
+        if chain_key is not None and chain_key in covered_chain_keys:
+            continue
         key = (candidate.reason, tuple(candidate.focus_tracks))
         if key in covered_reason_tracks:
             continue
@@ -816,10 +920,325 @@ def _select_structural_candidates(
     for candidate in candidates:
         if id(candidate) in selected_ids:
             continue
+        chain_key = _candidate_chain_key(candidate, debt_chain_summary) if debt_chain_summary is not None else None
+        if chain_key is not None and chain_key in covered_chain_keys:
+            continue
         selected.append(candidate)
         if len(selected) >= limit:
             return tuple(selected)
     return tuple(selected)
+
+
+def _candidate_chain_key(
+    candidate: MoveCandidate,
+    debt_chain_summary: DebtChainSummary,
+) -> tuple[str, ...] | None:
+    focus_tracks = set(candidate.focus_tracks)
+    if not focus_tracks:
+        return None
+    for chain in debt_chain_summary.chains:
+        if focus_tracks.intersection(chain.track_names):
+            return chain.track_names
+    return None
+
+
+def _candidate_chain_metadata(
+    candidate: MoveCandidate,
+    debt_chain_summary: DebtChainSummary,
+) -> tuple[int, str]:
+    focus_tracks = set(candidate.focus_tracks)
+    for index, chain in enumerate(debt_chain_summary.chains):
+        if focus_tracks.intersection(chain.track_names):
+            return index, chain.anchor_track
+    return 0, ""
+
+
+def _candidate_chain_pressure(
+    candidate: MoveCandidate,
+    debt_chain_summary: DebtChainSummary,
+) -> float:
+    chain_key = _candidate_chain_key(candidate, debt_chain_summary)
+    if chain_key is None:
+        return 0.0
+    for chain in debt_chain_summary.chains:
+        if chain.track_names == chain_key:
+            return chain.total_pressure
+    return 0.0
+
+
+def _structural_chain_candidate_priority(
+    candidate: MoveCandidate,
+    chain_index: int,
+    anchor_track: str,
+) -> tuple[int, int, int, int, tuple[str, ...], str]:
+    return (
+        chain_index,
+        0 if candidate.reason.startswith("chain_macro_") else 1,
+        0 if candidate.reason.startswith("work_position_") else 1,
+        0 if anchor_track in candidate.focus_tracks else 1,
+        -len(candidate.focus_tracks),
+        tuple(candidate.focus_tracks),
+        candidate.reason,
+    )
+
+
+def _generate_chain_macro_candidates(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData | None,
+    route_oracle: RouteOracle | None,
+    intent: StructuralIntent,
+    debt_chain_summary: DebtChainSummary,
+    base_candidates: tuple[MoveCandidate, ...],
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    track_by_vehicle: dict[str, str],
+    delayed_target_pairs: set[tuple[str, str]],
+) -> tuple[MoveCandidate, ...]:
+    if master is None or route_oracle is None or state.loco_carry:
+        return ()
+    macro_candidates: list[MoveCandidate] = []
+    for chain in debt_chain_summary.chains[:2]:
+        chain_base_candidates = [
+            candidate
+            for candidate in base_candidates
+            if set(candidate.focus_tracks).intersection(chain.track_names)
+        ]
+        if len(chain.track_names) < 3 or chain.total_pressure < 25.0:
+            continue
+        if not chain_base_candidates:
+            continue
+        seed = _best_chain_seed_candidate(base_candidates, chain)
+        if seed is None:
+            continue
+        combined_steps = _build_chain_macro_steps(
+            plan_input=plan_input,
+            state=state,
+            master=master,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            seed=seed,
+            chain=chain,
+        )
+        if combined_steps is None:
+            continue
+        compiled = replay_candidate_steps(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            steps=combined_steps,
+            route_oracle=route_oracle,
+        )
+        if compiled is None or compiled.final_state.loco_carry:
+            continue
+        macro_candidates.append(
+            MoveCandidate(
+                steps=compiled.steps,
+                kind="structural",
+                reason=f"chain_macro_{chain.anchor_track}",
+                focus_tracks=_macro_focus_tracks(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    chain_tracks=chain.track_names,
+                    seed=seed,
+                    combined_steps=compiled.steps,
+                ),
+                structural_reserve=True,
+            )
+        )
+    return tuple(macro_candidates)
+
+
+def _build_chain_macro_steps(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    seed: MoveCandidate,
+    chain: DebtChainComponent,
+    max_segments: int = 3,
+) -> tuple[HookAction, ...] | None:
+    compiled = replay_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=seed.steps,
+        route_oracle=route_oracle,
+    )
+    if compiled is None or compiled.final_state.loco_carry:
+        return None
+
+    combined_steps: list[HookAction] = list(seed.steps)
+    used_signatures = {
+        _candidate_signature(seed),
+    }
+    prior = seed
+    current_state = compiled.final_state
+    appended = 0
+    while appended < max_segments - 1:
+        next_intent = build_structural_intent(
+            plan_input,
+            current_state,
+            route_oracle=route_oracle,
+        )
+        next_chain_summary = summarize_debt_chains(
+            plan_input,
+            current_state,
+            intent=next_intent,
+        )
+        followups = _generate_structural_candidates(
+            plan_input=plan_input,
+            state=current_state,
+            master=master,
+            route_oracle=route_oracle,
+            intent=next_intent,
+            debt_chain_summary=next_chain_summary,
+            allow_chain_macros=False,
+        )
+        followup = _best_chain_followup_candidate(
+            followups,
+            chain,
+            prior,
+            used_signatures=used_signatures,
+        )
+        if followup is None:
+            break
+        next_compiled = replay_candidate_steps(
+            plan_input=plan_input,
+            state=current_state,
+            vehicle_by_no=vehicle_by_no,
+            steps=followup.steps,
+            route_oracle=route_oracle,
+        )
+        if next_compiled is None or next_compiled.final_state.loco_carry:
+            break
+        combined_steps.extend(followup.steps)
+        used_signatures.add(_candidate_signature(followup))
+        prior = followup
+        current_state = next_compiled.final_state
+        appended += 1
+
+    if appended == 0:
+        return None
+    return tuple(combined_steps)
+
+
+def _macro_focus_tracks(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    chain_tracks: tuple[str, ...],
+    seed: MoveCandidate,
+    combined_steps: tuple[HookAction, ...],
+) -> tuple[str, ...]:
+    focus_tracks = set(seed.focus_tracks)
+    compiled = replay_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=combined_steps,
+        route_oracle=route_oracle,
+    )
+    if compiled is None:
+        return tuple(sorted(focus_tracks))
+    next_intent = build_structural_intent(
+        plan_input,
+        compiled.final_state,
+        route_oracle=route_oracle,
+    )
+    next_chain_summary = summarize_debt_chains(
+        plan_input,
+        compiled.final_state,
+        intent=next_intent,
+    )
+    for next_chain in next_chain_summary.chains:
+        if set(next_chain.track_names).intersection(chain_tracks):
+            focus_tracks.add(next_chain.anchor_track)
+            break
+    return tuple(sorted(focus_tracks))
+
+
+def _candidate_signature(candidate: MoveCandidate) -> tuple[str, tuple[str, ...], tuple[tuple[str, str, tuple[str, ...]], ...]]:
+    return (
+        candidate.reason,
+        tuple(candidate.focus_tracks),
+        tuple(
+            (
+                step.action_type,
+                step.target_track,
+                tuple(step.vehicle_nos),
+            )
+            for step in candidate.steps
+        ),
+    )
+
+
+def _best_chain_seed_candidate(
+    candidates: tuple[MoveCandidate, ...],
+    chain: DebtChainComponent,
+) -> MoveCandidate | None:
+    chain_tracks = set(chain.track_names)
+    seeded = [
+        candidate
+        for candidate in candidates
+        if chain_tracks.intersection(candidate.focus_tracks)
+    ]
+    if not seeded:
+        return None
+    return sorted(
+        seeded,
+        key=lambda candidate: (
+            0 if chain.anchor_track in candidate.focus_tracks else 1,
+            0 if candidate.reason.startswith("chain_macro_") else 1,
+            0 if candidate.reason.startswith("work_position_") else 1,
+            0 if candidate.kind == "structural" else 1,
+            len(candidate.steps),
+            tuple(candidate.focus_tracks),
+            candidate.reason,
+        ),
+    )[0]
+
+
+def _best_chain_followup_candidate(
+    candidates: tuple[MoveCandidate, ...],
+    chain: DebtChainComponent | tuple[str, ...],
+    seed: MoveCandidate,
+    *,
+    used_signatures: set[tuple[str, tuple[str, ...], tuple[tuple[str, str, tuple[str, ...]], ...]]] | None = None,
+) -> MoveCandidate | None:
+    if isinstance(chain, tuple):
+        chain_tracks = set(chain)
+        anchor_track = chain[0] if chain else ""
+    else:
+        chain_tracks = set(chain.track_names)
+        anchor_track = chain.anchor_track
+    used_signatures = used_signatures or set()
+    followups = [
+        candidate
+        for candidate in candidates
+        if chain_tracks.intersection(candidate.focus_tracks)
+        and _candidate_signature(candidate) not in used_signatures
+    ]
+    if not followups:
+        return None
+    return sorted(
+        followups,
+        key=lambda candidate: (
+            0 if anchor_track in candidate.focus_tracks else 1,
+            0 if tuple(candidate.focus_tracks) != tuple(seed.focus_tracks) else 1,
+            0 if candidate.reason.startswith("work_position_") else 1,
+            0 if candidate.reason.startswith("chain_macro_") else 1,
+            len(candidate.steps),
+            tuple(candidate.focus_tracks),
+            candidate.reason,
+        ),
+    )[0]
 
 
 def _rank_release_structural_candidates(
@@ -3784,3 +4203,32 @@ def _candidate_steps_by_kind(candidates: tuple[MoveCandidate, ...]) -> dict[str,
     for candidate in candidates:
         counts[candidate.kind] = counts.get(candidate.kind, 0) + len(candidate.steps)
     return dict(sorted(counts.items()))
+
+
+def _candidate_search_sort_key(candidate: MoveCandidate) -> tuple:
+    kind_priority = 0 if candidate.kind == "structural" else 1
+    if candidate.reason.startswith("work_position_"):
+        reason_priority = 0
+    elif candidate.reason.startswith("chain_macro_"):
+        reason_priority = 1
+    else:
+        reason_priority = STRUCTURAL_PRIORITY_REASON_GROUPS.get(candidate.reason, 2)
+    step_signature = tuple(
+        (
+            step.action_type,
+            step.source_track,
+            step.target_track,
+            tuple(step.vehicle_nos),
+            tuple(step.path_tracks),
+        )
+        for step in candidate.steps
+    )
+    return (
+        kind_priority,
+        reason_priority,
+        len(candidate.steps),
+        tuple(candidate.focus_tracks),
+        0 if candidate.structural_reserve else 1,
+        candidate.reason,
+        step_signature,
+    )

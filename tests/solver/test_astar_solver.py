@@ -8377,6 +8377,7 @@ def test_route_blockage_tail_clearance_keeps_searching_after_route_clear_partial
             lambda *_args, **_kwargs: SimpleNamespace(
                 unfinished_count=1,
                 front_blocker_count=0,
+                work_position_unfinished_count=0,
             ),
         )
         m.setattr(astar_module, "_route_blockage_satisfied_blocker_staging_steps", lambda **_: [])
@@ -17572,6 +17573,113 @@ def test_route_blockage_tail_preserves_route_clearing_attach_when_resume_budget_
     assert result.debug_stats["partial_route_blockage_plan"]["total_blockage_pressure"] == 0
 
 
+def test_route_blockage_tail_clearance_continues_goal_frontier_after_route_drop(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "修3库外", "trackDistance": 49.3},
+                {"trackName": "修3库内", "trackDistance": 151.7},
+                {"trackName": "临3", "trackDistance": 62.9},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "修3库外",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "CLEAR_A",
+                    "repairProcess": "段修",
+                    "vehicleLength": 13.2,
+                    "targetTrack": "修3库内",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+                {
+                    "trackName": "临3",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "FRONTIER_TAIL",
+                    "repairProcess": "段修",
+                    "vehicleLength": 13.2,
+                    "targetTrack": "修3库内",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                },
+            ],
+            "locoTrackName": "修3库外",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    initial = build_initial_state(normalized)
+    route_clear_move = HookAction(
+        source_track="修3库外",
+        target_track="临3",
+        vehicle_nos=["CLEAR_A"],
+        path_tracks=["修3库外", "临3"],
+        action_type="DETACH",
+    )
+    goal_frontier_move = HookAction(
+        source_track="临3",
+        target_track="修3库内",
+        vehicle_nos=["FRONTIER_TAIL"],
+        path_tracks=["临3", "修3库内"],
+        action_type="DETACH",
+    )
+    route_partial = SolverResult(
+        plan=[],
+        partial_plan=[route_clear_move],
+        partial_fallback_stage="route_blockage_tail_clearance",
+        fallback_stage="route_blockage_tail_clearance",
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=1,
+        elapsed_ms=1.0,
+        is_complete=False,
+        is_proven_optimal=False,
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 2,
+                "front_blocker_count": 1,
+                "work_position_unfinished_count": 1,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+        },
+    )
+    frontier_complete = SolverResult(
+        plan=[goal_frontier_move],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=1,
+        elapsed_ms=1.0,
+        is_complete=True,
+        is_proven_optimal=False,
+        fallback_stage="goal_frontier_tail_completion",
+        debug_stats={},
+    )
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._try_tail_clearance_resume_from_state",
+        return_value=route_partial,
+    ), patch(
+        "fzed_shunting.solver.astar_solver._try_goal_frontier_tail_completion_from_state",
+        return_value=frontier_complete,
+    ):
+        result = _try_route_blockage_tail_clearance_from_state(
+            plan_input=normalized,
+            original_initial_state=initial,
+            prefix_plan=[],
+            state=initial,
+            master=master,
+            time_budget_ms=5_000.0,
+            enable_depot_late_scheduling=False,
+        )
+
+    assert result is not None
+    assert result.is_complete is True
+    assert result.fallback_stage == "goal_frontier_tail_completion"
+
+
 def test_tail_clearance_continues_after_route_clear_carry_drop_when_suffix_needs_frontier(monkeypatch):
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -25482,6 +25590,27 @@ def test_beam_priority_prefers_exact_spot_exposure_over_generic_structural_progr
     )
 
     assert exact_spot_exposure < generic_structural_progress
+
+
+def test_beam_priority_penalizes_staging_churn_after_regression_ties():
+    clean = _priority(
+        cost=8,
+        heuristic=14,
+        route_release_regression_penalty=0,
+        staging_churn_penalty=0,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    churn = _priority(
+        cost=8,
+        heuristic=14,
+        route_release_regression_penalty=0,
+        staging_churn_penalty=3,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert clean < churn
 
 
 def test_beam_priority_prefers_larger_structural_progress_before_lighter_adjusted_score():

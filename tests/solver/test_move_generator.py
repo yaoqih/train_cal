@@ -119,6 +119,60 @@ def test_structural_candidate_limit_preserves_focus_track_diversity():
     }
 
 
+def test_candidate_search_sort_key_prefers_structural_then_stable_step_signature():
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _candidate_search_sort_key,
+    )
+
+    structural = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="预修",
+                target_track="调棚",
+                vehicle_nos=["A1"],
+                path_tracks=["预修", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    primitive_a = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["B1"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+    )
+    primitive_b = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["B2"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+    )
+
+    ordered = sorted(
+        [primitive_b, primitive_a, structural],
+        key=_candidate_search_sort_key,
+    )
+
+    assert ordered == [structural, primitive_a, primitive_b]
+
+
 def test_structural_candidate_limit_does_not_let_one_track_crowd_out_others():
     from fzed_shunting.solver.move_candidates import (
         MoveCandidate,
@@ -157,6 +211,732 @@ def test_structural_candidate_limit_does_not_let_one_track_crowd_out_others():
         ("预修",),
         ("存1",),
     }
+
+
+def test_structural_candidate_limit_preserves_chain_diversity_before_focus_diversity():
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _select_structural_candidates
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=2,
+        total_tracks=4,
+        max_chain_pressure=30.0,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("存5北", "调棚"),
+                total_pressure=20.0,
+                order_debt_track_count=1,
+                route_blockage_track_count=0,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(track_summary("调棚", 20.0), track_summary("存5北", 2.0)),
+            ),
+            DebtChainComponent(
+                anchor_track="预修",
+                track_names=("存5南", "预修"),
+                total_pressure=12.0,
+                order_debt_track_count=0,
+                route_blockage_track_count=1,
+                capacity_release_track_count=0,
+                delayed_commitment_count=0,
+                track_summaries=(track_summary("预修", 12.0), track_summary("存5南", 6.0)),
+            ),
+        ),
+    )
+
+    def candidate(focus_track: str, vehicle_no: str) -> MoveCandidate:
+        return MoveCandidate(
+            steps=(
+                HookAction(
+                    source_track=f"S{vehicle_no}",
+                    target_track=focus_track,
+                    vehicle_nos=[vehicle_no],
+                    path_tracks=[f"S{vehicle_no}", focus_track],
+                    action_type="DETACH",
+                ),
+            ),
+            kind="structural",
+            reason="resource_release",
+            focus_tracks=(focus_track,),
+            structural_reserve=True,
+        )
+
+    selected = _select_structural_candidates(
+        [
+            candidate("调棚", "A"),
+            candidate("存5北", "B"),
+            candidate("预修", "C"),
+        ],
+        limit=2,
+        debt_chain_summary=chain_summary,
+    )
+
+    assert {item.focus_tracks for item in selected} == {("调棚",), ("预修",)}
+
+
+def test_chain_macro_candidate_combines_two_structural_steps(monkeypatch):
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _generate_chain_macro_candidates,
+    )
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=1,
+        total_tracks=3,
+        max_chain_pressure=20.0,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("存5北", "存5南", "调棚"),
+                total_pressure=30.0,
+                order_debt_track_count=1,
+                route_blockage_track_count=1,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(
+                    track_summary("调棚", 20.0),
+                    track_summary("存5南", 8.0),
+                    track_summary("存5北", 2.0),
+                ),
+            ),
+        ),
+    )
+    seed = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="调棚",
+                vehicle_nos=["A"],
+                path_tracks=["S1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_source_opening",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    followup = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="存5北",
+                vehicle_nos=["B"],
+                path_tracks=["S2", "存5北"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存5北",),
+        structural_reserve=True,
+    )
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.replay_candidate_steps",
+        lambda **kwargs: SimpleNamespace(
+            steps=tuple(kwargs["steps"]),
+            final_state=SimpleNamespace(loco_carry=()),
+        ),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.build_structural_intent",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            debt_clusters_by_track={},
+            order_debts_by_track={},
+            resource_debts=(),
+            delayed_commitments=(),
+            buffer_leases=(),
+        ),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.summarize_debt_chains",
+        lambda *_args, **_kwargs: chain_summary,
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates._generate_structural_candidates",
+        lambda **kwargs: (followup,) if kwargs.get("allow_chain_macros") is False else (),
+    )
+
+    macro_candidates = _generate_chain_macro_candidates(
+        plan_input=SimpleNamespace(),
+        state=SimpleNamespace(loco_carry=()),
+        master=SimpleNamespace(),
+        route_oracle=SimpleNamespace(),
+        intent=SimpleNamespace(),
+        debt_chain_summary=chain_summary,
+        base_candidates=(seed,),
+        vehicle_by_no={},
+        track_by_vehicle={},
+        delayed_target_pairs=set(),
+    )
+
+    assert any(candidate.reason == "chain_macro_调棚" for candidate in macro_candidates)
+    assert len(macro_candidates[0].steps) == 2
+
+
+def test_chain_macro_allows_mixed_route_chain_with_two_compatible_candidates(monkeypatch):
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _generate_chain_macro_candidates
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=1,
+        total_tracks=4,
+        max_chain_pressure=188.8,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("修3库内", "修3库外", "油", "调棚"),
+                total_pressure=188.8,
+                order_debt_track_count=1,
+                route_blockage_track_count=1,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(
+                    track_summary("调棚", 177.8),
+                    track_summary("修3库外", 9.0),
+                    track_summary("油", 2.0),
+                    track_summary("修3库内", 0.0),
+                ),
+            ),
+        ),
+    )
+    seed = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="调棚",
+                target_track="调棚",
+                vehicle_nos=["1607053"],
+                path_tracks=["调棚"],
+                action_type="ATTACH",
+            ),
+            HookAction(
+                source_track="调棚",
+                target_track="临2",
+                vehicle_nos=["1607053"],
+                path_tracks=["调棚", "调北", "渡4", "临2"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    followup = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="修3库外",
+                target_track="修3库外",
+                vehicle_nos=["1604078"],
+                path_tracks=["修3库外"],
+                action_type="ATTACH",
+            ),
+            HookAction(
+                source_track="修3库外",
+                target_track="临3",
+                vehicle_nos=["1604078"],
+                path_tracks=["修3库外", "渡13", "渡12", "联7", "渡10", "临4", "临3"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("修3库外",),
+        structural_reserve=True,
+    )
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.replay_candidate_steps",
+        lambda **kwargs: SimpleNamespace(
+            steps=tuple(kwargs["steps"]),
+            final_state=SimpleNamespace(loco_carry=()),
+        ),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.build_structural_intent",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            debt_clusters_by_track={},
+            order_debts_by_track={},
+            resource_debts=(),
+            delayed_commitments=(),
+            buffer_leases=(),
+        ),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.summarize_debt_chains",
+        lambda *_args, **_kwargs: chain_summary,
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates._generate_structural_candidates",
+        lambda **kwargs: (followup,) if kwargs.get("allow_chain_macros") is False else (),
+    )
+
+    macro_candidates = _generate_chain_macro_candidates(
+        plan_input=SimpleNamespace(),
+        state=SimpleNamespace(loco_carry=()),
+        master=SimpleNamespace(),
+        route_oracle=SimpleNamespace(),
+        intent=SimpleNamespace(),
+        debt_chain_summary=chain_summary,
+        base_candidates=(seed, followup),
+        vehicle_by_no={},
+        track_by_vehicle={},
+        delayed_target_pairs=set(),
+    )
+
+    assert len(macro_candidates) == 1
+    assert macro_candidates[0].reason == "chain_macro_调棚"
+
+
+def test_chain_seed_prefers_anchor_track_over_side_track():
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _best_chain_seed_candidate
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain = DebtChainComponent(
+        anchor_track="调棚",
+        track_names=("油", "调棚", "存5北"),
+        total_pressure=40.0,
+        order_debt_track_count=1,
+        route_blockage_track_count=1,
+        capacity_release_track_count=1,
+        delayed_commitment_count=0,
+        track_summaries=(
+            track_summary("调棚", 24.0),
+            track_summary("油", 10.0),
+            track_summary("存5北", 6.0),
+        ),
+    )
+    side = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="油",
+                vehicle_nos=["A"],
+                path_tracks=["S1", "油"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("油",),
+        structural_reserve=True,
+    )
+    anchor = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="调棚",
+                vehicle_nos=["B"],
+                path_tracks=["S2", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_free_fill",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+
+    selected = _best_chain_seed_candidate((side, anchor), chain)
+
+    assert selected == anchor
+
+
+def test_structural_generation_can_build_chain_macro_from_release_seed():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data" / "validation_inputs" / "truth" / "validation_2025_09_09_noon.json").read_text()
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    route_oracle = RouteOracle(master)
+
+    from fzed_shunting.solver.debt_chain import summarize_debt_chains
+    from fzed_shunting.solver.structural_intent import build_structural_intent
+    from fzed_shunting.solver.move_candidates import _generate_structural_candidates
+
+    intent = build_structural_intent(normalized, state, route_oracle=route_oracle)
+    debt_chain_summary = summarize_debt_chains(normalized, state, intent=intent)
+    candidates = _generate_structural_candidates(
+        plan_input=normalized,
+        state=state,
+        master=master,
+        route_oracle=route_oracle,
+        intent=intent,
+        debt_chain_summary=debt_chain_summary,
+    )
+
+    assert any(candidate.reason == "chain_macro_预修" for candidate in candidates)
+
+
+def test_chain_macro_allows_same_reason_release_followup():
+    master = load_master_data(DATA_DIR)
+    payload = json.loads(
+        (ROOT_DIR / "data" / "validation_inputs" / "truth" / "validation_2025_09_09_noon.json").read_text()
+    )
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    route_oracle = RouteOracle(master)
+
+    from fzed_shunting.solver.debt_chain import summarize_debt_chains
+    from fzed_shunting.solver.structural_intent import build_structural_intent
+    from fzed_shunting.solver.move_candidates import _generate_chain_macro_candidates, _generate_structural_candidates
+    from fzed_shunting.solver.state import _vehicle_track_lookup
+
+    intent = build_structural_intent(normalized, state, route_oracle=route_oracle)
+    debt_chain_summary = summarize_debt_chains(normalized, state, intent=intent)
+    base_candidates = _generate_structural_candidates(
+        plan_input=normalized,
+        state=state,
+        master=master,
+        route_oracle=route_oracle,
+        intent=intent,
+        debt_chain_summary=debt_chain_summary,
+        allow_chain_macros=False,
+    )
+
+    macro_candidates = _generate_chain_macro_candidates(
+        plan_input=normalized,
+        state=state,
+        master=master,
+        route_oracle=route_oracle,
+        intent=intent,
+        debt_chain_summary=debt_chain_summary,
+        base_candidates=base_candidates,
+        vehicle_by_no={vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles},
+        track_by_vehicle=_vehicle_track_lookup(state),
+        delayed_target_pairs=set(),
+    )
+
+    assert any(candidate.reason == "chain_macro_预修" for candidate in macro_candidates)
+
+
+def test_chain_followup_can_reuse_same_focus_track_when_signature_differs():
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _best_chain_followup_candidate
+
+    seed = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="调棚",
+                vehicle_nos=["A"],
+                path_tracks=["S1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_source_opening",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    follow = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="调棚",
+                vehicle_nos=["B"],
+                path_tracks=["S2", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_window_repair",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+
+    selected = _best_chain_followup_candidate(
+        (follow,),
+        ("调棚", "预修"),
+        seed,
+        used_signatures={("work_position_source_opening", ("调棚",), (("DETACH", "调棚", ("A",)),))},
+    )
+
+    assert selected == follow
+
+
+def test_chain_macro_builder_can_extend_to_three_segments(monkeypatch):
+    from types import SimpleNamespace
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _build_chain_macro_steps
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain = DebtChainComponent(
+        anchor_track="调棚",
+        track_names=("调棚", "预修"),
+        total_pressure=40.0,
+        order_debt_track_count=1,
+        route_blockage_track_count=1,
+        capacity_release_track_count=1,
+        delayed_commitment_count=0,
+        track_summaries=(track_summary("调棚", 24.0), track_summary("预修", 16.0)),
+    )
+    seed = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="调棚",
+                vehicle_nos=["A"],
+                path_tracks=["S1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_source_opening",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    second = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="调棚",
+                vehicle_nos=["B"],
+                path_tracks=["S2", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_window_repair",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    third = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S3",
+                target_track="预修",
+                vehicle_nos=["C"],
+                path_tracks=["S3", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("预修",),
+        structural_reserve=True,
+    )
+    states = [SimpleNamespace(loco_carry=()), SimpleNamespace(loco_carry=()), SimpleNamespace(loco_carry=())]
+    intents = [SimpleNamespace(), SimpleNamespace()]
+    summaries = [
+        DebtChainSummary(chain_count=1, total_tracks=2, max_chain_pressure=30.0, chains=(chain,)),
+        DebtChainSummary(chain_count=1, total_tracks=2, max_chain_pressure=20.0, chains=(chain,)),
+    ]
+    followup_calls = {"count": 0}
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.replay_candidate_steps",
+        lambda **kwargs: SimpleNamespace(steps=tuple(kwargs["steps"]), final_state=states.pop(0)),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.build_structural_intent",
+        lambda *_args, **_kwargs: intents.pop(0),
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates.summarize_debt_chains",
+        lambda *_args, **_kwargs: summaries.pop(0),
+    )
+
+    def fake_generate(**kwargs):
+        followup_calls["count"] += 1
+        if followup_calls["count"] == 1:
+            return (second,)
+        if followup_calls["count"] == 2:
+            return (third,)
+        return ()
+
+    monkeypatch.setattr(
+        "fzed_shunting.solver.move_candidates._generate_structural_candidates",
+        fake_generate,
+    )
+
+    steps = _build_chain_macro_steps(
+        plan_input=SimpleNamespace(),
+        state=SimpleNamespace(),
+        master=SimpleNamespace(),
+        route_oracle=SimpleNamespace(),
+        vehicle_by_no={},
+        seed=seed,
+        chain=chain,
+    )
+
+    assert steps is not None
+    assert len(steps) == 3
+
+
+def test_structural_selection_prefers_chain_macro_over_single_chain_steps():
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _select_structural_candidates
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=1,
+        total_tracks=3,
+        max_chain_pressure=40.0,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("油", "调棚", "存5北"),
+                total_pressure=40.0,
+                order_debt_track_count=1,
+                route_blockage_track_count=1,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(
+                    track_summary("调棚", 24.0),
+                    track_summary("油", 10.0),
+                    track_summary("存5北", 6.0),
+                ),
+            ),
+        ),
+    )
+
+    macro = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="调棚",
+                target_track="油",
+                vehicle_nos=["A"],
+                path_tracks=["调棚", "油"],
+                action_type="DETACH",
+            ),
+            HookAction(
+                source_track="油",
+                target_track="调棚",
+                vehicle_nos=["B"],
+                path_tracks=["油", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="chain_macro_调棚",
+        focus_tracks=("油", "调棚"),
+        structural_reserve=True,
+    )
+    single = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="机库",
+                target_track="调棚",
+                vehicle_nos=["C"],
+                path_tracks=["机库", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_free_fill",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+
+    selected = _select_structural_candidates(
+        [single, macro],
+        limit=1,
+        debt_chain_summary=chain_summary,
+    )
+
+    assert selected == (macro,)
 
 
 def test_release_structural_candidate_ranking_prioritizes_route_and_resource_release():

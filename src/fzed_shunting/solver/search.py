@@ -86,6 +86,7 @@ class CandidateScoring:
     structural_progress_bonus: int
     exact_spot_priority: int
     route_release_regression_penalty: int
+    staging_churn_penalty: int
     route_release_focus_tracks: frozenset[str]
     route_release_focus_bonus: int
     route_release_focus_ttl: int
@@ -295,11 +296,17 @@ def _solve_search_result(
                 route_release_regression_penalty = (
                     candidate_scoring.route_release_regression_penalty
                 )
+                staging_churn_penalty = candidate_scoring.staging_churn_penalty
                 route_release_regression_penalty += _route_release_regression_penalty(
                     state=next_state,
                     route_oracle=route_oracle,
                     focus_tracks=next_focus_tracks,
                     focus_ttl=next_focus_ttl,
+                )
+                staging_churn_penalty += _staging_churn_penalty(
+                    transitions=branch.transitions,
+                    state=current.state,
+                    next_state=next_state,
                 )
                 neg_depot_index_sum = 0
                 if enable_depot_late_scheduling and solver_mode == "exact":
@@ -315,6 +322,7 @@ def _solve_search_result(
                             structural_progress_bonus=structural_progress_bonus,
                             exact_spot_priority=candidate_scoring.exact_spot_priority,
                             route_release_regression_penalty=route_release_regression_penalty,
+                            staging_churn_penalty=staging_churn_penalty,
                             solver_mode=solver_mode,
                             heuristic_weight=heuristic_weight,
                             neg_depot_index_sum=neg_depot_index_sum,
@@ -455,6 +463,7 @@ def _evaluate_candidate_steps(
     blocker_bonus = 0
     exact_spot_priority = 0
     route_release_regression_penalty = 0
+    staging_churn_penalty = 0
     carry_growth_penalty = 0
     focus_tracks = frozenset(prior_focus_tracks)
     focus_bonus = prior_focus_bonus
@@ -521,6 +530,11 @@ def _evaluate_candidate_steps(
             focus_tracks=active_focus_tracks,
             focus_ttl=focus_ttl,
         )
+        staging_churn_penalty += _staging_churn_penalty(
+            transitions=[(current_state, step, next_state)],
+            state=current_state,
+            next_state=next_state,
+        )
         carry_growth_penalty = max(
             carry_growth_penalty,
             _carry_growth_penalty_for_move(
@@ -542,6 +556,7 @@ def _evaluate_candidate_steps(
         structural_progress_bonus=structural_progress_bonus,
         exact_spot_priority=exact_spot_priority,
         route_release_regression_penalty=route_release_regression_penalty,
+        staging_churn_penalty=staging_churn_penalty,
         route_release_focus_tracks=frozenset(focus_tracks),
         route_release_focus_bonus=focus_bonus,
         route_release_focus_ttl=focus_ttl,
@@ -557,6 +572,7 @@ def _priority(
     structural_progress_bonus: int = 0,
     exact_spot_priority: int = 0,
     route_release_regression_penalty: int = 0,
+    staging_churn_penalty: int = 0,
     solver_mode: str,
     heuristic_weight: float,
     neg_depot_index_sum: int = 0,
@@ -571,6 +587,7 @@ def _priority(
         adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
+            staging_churn_penalty,
             0 if exact_spot_priority > 0 else 1,
             0 if structural_progress_bonus > 0 else 1,
             0 if blocker_bonus > 0 else 1,
@@ -592,6 +609,7 @@ def _priority(
         adjusted_score = score + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
+            staging_churn_penalty,
             0 if exact_spot_priority > 0 else 1,
             0 if structural_progress_bonus > 0 else 1,
             0 if blocker_bonus > 0 else 1,
@@ -608,6 +626,7 @@ def _priority(
         )
     return (
         route_release_regression_penalty,
+        staging_churn_penalty,
         cost + heuristic,
         cost,
         heuristic,
@@ -767,6 +786,28 @@ def _route_release_repark_penalty(
     if not blocked_focus_tracks:
         return 0
     return max(1, after_pressure + max(0, after_pressure - before_pressure)) * max(1, focus_ttl)
+
+
+def _staging_churn_penalty(
+    *,
+    transitions: list[tuple[ReplayState, HookAction, ReplayState]],
+    state: ReplayState,
+    next_state: ReplayState,
+) -> int:
+    penalty = 0
+    for current_state, step, after_state in transitions:
+        if step.action_type != "DETACH":
+            continue
+        if current_state.loco_track_name not in STAGING_TRACKS:
+            continue
+        if step.source_track not in STAGING_TRACKS and step.target_track not in STAGING_TRACKS:
+            continue
+        penalty += 2
+        if step.source_track in STAGING_TRACKS and step.target_track in STAGING_TRACKS:
+            penalty += 4
+    if state.loco_track_name in STAGING_TRACKS and next_state.loco_track_name in STAGING_TRACKS:
+        penalty += 1
+    return penalty
 
 
 def _blocked_focus_tracks(
