@@ -16868,6 +16868,124 @@ def test_pre_primary_relaxed_rescue_keeps_route_clean_partial_over_raw_score_reg
     assert result.partial_fallback_stage == "goal_frontier_tail_completion"
 
 
+def test_pre_primary_goal_frontier_completion_runs_even_with_work_position_debt(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "存4北", "trackDistance": 317.8},
+                {"trackName": "临1", "trackDistance": 81.4},
+            ],
+            "vehicleInfo": [
+                {
+                    "trackName": "存5北",
+                    "order": "1",
+                    "vehicleModel": "棚车",
+                    "vehicleNo": "GATE_A",
+                    "repairProcess": "段修",
+                    "vehicleLength": 14.3,
+                    "targetTrack": "存4北",
+                    "isSpotting": "",
+                    "vehicleAttributes": "",
+                }
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    initial = build_initial_state(normalized)
+    partial_move = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["GATE_A"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    route_clean = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        fallback_stage="beam",
+        partial_plan=[partial_move],
+        partial_fallback_stage="beam",
+        debug_stats={
+            "partial_structural_metrics": {
+                "unfinished_count": 12,
+                "staging_debt_count": 0,
+                "work_position_unfinished_count": 3,
+                "target_sequence_defect_count": 0,
+                "front_blocker_count": 1,
+                "goal_track_blocker_count": 1,
+                "capacity_overflow_track_count": 0,
+                "loco_carry_count": 0,
+            },
+            "partial_route_blockage_plan": {"total_blockage_pressure": 0},
+            "plan_shape_metrics": {
+                "max_vehicle_touch_count": 1,
+                "staging_to_staging_hook_count": 0,
+                "rehandled_vehicle_count": 0,
+            },
+        },
+    )
+    empty_search_result = SolverResult(
+        plan=[],
+        expanded_nodes=1,
+        generated_nodes=1,
+        closed_nodes=0,
+        elapsed_ms=1.0,
+        is_complete=False,
+        fallback_stage="beam",
+    )
+
+    with patch(
+        "fzed_shunting.solver.astar_solver._run_constructive_stage",
+        return_value=route_clean,
+    ):
+        with patch("fzed_shunting.solver.astar_solver._try_warm_start_completion", return_value=None):
+            with patch("fzed_shunting.solver.astar_solver._try_resume_partial_completion", return_value=None):
+                with patch(
+                    "fzed_shunting.solver.astar_solver._try_pre_primary_route_release_constructive",
+                    return_value=None,
+                ):
+                    with patch(
+                        "fzed_shunting.solver.astar_solver._try_pre_primary_goal_frontier_completion",
+                        return_value=None,
+                    ) as goal_frontier_completion:
+                        with patch(
+                            "fzed_shunting.solver.astar_solver._solve_search_result",
+                            return_value=empty_search_result,
+                        ):
+                            with patch(
+                                "fzed_shunting.solver.astar_solver._try_selected_partial_tail_completion",
+                                return_value=None,
+                            ):
+                                with patch(
+                                    "fzed_shunting.solver.astar_solver._improve_incumbent_result",
+                                    side_effect=lambda **kwargs: kwargs["incumbent"],
+                                ):
+                                    with patch(
+                                        "fzed_shunting.solver.astar_solver._anytime_run_fallback_chain",
+                                        side_effect=lambda **kwargs: kwargs["incumbent"],
+                                    ):
+                                        solve_with_simple_astar_result(
+                                            normalized,
+                                            initial,
+                                            master=master,
+                                            solver_mode="beam",
+                                            beam_width=8,
+                                            time_budget_ms=55_000.0,
+                                            enable_anytime_fallback=True,
+                                            verify=False,
+                                        )
+
+    goal_frontier_completion.assert_called_once()
+
+
 def test_post_search_partial_tail_uses_fixed_point_completion_for_route_clean_frontier(monkeypatch):
     master = load_master_data(DATA_DIR)
     normalized = normalize_plan_input(
@@ -25571,6 +25689,27 @@ def test_beam_priority_prefers_structural_progress_over_unrelated_blocker_bonus(
     assert structural < blocker
 
 
+def test_beam_priority_prefers_larger_structural_progress_over_small_blocker_bonus_when_exact_spot_ties():
+    strong_structural = _priority(
+        cost=4,
+        heuristic=42,
+        structural_progress_bonus=64,
+        blocker_bonus=0,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+    weak_blocker = _priority(
+        cost=1,
+        heuristic=41,
+        structural_progress_bonus=16,
+        blocker_bonus=1,
+        solver_mode="beam",
+        heuristic_weight=1.0,
+    )
+
+    assert strong_structural < weak_blocker
+
+
 def test_beam_priority_prefers_exact_spot_exposure_over_generic_structural_progress():
     exact_spot_exposure = _priority(
         cost=1,
@@ -25613,6 +25752,150 @@ def test_beam_priority_penalizes_staging_churn_after_regression_ties():
     assert clean < churn
 
 
+def test_goal_frontier_structural_candidates_own_staging():
+    from fzed_shunting.solver.search import _evaluate_candidate_steps
+
+    plan_input = SimpleNamespace(vehicles=[], track_info=[])
+    state = ReplayState(
+        track_sequences={"A": ["X"]},
+        loco_track_name="预修",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+    )
+    next_state = state
+    move = HookAction(
+        source_track="A",
+        target_track="临1",
+        vehicle_nos=["X"],
+        path_tracks=["A", "临1"],
+        action_type="DETACH",
+    )
+    candidate = MoveCandidate(
+        steps=(move,),
+        kind="structural",
+        reason="goal_frontier_source_opening",
+        focus_tracks=("A", "临1"),
+        structural_reserve=True,
+    )
+
+    scoring = _evaluate_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        final_state=next_state,
+        transitions=[(state, move, next_state)],
+        candidate=candidate,
+        vehicle_by_no={},
+        goal_by_vehicle={},
+        route_oracle=None,
+        blocking_goal_targets_by_source={},
+        route_blockage_plan=None,
+        prior_focus_tracks=frozenset(),
+        prior_focus_bonus=0,
+        prior_focus_ttl=0,
+    )
+
+    assert scoring.staging_churn_penalty == 0
+
+
+def test_carried_structural_candidates_receive_beam_bonus():
+    from fzed_shunting.solver.search import _evaluate_candidate_steps
+
+    plan_input = SimpleNamespace(vehicles=[], track_info=[])
+    state = ReplayState(
+        track_sequences={"A": ["X"]},
+        loco_track_name="预修",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("C1", "C2"),
+    )
+    next_state = state
+    move = HookAction(
+        source_track="A",
+        target_track="临1",
+        vehicle_nos=["X"],
+        path_tracks=["A", "临1"],
+        action_type="DETACH",
+    )
+    candidate = MoveCandidate(
+        steps=(move,),
+        kind="structural",
+        reason="route_release_frontier",
+        focus_tracks=("A", "临1"),
+        structural_reserve=True,
+    )
+
+    scoring = _evaluate_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        final_state=next_state,
+        transitions=[(state, move, next_state)],
+        candidate=candidate,
+        vehicle_by_no={},
+        goal_by_vehicle={},
+        route_oracle=None,
+        blocking_goal_targets_by_source={},
+        route_blockage_plan=None,
+        prior_focus_tracks=frozenset(),
+        prior_focus_bonus=0,
+        prior_focus_ttl=0,
+    )
+
+    assert scoring.blocker_bonus > 0
+
+
+def test_primitive_partial_detach_from_carry_gets_fragmentation_penalty(monkeypatch):
+    from fzed_shunting.solver.search import _evaluate_candidate_steps
+
+    plan_input = SimpleNamespace(vehicles=[], track_info=[])
+    state = ReplayState(
+        track_sequences={"机棚": []},
+        loco_track_name="机棚",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("A", "B", "C"),
+    )
+    next_state = ReplayState(
+        track_sequences={"临1": ["C"]},
+        loco_track_name="临1",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+        loco_carry=("A", "B"),
+    )
+    move = HookAction(
+        source_track="机棚",
+        target_track="临1",
+        vehicle_nos=["C"],
+        path_tracks=["机棚", "临1"],
+        action_type="DETACH",
+    )
+    candidate = MoveCandidate(
+        steps=(move,),
+        kind="primitive",
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.search._structural_progress_bonus",
+        lambda **_kwargs: 0,
+    )
+
+    scoring = _evaluate_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        final_state=next_state,
+        transitions=[(state, move, next_state)],
+        candidate=candidate,
+        vehicle_by_no={},
+        goal_by_vehicle={},
+        route_oracle=None,
+        blocking_goal_targets_by_source={},
+        route_blockage_plan=None,
+        prior_focus_tracks=frozenset(),
+        prior_focus_bonus=0,
+        prior_focus_ttl=0,
+    )
+
+    assert scoring.carry_fragmentation_penalty == 10
+
+
 def test_beam_priority_prefers_larger_structural_progress_before_lighter_adjusted_score():
     larger_progress = _priority(
         cost=42,
@@ -25633,8 +25916,224 @@ def test_beam_priority_prefers_larger_structural_progress_before_lighter_adjuste
 
 
 def test_structural_metric_progress_rewards_capacity_release_despite_ordered_buffers():
+    from types import SimpleNamespace
+
     from fzed_shunting.solver.search import _structural_metric_progress_bonus
-    assert _structural_metric_progress_bonus is not None
+
+    before = SimpleNamespace(
+        target_sequence_defect_count=1,
+        work_position_unfinished_count=2,
+        capacity_overflow_track_count=1,
+        front_blocker_count=3,
+        goal_track_blocker_count=2,
+        capacity_debt_by_track={"调棚": 28.1},
+        unfinished_count=10,
+        staging_debt_count=4,
+    )
+    after = SimpleNamespace(
+        target_sequence_defect_count=0,
+        work_position_unfinished_count=1,
+        capacity_overflow_track_count=0,
+        front_blocker_count=1,
+        goal_track_blocker_count=1,
+        capacity_debt_by_track={"调棚": 14.3},
+        unfinished_count=8,
+        staging_debt_count=4,
+    )
+
+    bonus = _structural_metric_progress_bonus(
+        before,
+        after,
+        step_count=3,
+        before_route_pressure=9,
+        after_route_pressure=4,
+    )
+
+    assert bonus >= 3 * 16
+    assert bonus > 0
+
+
+def test_structural_metric_progress_bonus_rewards_route_pressure_drop_and_front_blocker_reduction():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.search import _structural_metric_progress_bonus
+
+    before = SimpleNamespace(
+        target_sequence_defect_count=0,
+        work_position_unfinished_count=0,
+        capacity_overflow_track_count=0,
+        front_blocker_count=4,
+        goal_track_blocker_count=2,
+        capacity_debt_by_track={},
+        unfinished_count=5,
+        staging_debt_count=0,
+    )
+    after = SimpleNamespace(
+        target_sequence_defect_count=0,
+        work_position_unfinished_count=0,
+        capacity_overflow_track_count=0,
+        front_blocker_count=1,
+        goal_track_blocker_count=2,
+        capacity_debt_by_track={},
+        unfinished_count=4,
+        staging_debt_count=0,
+    )
+
+    bonus = _structural_metric_progress_bonus(
+        before,
+        after,
+        step_count=2,
+        before_route_pressure=7,
+        after_route_pressure=2,
+    )
+
+    assert bonus >= 2 * 16
+
+
+def test_structural_metric_progress_bonus_credits_single_step_structural_progress():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.search import _structural_metric_progress_bonus
+
+    before = SimpleNamespace(
+        target_sequence_defect_count=0,
+        work_position_unfinished_count=0,
+        capacity_overflow_track_count=1,
+        front_blocker_count=2,
+        goal_track_blocker_count=1,
+        capacity_debt_by_track={"调棚": 14.3},
+        unfinished_count=4,
+        staging_debt_count=0,
+    )
+    after = SimpleNamespace(
+        target_sequence_defect_count=0,
+        work_position_unfinished_count=0,
+        capacity_overflow_track_count=0,
+        front_blocker_count=1,
+        goal_track_blocker_count=1,
+        capacity_debt_by_track={},
+        unfinished_count=3,
+        staging_debt_count=0,
+    )
+
+    bonus = _structural_metric_progress_bonus(
+        before,
+        after,
+        step_count=1,
+        before_route_pressure=0,
+        after_route_pressure=0,
+    )
+
+    assert bonus > 0
+
+
+def test_candidate_queue_branches_samples_progress_prefixes_for_long_structural_macro(monkeypatch):
+    from fzed_shunting.solver.move_candidates import MoveCandidate
+    from fzed_shunting.solver.search import AppliedCandidate, _candidate_queue_branches
+
+    state = ReplayState(
+        track_sequences={"存1": ["A"]},
+        loco_track_name="机库",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+    )
+    transitions = [
+        (
+            state,
+            HookAction(
+                source_track="存1",
+                target_track="存1",
+                vehicle_nos=["A"],
+                path_tracks=["存1"],
+                action_type="ATTACH",
+            ),
+            state,
+        )
+        for _ in range(5)
+    ]
+
+    progress_keys = iter(
+        [
+            (10, 10, 10, 10, 10.0, 10, 10, 10, 0),
+            (9, 10, 10, 10, 10.0, 10, 10, 10, 0),
+            (8, 10, 10, 10, 10.0, 10, 10, 10, 0),
+            (7, 10, 10, 10, 10.0, 10, 10, 10, 0),
+            (6, 10, 10, 10, 10.0, 10, 10, 10, 0),
+            (5, 10, 10, 10, 10.0, 10, 10, 10, 0),
+        ]
+    )
+    monkeypatch.setattr(
+        "fzed_shunting.solver.search._candidate_branch_progress_key",
+        lambda **_kwargs: next(progress_keys),
+    )
+
+    branches = _candidate_queue_branches(
+        MoveCandidate(
+            steps=tuple(step for _, step, _ in transitions),
+            kind="structural",
+            reason="chain_macro_调棚",
+            focus_tracks=("调棚",),
+            structural_reserve=True,
+        ),
+        AppliedCandidate(
+            final_state=state,
+            steps=[step for _, step, _ in transitions],
+            transitions=transitions,
+        ),
+        plan_input=None,
+        base_state=state,
+        route_oracle=None,
+    )
+
+    assert [len(branch.steps) for branch in branches] == [5, 1, 3, 4]
+
+
+def test_structural_candidates_owning_staging_do_not_accumulate_extra_churn_penalty(monkeypatch):
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.move_candidates import MoveCandidate
+    from fzed_shunting.solver.search import _evaluate_candidate_steps
+
+    plan_input = SimpleNamespace(vehicles=[], track_info=[])
+    state = ReplayState(
+        track_sequences={"A": ["X"]},
+        loco_track_name="预修",
+        weighed_vehicle_nos=set(),
+        spot_assignments={},
+    )
+    next_state = state
+    move = HookAction(
+        source_track="A",
+        target_track="B",
+        vehicle_nos=["X"],
+        path_tracks=["A", "B"],
+        action_type="DETACH",
+    )
+    candidate = MoveCandidate(
+        steps=(move,),
+        kind="structural",
+        reason="route_release_frontier",
+        focus_tracks=("B",),
+        structural_reserve=True,
+    )
+
+    scoring = _evaluate_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        final_state=next_state,
+        transitions=[(state, move, next_state)],
+        candidate=candidate,
+        vehicle_by_no={},
+        goal_by_vehicle={},
+        route_oracle=None,
+        blocking_goal_targets_by_source={},
+        route_blockage_plan=None,
+        prior_focus_tracks=frozenset(),
+        prior_focus_bonus=0,
+        prior_focus_ttl=0,
+    )
+
+    assert scoring.staging_churn_penalty == 0
 
 
 def test_prune_queue_reserves_route_blockage_release_state_when_churn_pressure_is_high():

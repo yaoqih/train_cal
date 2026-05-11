@@ -31,6 +31,7 @@ from fzed_shunting.solver.move_candidates import MoveCandidate, generate_move_ca
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.result import SolverResult
+from fzed_shunting.solver.goal_logic import goal_is_satisfied
 from fzed_shunting.solver.route_blockage import (
     RouteBlockagePlan,
     compute_route_blockage_plan,
@@ -87,6 +88,7 @@ class CandidateScoring:
     exact_spot_priority: int
     route_release_regression_penalty: int
     staging_churn_penalty: int
+    carry_fragmentation_penalty: int
     route_release_focus_tracks: frozenset[str]
     route_release_focus_bonus: int
     route_release_focus_ttl: int
@@ -137,6 +139,7 @@ def _solve_search_result(
                 heuristic_weight=heuristic_weight,
                 neg_depot_index_sum=0,
                 carry_count=len(initial_state.loco_carry),
+                carry_fragmentation_penalty=0,
                 carry_growth_penalty=0,
                 purity_metrics=(
                     initial_purity.unfinished_count,
@@ -249,7 +252,13 @@ def _solve_search_result(
             )
             if applied_candidate is None:
                 continue
-            for branch in _candidate_queue_branches(candidate, applied_candidate):
+            for branch in _candidate_queue_branches(
+                candidate,
+                applied_candidate,
+                plan_input=plan_input,
+                base_state=current.state,
+                route_oracle=route_oracle,
+            ):
                 next_state = branch.final_state
                 candidate_steps = branch.steps
                 next_plan = current.plan + candidate_steps
@@ -275,6 +284,7 @@ def _solve_search_result(
                     state=current.state,
                     final_state=next_state,
                     transitions=branch.transitions,
+                    candidate=candidate,
                     vehicle_by_no=vehicle_by_no,
                     goal_by_vehicle=goal_by_vehicle,
                     route_oracle=route_oracle,
@@ -297,17 +307,22 @@ def _solve_search_result(
                     candidate_scoring.route_release_regression_penalty
                 )
                 staging_churn_penalty = candidate_scoring.staging_churn_penalty
+                carry_growth_penalty = candidate_scoring.carry_growth_penalty
+                carry_fragmentation_penalty = candidate_scoring.carry_fragmentation_penalty
                 route_release_regression_penalty += _route_release_regression_penalty(
                     state=next_state,
                     route_oracle=route_oracle,
                     focus_tracks=next_focus_tracks,
                     focus_ttl=next_focus_ttl,
                 )
-                staging_churn_penalty += _staging_churn_penalty(
-                    transitions=branch.transitions,
-                    state=current.state,
-                    next_state=next_state,
-                )
+                if not _structural_candidate_owns_staging(candidate):
+                    staging_churn_penalty += _staging_churn_penalty(
+                        transitions=branch.transitions,
+                        state=current.state,
+                        next_state=next_state,
+                    )
+                else:
+                    carry_growth_penalty = 0
                 neg_depot_index_sum = 0
                 if enable_depot_late_scheduling and solver_mode == "exact":
                     from fzed_shunting.solver.depot_late import weighted_depot_index_sum
@@ -323,6 +338,7 @@ def _solve_search_result(
                             exact_spot_priority=candidate_scoring.exact_spot_priority,
                             route_release_regression_penalty=route_release_regression_penalty,
                             staging_churn_penalty=staging_churn_penalty,
+                            carry_fragmentation_penalty=carry_fragmentation_penalty,
                             solver_mode=solver_mode,
                             heuristic_weight=heuristic_weight,
                             neg_depot_index_sum=neg_depot_index_sum,
@@ -333,7 +349,7 @@ def _solve_search_result(
                                 next_purity.staging_pollution_count,
                             ),
                             carry_count=len(next_state.loco_carry),
-                            carry_growth_penalty=candidate_scoring.carry_growth_penalty,
+                            carry_growth_penalty=carry_growth_penalty,
                         ),
                         seq=next(counter),
                         state_key=state_key,
@@ -429,20 +445,70 @@ def _apply_candidate_steps(
 def _candidate_queue_branches(
     candidate: MoveCandidate,
     applied_candidate: AppliedCandidate,
+    *,
+    plan_input: NormalizedPlanInput,
+    base_state: ReplayState,
+    route_oracle: RouteOracle | None,
 ) -> list[AppliedCandidate]:
     branches = [applied_candidate]
     if not candidate.structural_reserve or len(applied_candidate.transitions) <= 1:
         return branches
+    best_progress_key = _candidate_branch_progress_key(
+        plan_input=plan_input,
+        state=base_state,
+        route_oracle=route_oracle,
+    )
+    improving_prefixes: list[AppliedCandidate] = []
     for step_index in range(1, len(applied_candidate.transitions)):
         prefix_transitions = applied_candidate.transitions[:step_index]
-        branches.append(
-            AppliedCandidate(
-                final_state=prefix_transitions[-1][2],
-                steps=applied_candidate.steps[:step_index],
-                transitions=prefix_transitions,
-            )
+        prefix_candidate = AppliedCandidate(
+            final_state=prefix_transitions[-1][2],
+            steps=applied_candidate.steps[:step_index],
+            transitions=prefix_transitions,
         )
+        prefix_progress_key = _candidate_branch_progress_key(
+            plan_input=plan_input,
+            state=prefix_candidate.final_state,
+            route_oracle=route_oracle,
+        )
+        if prefix_progress_key >= best_progress_key:
+            continue
+        improving_prefixes.append(prefix_candidate)
+        best_progress_key = prefix_progress_key
+    if len(improving_prefixes) <= 3:
+        branches.extend(improving_prefixes)
+        return branches
+    selected_indices = {0, len(improving_prefixes) // 2, len(improving_prefixes) - 1}
+    branches.extend(
+        improving_prefixes[index]
+        for index in sorted(selected_indices)
+    )
     return branches
+
+
+def _candidate_branch_progress_key(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle | None,
+) -> tuple[int | float, ...]:
+    structural = compute_structural_metrics(plan_input, state)
+    route_pressure = (
+        compute_route_blockage_plan(plan_input, state, route_oracle).total_blockage_pressure
+        if route_oracle is not None
+        else 0
+    )
+    return (
+        structural.target_sequence_defect_count,
+        structural.work_position_unfinished_count,
+        structural.front_blocker_count,
+        structural.capacity_overflow_track_count,
+        _capacity_debt_total(structural),
+        route_pressure,
+        structural.goal_track_blocker_count,
+        structural.unfinished_count,
+        len(state.loco_carry),
+    )
 
 
 def _evaluate_candidate_steps(
@@ -451,6 +517,7 @@ def _evaluate_candidate_steps(
     state: ReplayState,
     final_state: ReplayState,
     transitions: list[tuple[ReplayState, HookAction, ReplayState]],
+    candidate: MoveCandidate,
     vehicle_by_no: dict[str, NormalizedVehicle],
     goal_by_vehicle: dict[str, Any],
     route_oracle: RouteOracle | None,
@@ -464,15 +531,20 @@ def _evaluate_candidate_steps(
     exact_spot_priority = 0
     route_release_regression_penalty = 0
     staging_churn_penalty = 0
+    carry_fragmentation_penalty = 0
     carry_growth_penalty = 0
+    carry_structural_bonus = 0
     focus_tracks = frozenset(prior_focus_tracks)
     focus_bonus = prior_focus_bonus
     focus_ttl = prior_focus_ttl
+    before_structural = compute_structural_metrics(plan_input, state)
     structural_progress_bonus = _structural_progress_bonus(
         plan_input=plan_input,
         before_state=state,
         after_state=final_state,
         step_count=len(transitions),
+        route_oracle=route_oracle,
+        route_blockage_plan=route_blockage_plan,
     )
     current_blocking_goal_targets = blocking_goal_targets_by_source
     current_route_blockage_plan = route_blockage_plan
@@ -530,11 +602,12 @@ def _evaluate_candidate_steps(
             focus_tracks=active_focus_tracks,
             focus_ttl=focus_ttl,
         )
-        staging_churn_penalty += _staging_churn_penalty(
-            transitions=[(current_state, step, next_state)],
-            state=current_state,
-            next_state=next_state,
-        )
+        if not _structural_candidate_owns_staging(candidate):
+            staging_churn_penalty += _staging_churn_penalty(
+                transitions=[(current_state, step, next_state)],
+                state=current_state,
+                next_state=next_state,
+            )
         carry_growth_penalty = max(
             carry_growth_penalty,
             _carry_growth_penalty_for_move(
@@ -551,12 +624,52 @@ def _evaluate_candidate_steps(
             route_blockage_plan=current_route_blockage_plan,
         )
 
+    if state.loco_carry and candidate.kind == "structural":
+        if candidate.reason.startswith(
+            (
+                "route_release_",
+                "goal_frontier_",
+                "work_position_",
+                "resource_release",
+                "chain_macro_",
+            )
+        ):
+            carry_structural_bonus = min(12, 4 + len(transitions) * 2)
+            blocker_bonus += carry_structural_bonus
+    if (
+        candidate.kind == "primitive"
+        and state.loco_carry
+        and final_state.loco_carry
+        and len(final_state.loco_carry) < len(state.loco_carry)
+        and structural_progress_bonus <= 0
+    ):
+        carry_fragmentation_penalty = 8 + len(final_state.loco_carry)
+    elif (
+        candidate.kind == "primitive"
+        and state.loco_carry
+        and not final_state.loco_carry
+        and _primitive_detach_commits_carried_goal_block(
+            candidate=candidate,
+            final_state=final_state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        and (
+            before_structural.work_position_unfinished_count > 0
+            or before_structural.front_blocker_count > 0
+            or before_structural.goal_track_blocker_count > 0
+        )
+        and structural_progress_bonus <= 6
+    ):
+        carry_fragmentation_penalty = 10
+
     return CandidateScoring(
         blocker_bonus=blocker_bonus,
         structural_progress_bonus=structural_progress_bonus,
         exact_spot_priority=exact_spot_priority,
         route_release_regression_penalty=route_release_regression_penalty,
         staging_churn_penalty=staging_churn_penalty,
+        carry_fragmentation_penalty=carry_fragmentation_penalty,
         route_release_focus_tracks=frozenset(focus_tracks),
         route_release_focus_bonus=focus_bonus,
         route_release_focus_ttl=focus_ttl,
@@ -573,6 +686,7 @@ def _priority(
     exact_spot_priority: int = 0,
     route_release_regression_penalty: int = 0,
     staging_churn_penalty: int = 0,
+    carry_fragmentation_penalty: int = 0,
     solver_mode: str,
     heuristic_weight: float,
     neg_depot_index_sum: int = 0,
@@ -584,14 +698,15 @@ def _priority(
     progress_bonus = min(combined_bonus, max(cost + heuristic, 1) // 2)
     if solver_mode == "beam":
         score = cost + heuristic
-        adjusted_score = score + carry_growth_penalty - progress_bonus
+        adjusted_score = score + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             staging_churn_penalty,
+            carry_fragmentation_penalty,
             0 if exact_spot_priority > 0 else 1,
             0 if structural_progress_bonus > 0 else 1,
-            0 if blocker_bonus > 0 else 1,
             -structural_progress_bonus,
+            0 if blocker_bonus > 0 else 1,
             adjusted_score,
             score,
             cost,
@@ -606,14 +721,15 @@ def _priority(
         )
     if solver_mode in ("weighted", "real_hook"):
         score = cost + heuristic_weight * heuristic
-        adjusted_score = score + carry_growth_penalty - progress_bonus
+        adjusted_score = score + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             staging_churn_penalty,
+            carry_fragmentation_penalty,
             0 if exact_spot_priority > 0 else 1,
             0 if structural_progress_bonus > 0 else 1,
-            0 if blocker_bonus > 0 else 1,
             -structural_progress_bonus,
+            0 if blocker_bonus > 0 else 1,
             adjusted_score,
             cost,
             heuristic,
@@ -627,6 +743,7 @@ def _priority(
     return (
         route_release_regression_penalty,
         staging_churn_penalty,
+        carry_fragmentation_penalty,
         cost + heuristic,
         cost,
         heuristic,
@@ -662,31 +779,96 @@ def _search_partial_score(
     )
 
 
+def _primitive_detach_commits_carried_goal_block(
+    *,
+    candidate: MoveCandidate,
+    final_state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> bool:
+    if candidate.kind != "primitive" or len(candidate.steps) != 1:
+        return False
+    move = candidate.steps[0]
+    if move.action_type != "DETACH" or not move.vehicle_nos:
+        return False
+    return all(
+        (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and goal_is_satisfied(
+            vehicle,
+            track_name=move.target_track,
+            state=final_state,
+            plan_input=plan_input,
+        )
+        for vehicle_no in move.vehicle_nos
+    )
+
+
 def _structural_progress_bonus(
     *,
     plan_input: NormalizedPlanInput,
     before_state: ReplayState,
     after_state: ReplayState,
     step_count: int,
+    route_oracle: RouteOracle | None,
+    route_blockage_plan: RouteBlockagePlan | None,
 ) -> int:
-    if step_count <= 1:
+    if step_count <= 0:
         return 0
     before = compute_structural_metrics(plan_input, before_state)
     after = compute_structural_metrics(plan_input, after_state)
-    return _structural_metric_progress_bonus(before, after, step_count=step_count)
+    before_route_pressure = (
+        route_blockage_plan.total_blockage_pressure
+        if route_blockage_plan is not None
+        else 0
+    )
+    after_route_pressure = before_route_pressure
+    if (
+        route_oracle is not None
+        and route_blockage_plan is not None
+        and before_route_pressure > 0
+    ):
+        after_route_pressure = compute_route_blockage_plan(
+            plan_input,
+            after_state,
+            route_oracle,
+        ).total_blockage_pressure
+    return _structural_metric_progress_bonus(
+        before,
+        after,
+        step_count=step_count,
+        before_route_pressure=before_route_pressure,
+        after_route_pressure=after_route_pressure,
+    )
 
-def _structural_metric_progress_bonus(before: Any, after: Any, *, step_count: int) -> int:
+def _structural_metric_progress_bonus(
+    before: Any,
+    after: Any,
+    *,
+    step_count: int,
+    before_route_pressure: int = 0,
+    after_route_pressure: int = 0,
+) -> int:
     progress = 0
     progress += max(0, before.target_sequence_defect_count - after.target_sequence_defect_count) * 18
     progress += max(0, before.work_position_unfinished_count - after.work_position_unfinished_count) * 12
     progress += max(0, before.capacity_overflow_track_count - after.capacity_overflow_track_count) * 16
+    progress += max(0, before.front_blocker_count - after.front_blocker_count) * 8
     progress += max(0, before.goal_track_blocker_count - after.goal_track_blocker_count) * 3
+    progress += max(0.0, _capacity_debt_total(before) - _capacity_debt_total(after))
+    progress += max(0, before_route_pressure - after_route_pressure) * 4
     progress += max(0, before.unfinished_count - after.unfinished_count)
     staging_regression = max(0, after.staging_debt_count - before.staging_debt_count)
     progress -= staging_regression
     if progress <= 0:
         return 0
-    return min(progress, step_count * 12)
+    return min(progress, max(step_count, 1) * 16)
+
+
+def _capacity_debt_total(metrics: Any) -> float:
+    capacity_debt_by_track = getattr(metrics, "capacity_debt_by_track", None)
+    if not capacity_debt_by_track:
+        return 0.0
+    return sum(float(value) for value in capacity_debt_by_track.values())
 
 
 def _carry_growth_penalty_for_move(
@@ -808,6 +990,17 @@ def _staging_churn_penalty(
     if state.loco_track_name in STAGING_TRACKS and next_state.loco_track_name in STAGING_TRACKS:
         penalty += 1
     return penalty
+
+
+def _structural_candidate_owns_staging(candidate: MoveCandidate) -> bool:
+    if candidate.kind != "structural":
+        return False
+    return (
+        candidate.reason.startswith("route_release_")
+        or candidate.reason.startswith("goal_frontier_")
+        or candidate.reason.startswith("chain_macro_")
+        or candidate.reason in {"resource_release", "work_position_source_opening", "work_position_window_repair"}
+    )
 
 
 def _blocked_focus_tracks(

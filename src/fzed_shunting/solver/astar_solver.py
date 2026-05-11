@@ -339,10 +339,17 @@ def solve_with_simple_astar_result(
             if (
                 route_blockage_pressure <= 0
                 and not constructive_seed.is_complete
-                and not _partial_has_work_position_order_debt(
-                    constructive_seed,
-                    plan_input=plan_input,
-                    initial_state=initial_state,
+                and (
+                    not _partial_has_work_position_order_debt(
+                        constructive_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                    )
+                    or _partial_result_has_localized_goal_frontier_profile(
+                        constructive_seed,
+                        plan_input=plan_input,
+                        initial_state=initial_state,
+                    )
                 )
                 and _partial_result_has_goal_frontier_pressure(
                     constructive_seed,
@@ -3889,6 +3896,60 @@ def _partial_has_work_position_order_debt(
     return (
         metrics.work_position_unfinished_count > 0
         or metrics.target_sequence_defect_count > 0
+    )
+
+
+def _partial_result_has_localized_goal_frontier_profile(
+    result: SolverResult,
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+) -> bool:
+    structural = (result.debug_stats or {}).get("partial_structural_metrics") or {}
+    unfinished = _optional_int(structural.get("unfinished_count"))
+    work_position_unfinished = _optional_int(
+        structural.get("work_position_unfinished_count")
+    )
+    target_sequence_defect = _optional_int(
+        structural.get("target_sequence_defect_count")
+    )
+    front_blocker = _optional_int(structural.get("front_blocker_count"))
+    goal_track_blocker = _optional_int(structural.get("goal_track_blocker_count"))
+    capacity_overflow = _optional_int(structural.get("capacity_overflow_track_count"))
+    staging_debt = _optional_int(structural.get("staging_debt_count"))
+    if (
+        unfinished is None
+        or work_position_unfinished is None
+        or target_sequence_defect is None
+        or front_blocker is None
+        or goal_track_blocker is None
+        or capacity_overflow is None
+    ):
+        if not result.partial_plan:
+            return False
+        final_state = _replay_solver_moves(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            plan=result.partial_plan,
+        )
+        if final_state is None:
+            return False
+        metrics = compute_structural_metrics(plan_input, final_state)
+        unfinished = metrics.unfinished_count
+        work_position_unfinished = metrics.work_position_unfinished_count
+        target_sequence_defect = metrics.target_sequence_defect_count
+        front_blocker = metrics.front_blocker_count
+        goal_track_blocker = metrics.goal_track_blocker_count
+        capacity_overflow = metrics.capacity_overflow_track_count
+        staging_debt = metrics.staging_debt_count
+    return (
+        0 < unfinished <= LOCALIZED_RESUME_MAX_UNFINISHED * 2
+        and 0 < work_position_unfinished <= 3
+        and target_sequence_defect == 0
+        and front_blocker <= 8
+        and goal_track_blocker <= 4
+        and capacity_overflow == 0
+        and (staging_debt or 0) == 0
     )
 
 
