@@ -636,32 +636,15 @@ def _evaluate_candidate_steps(
         ):
             carry_structural_bonus = min(12, 4 + len(transitions) * 2)
             blocker_bonus += carry_structural_bonus
-    if (
-        candidate.kind == "primitive"
-        and state.loco_carry
-        and final_state.loco_carry
-        and len(final_state.loco_carry) < len(state.loco_carry)
-        and structural_progress_bonus <= 0
-    ):
-        carry_fragmentation_penalty = 8 + len(final_state.loco_carry)
-    elif (
-        candidate.kind == "primitive"
-        and state.loco_carry
-        and not final_state.loco_carry
-        and _primitive_detach_commits_carried_goal_block(
-            candidate=candidate,
-            final_state=final_state,
-            plan_input=plan_input,
-            vehicle_by_no=vehicle_by_no,
-        )
-        and (
-            before_structural.work_position_unfinished_count > 0
-            or before_structural.front_blocker_count > 0
-            or before_structural.goal_track_blocker_count > 0
-        )
-        and structural_progress_bonus <= 6
-    ):
-        carry_fragmentation_penalty = 10
+    carry_fragmentation_penalty = _carry_commitment_penalty(
+        candidate=candidate,
+        state=state,
+        final_state=final_state,
+        before_structural=before_structural,
+        structural_progress_bonus=structural_progress_bonus,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    )
 
     return CandidateScoring(
         blocker_bonus=blocker_bonus,
@@ -779,18 +762,54 @@ def _search_partial_score(
     )
 
 
-def _primitive_detach_commits_carried_goal_block(
+def _carry_commitment_penalty(
     *,
     candidate: MoveCandidate,
+    state: ReplayState,
+    final_state: ReplayState,
+    before_structural: Any,
+    structural_progress_bonus: int,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    if candidate.kind != "primitive" or not state.loco_carry:
+        return 0
+    move = candidate.steps[0]
+    if (
+        final_state.loco_carry
+        and len(final_state.loco_carry) < len(state.loco_carry)
+        and structural_progress_bonus <= 0
+    ):
+        return 8 + len(final_state.loco_carry)
+    if (
+        not final_state.loco_carry
+        and len(candidate.steps) == 1
+        and move.action_type == "DETACH"
+        and move.vehicle_nos
+        and _primitive_detach_commits_carried_goal_block(
+            final_state=final_state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+            move=move,
+        )
+        and (
+            before_structural.work_position_unfinished_count > 0
+            or before_structural.front_blocker_count > 0
+            or before_structural.goal_track_blocker_count > 0
+        )
+        and structural_progress_bonus <= 6
+    ):
+        return 10
+    return 0
+
+
+def _primitive_detach_commits_carried_goal_block(
+    *,
+    move: HookAction,
     final_state: ReplayState,
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict[str, NormalizedVehicle],
 ) -> bool:
-    if candidate.kind != "primitive" or len(candidate.steps) != 1:
-        return False
-    move = candidate.steps[0]
-    if move.action_type != "DETACH" or not move.vehicle_nos:
-        return False
     return all(
         (vehicle := vehicle_by_no.get(vehicle_no)) is not None
         and goal_is_satisfied(

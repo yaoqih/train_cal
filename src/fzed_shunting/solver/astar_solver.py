@@ -9382,25 +9382,24 @@ def _build_work_position_tail_step(
         plan_input=plan_input,
     ) and not next_state.loco_carry:
         return next_state, step_plan
-    if next_state.loco_carry:
-        restored = _finish_goal_frontier_deep_block_carry(
+    restored = _restore_work_position_goal_frontier_carry(
+        plan_input=plan_input,
+        state=next_state,
+        master=master,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        source_track=source_track,
+    )
+    if restored is not None:
+        restored_state, restore_plan = restored
+        restored_step_plan = [*step_plan, *restore_plan]
+        if goal_is_satisfied(
+            vehicle,
+            track_name=target_track,
+            state=restored_state,
             plan_input=plan_input,
-            state=next_state,
-            master=master,
-            route_oracle=route_oracle,
-            vehicle_by_no=vehicle_by_no,
-            source_track=source_track,
-        )
-        if restored is not None:
-            restored_state, restore_plan = restored
-            restored_step_plan = [*step_plan, *restore_plan]
-            if goal_is_satisfied(
-                vehicle,
-                track_name=target_track,
-                state=restored_state,
-                plan_input=plan_input,
-            ):
-                return restored_state, restored_step_plan
+        ):
+            return restored_state, restored_step_plan
     padding_plan = _build_work_position_padding_plan(
         plan_input=plan_input,
         state=next_state,
@@ -9493,22 +9492,18 @@ def _build_work_position_temporary_drop_completion(
         if _state_key(staged_state, plan_input) == _state_key(attached_state, plan_input):
             continue
         step_plan = [attach_target, staging_move]
-        restored_state = staged_state
-        if staged_state.loco_carry:
-            restored = _finish_goal_frontier_deep_block_carry(
-                plan_input=plan_input,
-                state=staged_state,
-                master=master,
-                route_oracle=route_oracle,
-                vehicle_by_no=vehicle_by_no,
-                source_track=source_track,
-            )
-            if restored is None:
-                continue
-            restored_state, restore_plan = restored
-            step_plan.extend(restore_plan)
-        if restored_state.loco_carry:
+        restored = _restore_work_position_goal_frontier_carry(
+            plan_input=plan_input,
+            state=staged_state,
+            master=master,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            source_track=source_track,
+        )
+        if restored is None:
             continue
+        restored_state, restore_plan = restored
+        step_plan.extend(restore_plan)
         staging_attach = _find_goal_frontier_attach_move(
             generate_real_hook_moves(
                 plan_input,
@@ -9575,6 +9570,30 @@ def _build_work_position_temporary_drop_completion(
         ) and not final_state.loco_carry:
             return final_state, step_plan
     return None
+
+
+def _restore_work_position_goal_frontier_carry(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, Any],
+    source_track: str,
+) -> tuple[ReplayState, list[HookAction]] | None:
+    if not state.loco_carry:
+        return state, []
+    restored = _finish_goal_frontier_deep_block_carry(
+        plan_input=plan_input,
+        state=state,
+        master=master,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        source_track=source_track,
+    )
+    if restored is None or restored[0].loco_carry:
+        return None
+    return restored
 
 
 def _find_work_position_target_detach_move(

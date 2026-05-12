@@ -53,6 +53,42 @@ class MoveCandidate:
     structural_reserve: bool = False
 
 
+def _structural_candidate(
+    *,
+    steps: tuple[HookAction, ...] | list[HookAction],
+    reason: str,
+    focus_tracks: tuple[str, ...],
+    structural_reserve: bool = True,
+) -> MoveCandidate:
+    return MoveCandidate(
+        steps=tuple(steps),
+        kind="structural",
+        reason=reason,
+        focus_tracks=focus_tracks,
+        structural_reserve=structural_reserve,
+    )
+
+
+def _replay_noncarry_steps(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    steps: tuple[HookAction, ...] | list[HookAction],
+    route_oracle: RouteOracle,
+) -> Any | None:
+    compiled = replay_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=list(steps),
+        route_oracle=route_oracle,
+    )
+    if compiled is None or compiled.final_state.loco_carry:
+        return None
+    return compiled
+
+
 def generate_move_candidates(
     plan_input: NormalizedPlanInput,
     state: ReplayState,
@@ -620,14 +656,14 @@ def _build_route_release_frontier_candidate(
     else:
         blocker_steps = list(blocker_clear.steps)
 
-    compiled_clear = replay_candidate_steps(
+    compiled_clear = _replay_noncarry_steps(
         plan_input=plan_input,
         state=state,
         vehicle_by_no=vehicle_by_no,
         steps=blocker_steps,
         route_oracle=route_oracle,
     )
-    if compiled_clear is None or compiled_clear.final_state.loco_carry:
+    if compiled_clear is None:
         return None
 
     steps = [*compiled_clear.steps]
@@ -663,14 +699,14 @@ def _build_route_release_frontier_candidate(
         )
         if frontier_steps is None:
             break
-        compiled_frontier = replay_candidate_steps(
+        compiled_frontier = _replay_noncarry_steps(
             plan_input=plan_input,
             state=current_state,
             vehicle_by_no=vehicle_by_no,
             steps=frontier_steps,
             route_oracle=route_oracle,
         )
-        if compiled_frontier is None or compiled_frontier.final_state.loco_carry:
+        if compiled_frontier is None:
             break
         steps.extend(compiled_frontier.steps)
         current_state = compiled_frontier.final_state
@@ -696,23 +732,21 @@ def _build_route_release_frontier_candidate(
     ):
         if not restore_steps:
             return None
-        compiled_restore = replay_candidate_steps(
+        compiled_restore = _replay_noncarry_steps(
             plan_input=plan_input,
             state=current_state,
             vehicle_by_no=vehicle_by_no,
             steps=restore_steps,
             route_oracle=route_oracle,
         )
-        if compiled_restore is None or compiled_restore.final_state.loco_carry:
+        if compiled_restore is None:
             return None
         steps.extend(compiled_restore.steps)
 
-    return MoveCandidate(
-        steps=tuple(steps),
-        kind="structural",
+    return _structural_candidate(
+        steps=steps,
         reason="route_release_frontier",
         focus_tracks=(blocking_track, source_track, target_track),
-        structural_reserve=True,
     )
 
 
@@ -746,21 +780,19 @@ def _build_blocker_direct_goal_candidate(
         )
         if steps is None:
             continue
-        compiled = replay_candidate_steps(
+        compiled = _replay_noncarry_steps(
             plan_input=plan_input,
             state=state,
             vehicle_by_no=vehicle_by_no,
             steps=steps,
             route_oracle=route_oracle,
         )
-        if compiled is None or compiled.final_state.loco_carry:
+        if compiled is None:
             continue
-        return MoveCandidate(
+        return _structural_candidate(
             steps=compiled.steps,
-            kind="structural",
             reason="resource_release",
             focus_tracks=(source_track,),
-            structural_reserve=True,
         )
     return None
 
@@ -2615,12 +2647,10 @@ def _build_work_position_window_candidate(
     ):
         return None
     steps.extend(compiled.steps)
-    return MoveCandidate(
-        steps=tuple(steps),
-        kind="structural",
+    return _structural_candidate(
+        steps=steps,
         reason="work_position_window_repair",
         focus_tracks=(target_track,),
-        structural_reserve=True,
     )
 
 
@@ -2635,26 +2665,12 @@ def _build_work_position_source_opening_candidate(
     pending_vehicle_nos: list[str],
     blocking_prefix_vehicle_nos: list[str],
 ) -> MoveCandidate | None:
-    strict_commitments_by_source: dict[str, list[str]] = {}
-    free_commitments_by_source: dict[str, list[str]] = {}
-    for vehicle_no in pending_vehicle_nos:
-        vehicle = vehicle_by_no.get(vehicle_no)
-        if vehicle is None or vehicle.goal.work_position_kind is None:
-            continue
-        source_track = track_by_vehicle.get(vehicle_no)
-        if source_track is None or source_track == target_track:
-            continue
-        if vehicle.goal.work_position_kind in STRICT_WORK_POSITION_KINDS:
-            strict_commitments_by_source.setdefault(source_track, []).append(vehicle_no)
-        elif vehicle.goal.work_position_kind == "FREE":
-            free_commitments_by_source.setdefault(source_track, []).append(vehicle_no)
-    commitments_by_source: dict[str, list[str]] = {}
-    for source_track, strict_commitments in strict_commitments_by_source.items():
-        commitments_by_source[source_track] = strict_commitments
-    for source_track, free_commitments in free_commitments_by_source.items():
-        if source_track in commitments_by_source:
-            continue
-        commitments_by_source[source_track] = free_commitments
+    commitments_by_source = _work_position_commitments_by_source(
+        pending_vehicle_nos=pending_vehicle_nos,
+        target_track=target_track,
+        vehicle_by_no=vehicle_by_no,
+        track_by_vehicle=track_by_vehicle,
+    )
     for source_track, source_spotting in sorted(
         commitments_by_source.items(),
         key=lambda item: _first_source_index(
@@ -2676,6 +2692,32 @@ def _build_work_position_source_opening_candidate(
         if candidate is not None:
             return candidate
     return None
+
+
+def _work_position_commitments_by_source(
+    *,
+    pending_vehicle_nos: list[str],
+    target_track: str,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    track_by_vehicle: dict[str, str],
+) -> dict[str, list[str]]:
+    strict_commitments_by_source: dict[str, list[str]] = {}
+    free_commitments_by_source: dict[str, list[str]] = {}
+    for vehicle_no in pending_vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None or vehicle.goal.work_position_kind is None:
+            continue
+        source_track = track_by_vehicle.get(vehicle_no)
+        if source_track is None or source_track == target_track:
+            continue
+        if vehicle.goal.work_position_kind in STRICT_WORK_POSITION_KINDS:
+            strict_commitments_by_source.setdefault(source_track, []).append(vehicle_no)
+        elif vehicle.goal.work_position_kind == "FREE":
+            free_commitments_by_source.setdefault(source_track, []).append(vehicle_no)
+    commitments_by_source: dict[str, list[str]] = dict(strict_commitments_by_source)
+    for source_track, free_commitments in free_commitments_by_source.items():
+        commitments_by_source.setdefault(source_track, free_commitments)
+    return commitments_by_source
 
 
 def _build_source_opening_for_track(
@@ -2853,12 +2895,10 @@ def _build_source_opening_for_track(
     ):
         return None
     steps.extend(compiled.steps)
-    return MoveCandidate(
-        steps=tuple(steps),
-        kind="structural",
+    return _structural_candidate(
+        steps=steps,
         reason="work_position_source_opening",
         focus_tracks=(target_track,),
-        structural_reserve=True,
     )
 
 
@@ -2933,12 +2973,10 @@ def _build_work_position_free_fill_candidate(
         current_state = compiled.final_state
     if not steps:
         return None
-    return MoveCandidate(
-        steps=tuple(steps),
-        kind="structural",
+    return _structural_candidate(
+        steps=steps,
         reason="work_position_free_fill",
         focus_tracks=(target_track,),
-        structural_reserve=True,
     )
 
 
