@@ -15,10 +15,10 @@ def test_long_depot_random_vehicle_prefers_3_and_4_depots():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -40,14 +40,14 @@ def test_long_depot_random_vehicle_prefers_3_and_4_depots():
 
     moves = generate_goal_moves(normalized, state)
 
-    assert {move.target_track for move in moves} == {"修3库内", "修4库内"}
+    assert {move.target_track for move in moves} == {"修3", "修4"}
 
 
 def test_verifier_rejects_attach_to_wash_south_when_wash_north_is_blocked():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "洗北", "trackDistance": 71.6},
             {"trackName": "洗南", "trackDistance": 90.0},
             {"trackName": "存1", "trackDistance": 113.0},
@@ -76,7 +76,7 @@ def test_verifier_rejects_attach_to_wash_south_when_wash_north_is_blocked():
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临3",
+        "locoTrackName": "洗油北",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     initial = build_initial_state(normalized)
@@ -99,7 +99,7 @@ def test_verifier_rejects_attach_to_wash_south_when_wash_north_is_blocked():
                 "sourceTrack": "洗南",
                 "targetTrack": "存1",
                 "vehicleNos": ["WASH_TARGET"],
-                "pathTracks": ["洗南", "洗北", "临3", "机棚", "机北", "渡6", "存1"],
+                "pathTracks": ["洗南", "洗北", "洗油北", "机棚", "机北3", "渡6", "存1"],
             },
         ],
         initial_state_override=initial,
@@ -114,14 +114,14 @@ def test_verifier_rejects_attach_to_depot_inner_when_depot_outer_is_blocked():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临4", "trackDistance": 81.4},
+            {"trackName": "机南", "trackDistance": 81.4},
             {"trackName": "修3库外", "trackDistance": 80.0},
-            {"trackName": "修3库内", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
             {"trackName": "存1", "trackDistance": 113.0},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修3库内",
+                "trackName": "修3",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT_TARGET",
@@ -143,7 +143,7 @@ def test_verifier_rejects_attach_to_depot_inner_when_depot_outer_is_blocked():
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临4",
+        "locoTrackName": "机南",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     initial = build_initial_state(normalized)
@@ -155,18 +155,18 @@ def test_verifier_rejects_attach_to_depot_inner_when_depot_outer_is_blocked():
             {
                 "hookNo": 1,
                 "actionType": "ATTACH",
-                "sourceTrack": "修3库内",
-                "targetTrack": "修3库内",
+                "sourceTrack": "修3",
+                "targetTrack": "修3",
                 "vehicleNos": ["DEPOT_TARGET"],
-                "pathTracks": ["修3库内"],
+                "pathTracks": ["修3"],
             },
             {
                 "hookNo": 2,
                 "actionType": "DETACH",
-                "sourceTrack": "修3库内",
+                "sourceTrack": "修3",
                 "targetTrack": "存1",
                 "vehicleNos": ["DEPOT_TARGET"],
-                "pathTracks": ["修3库内", "修3库外", "渡13", "渡12", "联7", "渡10", "渡9", "预修", "渡7", "存1"],
+                "pathTracks": ["修3", "修3库外", "渡13", "渡12", "联7", "渡10", "渡9", "预修", "渡7", "存1"],
             },
         ],
         initial_state_override=initial,
@@ -181,7 +181,7 @@ def test_verifier_rejects_attach_when_any_intermediate_track_blocks_loco_access(
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临4", "trackDistance": 81.4},
+            {"trackName": "机南", "trackDistance": 81.4},
             {"trackName": "存4南", "trackDistance": 154.5},
             {"trackName": "存4北", "trackDistance": 317.8},
             {"trackName": "存1", "trackDistance": 113.0},
@@ -210,7 +210,7 @@ def test_verifier_rejects_attach_when_any_intermediate_track_blocks_loco_access(
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临4",
+        "locoTrackName": "机南",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     initial = build_initial_state(normalized)
@@ -233,7 +233,7 @@ def test_verifier_rejects_attach_when_any_intermediate_track_blocks_loco_access(
                 "sourceTrack": "存4北",
                 "targetTrack": "存1",
                 "vehicleNos": ["TARGET"],
-                "pathTracks": ["存4北", "渡1", "渡2", "临1", "存1"],
+                "pathTracks": ["存4北", "渡1", "渡2", "机北1", "存1"],
             },
         ],
         initial_state_override=initial,
@@ -420,12 +420,12 @@ def test_move_generator_skips_occupied_exact_depot_spot():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存5北", "trackDistance": 367},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SPOT_OCC",
@@ -461,14 +461,14 @@ def test_move_generator_respects_random_depot_spot_availability():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
             {"trackName": "存5北", "trackDistance": 367},
         ],
         "vehicleInfo": [
             *[
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": str(i),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"FULL{i}",
@@ -499,5 +499,5 @@ def test_move_generator_respects_random_depot_spot_availability():
 
     moves = generate_goal_moves(normalized, state, master=master)
 
-    assert "修1库内" not in {move.target_track for move in moves}
-    assert "修2库内" in {move.target_track for move in moves}
+    assert "修1" not in {move.target_track for move in moves}
+    assert "修2" in {move.target_track for move in moves}

@@ -20,7 +20,7 @@ def _base_payload():
             {"trackName": "存4北", "trackDistance": 317.8},
             {"trackName": "调棚", "trackDistance": 174.3},
             {"trackName": "洗南", "trackDistance": 88.7},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "修1库外", "trackDistance": 49.3},
         ],
         "vehicleInfo": [],
@@ -613,10 +613,10 @@ def test_inspection_promotes_plan_mode_and_random_depot_area():
     assert vehicle.goal.target_mode == "AREA"
     assert vehicle.goal.target_area_code == "大库:RANDOM"
     assert set(vehicle.goal.allowed_target_tracks) == {
-        "修1库内",
-        "修2库内",
-        "修3库内",
-        "修4库内",
+        "修1",
+        "修2",
+        "修3",
+        "修4",
     }
 
 
@@ -625,9 +625,9 @@ def test_random_depot_short_vehicle_prefers_inner_tracks_1_2_with_3_4_as_fallbac
     payload = _base_payload()
     payload["trackInfo"].extend(
         [
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ]
     )
     payload["vehicleInfo"] = [
@@ -648,8 +648,8 @@ def test_random_depot_short_vehicle_prefers_inner_tracks_1_2_with_3_4_as_fallbac
     vehicle = result.vehicles[0]
 
     assert vehicle.goal.target_area_code == "大库:RANDOM"
-    assert vehicle.goal.preferred_target_tracks == ["修1库内", "修2库内"]
-    assert vehicle.goal.fallback_target_tracks == ["修3库内", "修4库内"]
+    assert vehicle.goal.preferred_target_tracks == ["修1", "修2"]
+    assert vehicle.goal.fallback_target_tracks == ["修3", "修4"]
 
 
 def test_random_depot_long_vehicle_prefers_only_inner_tracks_3_4():
@@ -657,9 +657,9 @@ def test_random_depot_long_vehicle_prefers_only_inner_tracks_3_4():
     payload = _base_payload()
     payload["trackInfo"].extend(
         [
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ]
     )
     payload["vehicleInfo"] = [
@@ -680,17 +680,17 @@ def test_random_depot_long_vehicle_prefers_only_inner_tracks_3_4():
     vehicle = result.vehicles[0]
 
     assert vehicle.goal.target_area_code == "大库:RANDOM"
-    assert vehicle.goal.preferred_target_tracks == ["修3库内", "修4库内"]
+    assert vehicle.goal.preferred_target_tracks == ["修3", "修4"]
     assert vehicle.goal.fallback_target_tracks == []
 
 
 @pytest.mark.parametrize(
     ("target_track", "expected_track"),
     [
-        ("修1", "修1库内"),
-        ("修2", "修2库内"),
-        ("修3", "修3库内"),
-        ("修4", "修4库内"),
+        ("修1", "修1"),
+        ("修2", "修2"),
+        ("修3", "修3"),
+        ("修4", "修4"),
     ],
 )
 def test_short_repair_line_targets_stay_exact_inner_depot_goals(target_track, expected_track):
@@ -698,9 +698,9 @@ def test_short_repair_line_targets_stay_exact_inner_depot_goals(target_track, ex
     payload = _base_payload()
     payload["trackInfo"].extend(
         [
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ]
     )
     payload["vehicleInfo"] = [
@@ -746,7 +746,7 @@ def test_numeric_spotting_maps_to_spot_goal():
     result = normalize_plan_input(payload, master)
     vehicle = result.vehicles[0]
     assert vehicle.goal.target_mode == "SPOT"
-    assert vehicle.goal.target_track == "修1库内"
+    assert vehicle.goal.target_track == "修1"
     assert vehicle.goal.target_spot_code == "101"
 
 
@@ -771,8 +771,8 @@ def test_short_repair_line_target_accepts_matching_numeric_spotting():
     vehicle = result.vehicles[0]
 
     assert vehicle.goal.target_mode == "SPOT"
-    assert vehicle.goal.target_track == "修1库内"
-    assert vehicle.goal.allowed_target_tracks == ["修1库内"]
+    assert vehicle.goal.target_track == "修1"
+    assert vehicle.goal.allowed_target_tracks == ["修1"]
     assert vehicle.goal.target_spot_code == "104"
 
 
@@ -869,9 +869,9 @@ def test_mixed_mode_allows_inspection_with_normal_depot_spot():
     payload = _base_payload()
     payload["trackInfo"].extend(
         [
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ]
     )
     payload["vehicleInfo"] = [

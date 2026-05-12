@@ -4,19 +4,19 @@ from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehi
 
 
 DEPOT_TRACK_SPOTS: dict[str, dict[str, list[str]]] = {
-    "修1库内": {
+    "修1": {
         "NORMAL": [f"10{i}" for i in range(1, 6)],
         "INSPECTION": [f"10{i}" for i in range(1, 8)],
     },
-    "修2库内": {
+    "修2": {
         "NORMAL": [f"20{i}" for i in range(1, 6)],
         "INSPECTION": [f"20{i}" for i in range(1, 8)],
     },
-    "修3库内": {
+    "修3": {
         "NORMAL": [f"30{i}" for i in range(1, 6)],
         "INSPECTION": [f"30{i}" for i in range(1, 8)],
     },
-    "修4库内": {
+    "修4": {
         "NORMAL": [f"40{i}" for i in range(1, 6)],
         "INSPECTION": [f"40{i}" for i in range(1, 8)],
     },
@@ -26,7 +26,7 @@ SPECIAL_FIXED_SPOTS: dict[str, list[str]] = {
     "机库:WEIGH": ["机库:WEIGH"],
 }
 
-LONG_DEPOT_TRACKS = {"修3库内", "修4库内"}
+LONG_DEPOT_TRACKS = {"修3", "修4"}
 
 
 def is_depot_inner_track(track_code: str) -> bool:

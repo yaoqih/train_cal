@@ -19,7 +19,7 @@ def test_route_oracle_expands_full_track_path_for_jiku_route():
 
     path_tracks = oracle.resolve_path_tracks("存5北", "机库")
 
-    assert path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert path_tracks == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
 
     result = oracle.validate_path(
         source_track="存5北",
@@ -505,9 +505,9 @@ def test_route_oracle_rejects_leaving_single_access_track_when_loco_is_behind_pa
         occupied_track_sequences={
             "存5南": ["PARKED"],
             "渡9": ["BLOCK-SOUTH"],
-            "临4": ["BLOCK-SOUTH"],
+            "机南": ["BLOCK-SOUTH"],
             "机棚": ["BLOCK-SOUTH"],
-            "机北": ["BLOCK-SOUTH"],
+            "机北3": ["BLOCK-SOUTH"],
             "渡5": ["BLOCK-SOUTH"],
             "渡4": ["BLOCK-SOUTH"],
             "调北": ["BLOCK-SOUTH"],
@@ -544,9 +544,9 @@ def test_route_oracle_rejects_access_when_all_clear_paths_have_occupied_intermed
         target_track="调棚",
         occupied_track_sequences={
             "存5南": ["PARKED"],
-            "临4": ["BLOCK-L14"],
+            "机南": ["BLOCK-L14"],
             "机棚": ["BLOCK-Z1-L8"],
-            "机北": ["BLOCK-Z1"],
+            "机北3": ["BLOCK-Z1"],
             "调北": ["BLOCK-L7"],
         },
         loco_node=oracle.order_end_node("存5南"),
@@ -637,7 +637,7 @@ def test_route_oracle_returns_route_metrics():
     result = oracle.validate_path(
         source_track="存5北",
         target_track="机库",
-        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         train_length_m=50,
     )
 
@@ -665,7 +665,7 @@ def test_route_oracle_caches_path_tracks_by_track_pair():
     first = oracle.resolve_path_tracks("存5北", "机库")
     second = oracle.resolve_path_tracks("存5北", "机库")
 
-    assert first == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert first == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
     assert second == first
     assert oracle._path_track_cache[("存5北", "机库")] == tuple(first)
 
@@ -673,7 +673,7 @@ def test_route_oracle_caches_path_tracks_by_track_pair():
 def test_route_oracle_caches_clear_path_by_occupied_tracks(monkeypatch):
     master = load_master_data(DATA_DIR)
     oracle = RouteOracle(master)
-    occupied = {"临1": ["BLOCK"]}
+    occupied = {"机北1": ["BLOCK"]}
     calls = 0
     original = oracle._blocking_tracks_for_path
 
@@ -693,7 +693,7 @@ def test_route_oracle_caches_clear_path_by_occupied_tracks(monkeypatch):
     second = oracle.resolve_clear_path_tracks(
         "存5北",
         "机库",
-        occupied_track_sequences={"临1": ["OTHER"]},
+        occupied_track_sequences={"机北1": ["OTHER"]},
     )
 
     assert first == second
@@ -704,7 +704,7 @@ def test_route_oracle_caches_clear_path_by_occupied_tracks(monkeypatch):
 def test_route_oracle_caches_endpoint_constrained_path_by_occupied_tracks(monkeypatch):
     master = load_master_data(DATA_DIR)
     oracle = RouteOracle(master)
-    occupied = {"临1": ["BLOCK"]}
+    occupied = {"机北1": ["BLOCK"]}
     calls = 0
     original = oracle._path_endpoint_blockers
 
@@ -725,7 +725,7 @@ def test_route_oracle_caches_endpoint_constrained_path_by_occupied_tracks(monkey
     second = oracle.resolve_path_tracks_for_endpoint_constraints(
         "存5北",
         "机库",
-        occupied_track_sequences={"临1": ["OTHER"]},
+        occupied_track_sequences={"机北1": ["OTHER"]},
         target_node=oracle.order_end_node("机库"),
     )
 
@@ -966,7 +966,7 @@ def test_route_oracle_reports_interior_reverse_branch_from_track_metadata():
 
     path_tracks = oracle.resolve_path_tracks("调棚", "轮")
 
-    assert path_tracks == ["调棚", "调北", "渡4", "渡5", "机北", "机棚", "临4", "渡10", "联7", "渡11", "轮"]
+    assert path_tracks == ["调棚", "调北", "渡4", "渡5", "机北3", "机棚", "机南", "渡10", "联7", "渡11", "轮"]
 
     result = oracle.validate_path(
         source_track="调棚",
@@ -986,7 +986,7 @@ def test_route_oracle_reports_interior_reverse_branch_for_multiple_real_paths():
     cases = [
         (
             "调棚",
-            "修1库内",
+            "修1",
             ["L7-调梁尽头", "Z1-L8", "L19-修1尽头"],
             True,
         ),

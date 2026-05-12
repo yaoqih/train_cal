@@ -29,7 +29,7 @@ SEEDS = list(range(15))  # 15 random scenarios per test — small enough for CI
 
 # Tracks we allow in random yards — all have explicit capacity and are
 # reachable by the master-data routing tables.
-SAFE_TRACKS = ["存5北", "存4北", "机库", "临1", "临2", "临3", "存4南"]
+SAFE_TRACKS = ["存5北", "存4北", "机库", "机北1", "机北2", "洗油北", "存4南"]
 # Tracks legal as final destinations (allows_final_destination=True).
 FINAL_DEST_TRACKS = {"存5北", "存4北", "机库"}
 # Capacity lookup by name (matches master_data).
@@ -38,9 +38,9 @@ TRACK_CAPACITY = {
     "存4北": 317.8,
     "存4南": 154.5,
     "机库": 71.6,
-    "临1": 81.4,
-    "临2": 55.7,
-    "临3": 62.9,
+    "机北1": 81.4,
+    "机北2": 55.7,
+    "洗油北": 62.9,
 }
 
 

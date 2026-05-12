@@ -1,11 +1,11 @@
 [
   {"code":"机库:WEIGH","track_code":"机库","category":"WEIGH","capacity":1},
-  {"code":"修1库内:101-105","track_code":"修1库内","category":"SPOT_GROUP","capacity":5},
-  {"code":"修1库内:101-107","track_code":"修1库内","category":"INSPECTION_SPOT_GROUP","capacity":7},
-  {"code":"修2库内:201-205","track_code":"修2库内","category":"SPOT_GROUP","capacity":5},
-  {"code":"修2库内:201-207","track_code":"修2库内","category":"INSPECTION_SPOT_GROUP","capacity":7},
-  {"code":"修3库内:301-305","track_code":"修3库内","category":"SPOT_GROUP","capacity":5},
-  {"code":"修3库内:301-307","track_code":"修3库内","category":"INSPECTION_SPOT_GROUP","capacity":7},
-  {"code":"修4库内:401-405","track_code":"修4库内","category":"SPOT_GROUP","capacity":5},
-  {"code":"修4库内:401-407","track_code":"修4库内","category":"INSPECTION_SPOT_GROUP","capacity":7}
+  {"code":"修1:101-105","track_code":"修1","category":"SPOT_GROUP","capacity":5},
+  {"code":"修1:101-107","track_code":"修1","category":"INSPECTION_SPOT_GROUP","capacity":7},
+  {"code":"修2:201-205","track_code":"修2","category":"SPOT_GROUP","capacity":5},
+  {"code":"修2:201-207","track_code":"修2","category":"INSPECTION_SPOT_GROUP","capacity":7},
+  {"code":"修3:301-305","track_code":"修3","category":"SPOT_GROUP","capacity":5},
+  {"code":"修3:301-307","track_code":"修3","category":"INSPECTION_SPOT_GROUP","capacity":7},
+  {"code":"修4:401-405","track_code":"修4","category":"SPOT_GROUP","capacity":5},
+  {"code":"修4:401-407","track_code":"修4","category":"INSPECTION_SPOT_GROUP","capacity":7}
 ]

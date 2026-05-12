@@ -47,8 +47,8 @@ ONLINE_WORKBOOK_WITH_RESIDUAL_SHEET = ONLINE_PLAN_ROOT / "调车计划编制_202
 def test_map_excel_track_name_maps_known_aliases():
     assert map_excel_track_name("存5北") == "存5北"
     assert map_excel_track_name("存4") == "存4北"
-    assert map_excel_track_name("修1") == "修1库内"
-    assert map_excel_track_name("修4") == "修4库内"
+    assert map_excel_track_name("修1") == "修1"
+    assert map_excel_track_name("修4") == "修4"
     assert map_excel_track_name("存5线北") == "存5北"
     assert map_excel_track_name("老预修") == "预修"
     assert map_excel_track_name("调梁库内") == "调棚"
@@ -59,7 +59,7 @@ def test_map_excel_track_name_maps_known_aliases():
     assert map_excel_track_name("喷漆库") == "油"
     assert map_excel_track_name("喷漆线") == "油"
     assert map_excel_track_name("存4线") == "存4北"
-    assert map_excel_track_name("机走北") == "机北"
+    assert map_excel_track_name("机走北") == "机北3"
     assert map_excel_track_name("机走南") == "机棚"
     assert map_excel_track_name("洗罐线北") == "洗北"
     assert map_excel_track_name("洗罐线南") == "洗南"
@@ -317,7 +317,7 @@ def test_build_shared_vehicle_scenario_uses_snapshot_depot_target_for_inner_depo
         ExcelVehicleRow("存5线北", 1, "C70E", "A1", "段", ""),
     ]
     end_rows = [
-        ExcelVehicleRow("修2库内", 201, "C70E", "A1", "段", ""),
+        ExcelVehicleRow("修2", 201, "C70E", "A1", "段", ""),
     ]
 
     scenario, _summary = build_shared_vehicle_scenario(

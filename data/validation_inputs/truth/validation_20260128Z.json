@@ -1,23 +1,23 @@
 {
   "trackInfo": [
     {
-      "trackName": "临1",
+      "trackName": "机北1",
       "trackDistance": 81.4
     },
     {
-      "trackName": "临2",
+      "trackName": "机北2",
       "trackDistance": 55.7
     },
     {
-      "trackName": "临3",
+      "trackName": "洗油北",
       "trackDistance": 62.9
     },
     {
-      "trackName": "临4",
+      "trackName": "机南",
       "trackDistance": 90.1
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "trackDistance": 151.7
     },
     {
@@ -25,7 +25,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "trackDistance": 151.7
     },
     {
@@ -33,7 +33,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "trackDistance": 151.7
     },
     {
@@ -41,7 +41,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "trackDistance": 151.7
     },
     {
@@ -81,7 +81,7 @@
       "trackDistance": 131.8
     },
     {
-      "trackName": "机北",
+      "trackName": "机北3",
       "trackDistance": 69.1
     },
     {
@@ -223,7 +223,7 @@
       "targetAreaCode": "大库:RANDOM"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "301",
       "vehicleModel": "C70",
       "vehicleNo": "1577173",
@@ -261,7 +261,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "302",
       "vehicleModel": "C70E",
       "vehicleNo": "1673570",
@@ -381,7 +381,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "202",
       "vehicleModel": "C70E",
       "vehicleNo": "1676577",
@@ -395,7 +395,7 @@
       "targetAreaCode": "大库:RANDOM"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "401",
       "vehicleModel": "C70E",
       "vehicleNo": "1717369",
@@ -407,7 +407,7 @@
       "vehicleAttributes": ""
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "402",
       "vehicleModel": "C70E",
       "vehicleNo": "1720824",
@@ -459,7 +459,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "404",
       "vehicleModel": "P64AK",
       "vehicleNo": "3423182",
@@ -484,7 +484,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "201",
       "vehicleModel": "P64GK",
       "vehicleNo": "3470461",
@@ -511,7 +511,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "403",
       "vehicleModel": "P64AK",
       "vehicleNo": "3500812",
@@ -562,7 +562,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "405",
       "vehicleModel": "P70",
       "vehicleNo": "3826596",
@@ -716,7 +716,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "303",
       "vehicleModel": "X70",
       "vehicleNo": "5231276",
@@ -807,7 +807,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "104",
       "vehicleModel": "X70",
       "vehicleNo": "5247067",
@@ -821,7 +821,7 @@
       "targetAreaCode": "大库:RANDOM"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "205",
       "vehicleModel": "X70",
       "vehicleNo": "5247333",
@@ -941,7 +941,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "105",
       "vehicleModel": "X70",
       "vehicleNo": "5315374",
@@ -968,7 +968,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "204",
       "vehicleModel": "X70",
       "vehicleNo": "5316402",
@@ -1087,7 +1087,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "305",
       "vehicleModel": "X70",
       "vehicleNo": "5344745",
@@ -1125,7 +1125,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "304",
       "vehicleModel": "X70",
       "vehicleNo": "5347371",
@@ -1178,7 +1178,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "203",
       "vehicleModel": "X70",
       "vehicleNo": "5349945",
@@ -1258,7 +1258,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "103",
       "vehicleModel": "NX70AF",
       "vehicleNo": "5489810",
@@ -1296,7 +1296,7 @@
       "targetSource": "END_SNAPSHOT"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "102",
       "vehicleModel": "NX70AF",
       "vehicleNo": "5743640",
@@ -1308,7 +1308,7 @@
       "vehicleAttributes": ""
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "101",
       "vehicleModel": "NX70AF",
       "vehicleNo": "5744046",

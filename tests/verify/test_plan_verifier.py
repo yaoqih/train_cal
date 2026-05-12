@@ -111,7 +111,7 @@ def test_plan_verifier_accepts_valid_direct_move():
             source_track="存5北",
             target_track="机库",
             vehicle_nos=["H1"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         ),
     )
 
@@ -146,7 +146,7 @@ def test_plan_verifier_rejects_non_sequential_hook_numbers():
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["HOOK_GAP"],
-        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
     )
     hook_plan[1]["hookNo"] = 3
 
@@ -227,7 +227,7 @@ def test_plan_verifier_reports_work_position_rank_mismatch():
             source_track="存5北",
             target_track="调棚",
             vehicle_nos=["HW1"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "调北", "调棚"],
         ),
     )
 
@@ -288,7 +288,7 @@ def test_plan_verifier_reports_duplicate_explicit_work_slot():
             "sourceTrack": "存5北",
             "targetTrack": "洗南",
             "vehicleNos": ["SLOT_A", "SLOT_B"],
-            "pathTracks": ["存5北", "存5南", "渡8", "渡9", "临4", "临3", "洗北", "洗南"],
+            "pathTracks": ["存5北", "存5南", "渡8", "渡9", "机南", "洗油北", "洗北", "洗南"],
         },
     ]
 
@@ -303,7 +303,7 @@ def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -338,10 +338,10 @@ def test_plan_verifier_rejects_detach_source_that_does_not_match_loco_track():
             {
                 "hookNo": 2,
                 "actionType": "DETACH",
-                "sourceTrack": "临1",
+                "sourceTrack": "机北1",
                 "targetTrack": "机库",
                 "vehicleNos": ["HV_SRC"],
-                "pathTracks": ["临1", "临2", "渡4", "机库"],
+                "pathTracks": ["机北1", "机北2", "渡4", "机库"],
             },
         ],
     )
@@ -392,7 +392,7 @@ def test_plan_verifier_warns_capacity_overflow_without_rejecting_plan():
             source_track="存5北",
             target_track="机库",
             vehicle_nos=["H3"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         ),
     )
 
@@ -434,7 +434,7 @@ def test_plan_verifier_rejects_close_door_front_position_non_cun4bei_when_gt10()
             source_track="存5北",
             target_track="机库",
             vehicle_nos=vehicle_nos,
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         ),
     )
 
@@ -593,7 +593,7 @@ def test_plan_verifier_rejects_cun4nan_staging_when_source_remainder_blocks_rout
                 "sourceTrack": "存5北",
                 "targetTrack": "机库",
                 "vehicleNos": ["H7B"],
-                "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+                "pathTracks": ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
             },
             {
                 "hookNo": 5,
@@ -826,7 +826,7 @@ def test_plan_verifier_rejects_more_than_one_weigh_vehicle_per_hook():
             source_track="存5北",
             target_track="机库",
             vehicle_nos=["H8_1", "H8_2"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         ),
     )
 
@@ -838,12 +838,12 @@ def test_plan_verifier_rejects_occupied_exact_depot_spot():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存5北", "trackDistance": 367},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "H9_OCC",
@@ -874,9 +874,9 @@ def test_plan_verifier_rejects_occupied_exact_depot_spot():
         normalized,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修1库内",
+            target_track="修1",
             vehicle_nos=["H9_NEW"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         ),
     )
 
@@ -890,7 +890,7 @@ def test_plan_verifier_returns_hook_level_diagnostics():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存5南", "trackDistance": 156},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -925,9 +925,9 @@ def test_plan_verifier_returns_hook_level_diagnostics():
         normalized,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修1库内",
+            target_track="修1",
             vehicle_nos=["H10"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         ),
     )
 
@@ -946,10 +946,10 @@ def test_plan_verifier_rejects_short_random_depot_vehicle_on_3_4_when_1_2_still_
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -973,9 +973,9 @@ def test_plan_verifier_rejects_short_random_depot_vehicle_on_3_4_when_1_2_still_
         normalized,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修3库内",
+            target_track="修3",
             vehicle_nos=["VSHORT34"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修3库外", "修3库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修3库外", "修3"],
         ),
     )
 
@@ -1021,10 +1021,10 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -1040,13 +1040,13 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
             },
             *[
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": str(idx),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"F1_{idx}",
                     "repairProcess": "厂修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修1库内",
+                    "targetTrack": "修1",
                     "isSpotting": f"10{idx}",
                     "vehicleAttributes": "",
                 }
@@ -1054,13 +1054,13 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
             ],
             *[
                 {
-                    "trackName": "修2库内",
+                    "trackName": "修2",
                     "order": str(idx),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"F2_{idx}",
                     "repairProcess": "厂修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修2库内",
+                    "targetTrack": "修2",
                     "isSpotting": f"20{idx}",
                     "vehicleAttributes": "",
                 }
@@ -1076,9 +1076,9 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
         normalized,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修3库内",
+            target_track="修3",
             vehicle_nos=["VSHORTFB"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修3库外", "修3库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修3库外", "修3"],
         ),
     )
 
@@ -1091,7 +1091,7 @@ def test_plan_verifier_accepts_close_door_vehicle_reaching_fourth_position_on_cu
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存4北", "trackDistance": 317.8},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
         ],
         "vehicleInfo": [
             {
@@ -1159,17 +1159,17 @@ def test_plan_verifier_accepts_close_door_vehicle_reaching_fourth_position_on_cu
                 "hookNo": 2,
                 "actionType": "DETACH",
                 "sourceTrack": "存5北",
-                "targetTrack": "临1",
+                "targetTrack": "机北1",
                 "vehicleNos": ["EN322"],
-                "pathTracks": ["存5北", "渡1", "渡2", "临1"],
+                "pathTracks": ["存5北", "渡1", "渡2", "机北1"],
             },
             {
                 "hookNo": 3,
                 "actionType": "DETACH",
-                "sourceTrack": "临1",
+                "sourceTrack": "机北1",
                 "targetTrack": "存4北",
                 "vehicleNos": ["CDN303"],
-                "pathTracks": ["临1", "渡2", "渡1", "存4北"],
+                "pathTracks": ["机北1", "渡2", "渡1", "存4北"],
             },
             {
                 "hookNo": 4,
@@ -1182,18 +1182,18 @@ def test_plan_verifier_accepts_close_door_vehicle_reaching_fourth_position_on_cu
             {
                 "hookNo": 5,
                 "actionType": "ATTACH",
-                "sourceTrack": "临1",
-                "targetTrack": "临1",
+                "sourceTrack": "机北1",
+                "targetTrack": "机北1",
                 "vehicleNos": ["EN322"],
-                "pathTracks": ["临1"],
+                "pathTracks": ["机北1"],
             },
             {
                 "hookNo": 6,
                 "actionType": "DETACH",
-                "sourceTrack": "临1",
+                "sourceTrack": "机北1",
                 "targetTrack": "存4北",
                 "vehicleNos": ["EN322"],
-                "pathTracks": ["临1", "渡2", "渡1", "存4北"],
+                "pathTracks": ["机北1", "渡2", "渡1", "存4北"],
             },
         ],
     )

@@ -2,14 +2,14 @@
   {
     "branch_code": "大门L1",
     "display_name": "联6",
-    "aggregate_physical_distance_m": 190.0,
+    "aggregate_physical_distance_m": 68.0,
     "status": "已确认",
-    "left_node": "大门",
+    "left_node": "5号门",
     "right_node": "L1",
     "segments": [
       {
         "track_code": "联6",
-        "physical_distance_m": 190.0
+        "physical_distance_m": 68.0
       }
     ]
   },
@@ -117,28 +117,28 @@
   },
   {
     "branch_code": "L3-L5",
-    "display_name": "临1",
+    "display_name": "机北1",
     "aggregate_physical_distance_m": 131.4,
     "status": "已确认",
     "left_node": "L3",
     "right_node": "L5",
     "segments": [
       {
-        "track_code": "临1",
+        "track_code": "机北1",
         "physical_distance_m": 131.4
       }
     ]
   },
   {
     "branch_code": "L5-L6",
-    "display_name": "临2",
+    "display_name": "机北2",
     "aggregate_physical_distance_m": 105.7,
     "status": "已确认",
     "left_node": "L5",
     "right_node": "L6",
     "segments": [
       {
-        "track_code": "临2",
+        "track_code": "机北2",
         "physical_distance_m": 105.7
       }
     ]
@@ -247,14 +247,14 @@
   },
   {
     "branch_code": "Z1-L8",
-    "display_name": "机北+机棚",
+    "display_name": "机北3+机棚",
     "aggregate_physical_distance_m": 229.2,
     "status": "已确认",
     "left_node": "Z1",
     "right_node": "L8",
     "segments": [
       {
-        "track_code": "机北",
+        "track_code": "机北3",
         "physical_distance_m": 122.4
       },
       {
@@ -293,28 +293,28 @@
   },
   {
     "branch_code": "L8-L9",
-    "display_name": "临3",
+    "display_name": "洗油北",
     "aggregate_physical_distance_m": 111.9,
     "status": "已确认",
     "left_node": "L8",
     "right_node": "L9",
     "segments": [
       {
-        "track_code": "临3",
+        "track_code": "洗油北",
         "physical_distance_m": 111.9
       }
     ]
   },
   {
     "branch_code": "L8-L11(L14)",
-    "display_name": "临4",
+    "display_name": "机南",
     "aggregate_physical_distance_m": 187.7,
     "status": "已确认",
     "left_node": "L8",
     "right_node": "L14",
     "segments": [
       {
-        "track_code": "临4",
+        "track_code": "机南",
         "physical_distance_m": 187.7
       }
     ]
@@ -465,7 +465,7 @@
   },
   {
     "branch_code": "L18-修4尽头",
-    "display_name": "修4库外+修4库内",
+    "display_name": "修4库外+修4",
     "aggregate_physical_distance_m": 289.2,
     "status": "已确认",
     "left_node": "L18",
@@ -476,14 +476,14 @@
         "physical_distance_m": 137.5
       },
       {
-        "track_code": "修4库内",
+        "track_code": "修4",
         "physical_distance_m": 151.7
       }
     ]
   },
   {
     "branch_code": "L18-修3尽头",
-    "display_name": "修3库外+修3库内",
+    "display_name": "修3库外+修3",
     "aggregate_physical_distance_m": 289.8,
     "status": "已确认",
     "left_node": "L18",
@@ -494,14 +494,14 @@
         "physical_distance_m": 138.1
       },
       {
-        "track_code": "修3库内",
+        "track_code": "修3",
         "physical_distance_m": 151.7
       }
     ]
   },
   {
     "branch_code": "L17-修2尽头",
-    "display_name": "修2库外+修2库内",
+    "display_name": "修2库外+修2",
     "aggregate_physical_distance_m": 346.7,
     "status": "已确认",
     "left_node": "L17",
@@ -512,14 +512,14 @@
         "physical_distance_m": 195.0
       },
       {
-        "track_code": "修2库内",
+        "track_code": "修2",
         "physical_distance_m": 151.7
       }
     ]
   },
   {
     "branch_code": "L19-修1尽头",
-    "display_name": "修1库外+修1库内",
+    "display_name": "修1库外+修1",
     "aggregate_physical_distance_m": 318.9,
     "status": "已确认",
     "left_node": "L19",
@@ -530,7 +530,7 @@
         "physical_distance_m": 167.2
       },
       {
-        "track_code": "修1库内",
+        "track_code": "修1",
         "physical_distance_m": 151.7
       }
     ]

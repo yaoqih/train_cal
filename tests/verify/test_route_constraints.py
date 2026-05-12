@@ -262,7 +262,7 @@ def test_verifier_accepts_oil_and_shot_physical_route_branch_when_missing_segmen
             source_track="机库",
             target_track="油",
             vehicle_nos=["P3O"],
-            detach_path_tracks=["机库", "渡4", "渡5", "机北", "机棚", "临3", "油"],
+            detach_path_tracks=["机库", "渡4", "渡5", "机北3", "机棚", "洗油北", "油"],
         ),
     )
 
@@ -319,7 +319,7 @@ def test_verifier_rejects_interference_when_intermediate_track_is_occupied():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存5南", "trackDistance": 156},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -357,7 +357,7 @@ def test_verifier_rejects_interference_when_intermediate_track_is_occupied():
             _native_detach(
                 hook_no=2,
                 source_track="存5北",
-                target_track="修1库内",
+                target_track="修1",
                 vehicle_nos=["P5"],
                 path_tracks=[
                     "存5北",
@@ -368,7 +368,7 @@ def test_verifier_rejects_interference_when_intermediate_track_is_occupied():
                     "联7",
                     "渡11",
                     "修1库外",
-                    "修1库内",
+                    "修1",
                 ],
             ),
         ],
@@ -385,9 +385,9 @@ def test_verifier_rejects_attach_after_detach_leaves_loco_behind_source_track_ca
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存5南", "trackDistance": 156},
-            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "机南", "trackDistance": 90.1},
             {"trackName": "机棚", "trackDistance": 105.8},
-            {"trackName": "机北", "trackDistance": 69.1},
+            {"trackName": "机北3", "trackDistance": 69.1},
             {"trackName": "调北", "trackDistance": 70.1},
             {"trackName": "调棚", "trackDistance": 174.3},
         ],
@@ -427,7 +427,7 @@ def test_verifier_rejects_attach_after_detach_leaves_loco_behind_source_track_ca
                     "vehicleAttributes": "",
                 }
                 for idx, track in enumerate(
-                    ["存5北", "临4", "机棚", "机北", "调北"],
+                    ["存5北", "机南", "机棚", "机北3", "调北"],
                     start=1,
                 )
             ],

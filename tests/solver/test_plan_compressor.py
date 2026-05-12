@@ -40,7 +40,7 @@ def _three_vehicle_payload() -> dict:
             {"trackName": "存1", "trackDistance": 113},
             {"trackName": "存2", "trackDistance": 85},
             {"trackName": "存3", "trackDistance": 85},
-            {"trackName": "临1", "trackDistance": 89},
+            {"trackName": "机北1", "trackDistance": 89},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -76,7 +76,7 @@ def _split_source_payload() -> dict:
             {"trackName": "存1", "trackDistance": 113},
             {"trackName": "存2", "trackDistance": 113},
             {"trackName": "存3", "trackDistance": 113},
-            {"trackName": "临1", "trackDistance": 113},
+            {"trackName": "机北1", "trackDistance": 113},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -115,7 +115,7 @@ def _nine_vehicle_payload() -> dict:
             {"trackName": "存1", "trackDistance": 160},
             {"trackName": "存2", "trackDistance": 160},
             {"trackName": "存3", "trackDistance": 160},
-            {"trackName": "临1", "trackDistance": 160},
+            {"trackName": "机北1", "trackDistance": 160},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -152,7 +152,7 @@ def _many_rebuild_vehicle_payload(group_count: int) -> dict:
             {"trackName": "存1", "trackDistance": 600},
             {"trackName": "存2", "trackDistance": 600},
             {"trackName": "存3", "trackDistance": 600},
-            {"trackName": "临1", "trackDistance": 600},
+            {"trackName": "机北1", "trackDistance": 600},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -251,13 +251,13 @@ def _same_target_order_free_payload() -> dict:
 def _depot_area_equivalent_payload() -> dict:
     return {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 89.4},
-            {"trackName": "修2库内", "trackDistance": 91.1},
+            {"trackName": "修1", "trackDistance": 89.4},
+            {"trackName": "修2", "trackDistance": 91.1},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "A",
@@ -363,17 +363,17 @@ def test_compressor_removes_goal_equivalent_window_when_verifier_accepts_candida
     initial = build_initial_state(normalized)
     plan = [
         HookAction(
-            source_track="修1库内",
-            target_track="修1库内",
+            source_track="修1",
+            target_track="修1",
             vehicle_nos=["A"],
-            path_tracks=["修1库内"],
+            path_tracks=["修1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="修1库内",
-            target_track="修2库内",
+            source_track="修1",
+            target_track="修2",
             vehicle_nos=["A"],
-            path_tracks=["修1库内", "修1库外", "渡11", "渡12", "修2库外", "修2库内"],
+            path_tracks=["修1", "修1库外", "渡11", "渡12", "修2库外", "修2"],
             action_type="DETACH",
         ),
     ]
@@ -438,7 +438,7 @@ def test_compressor_rejects_window_that_changes_final_state():
             source_track="存1",
             target_track="存4北",
             vehicle_nos=["A"],
-            path_tracks=["存1", "临1", "渡2", "渡1", "存4北"],
+            path_tracks=["存1", "机北1", "渡2", "渡1", "存4北"],
             action_type="DETACH",
         ),
     ]
@@ -463,23 +463,23 @@ def test_compressor_rebuilds_single_source_window_to_final_prefixes():
         ),
         HookAction(
             source_track="存1",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["A", "B", "C"],
-            path_tracks=["存1", "临1"],
+            path_tracks=["存1", "机北1"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["A", "B", "C"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="存3",
             vehicle_nos=["B", "C"],
-            path_tracks=["临1", "渡3", "存3"],
+            path_tracks=["机北1", "渡3", "存3"],
             action_type="DETACH",
         ),
         HookAction(
@@ -573,9 +573,9 @@ def test_compressor_rebuilds_split_same_source_prefix_window():
         ),
         HookAction(
             source_track="存1",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["A", "B"],
-            path_tracks=["存1", "临1"],
+            path_tracks=["存1", "机北1"],
             action_type="DETACH",
         ),
         HookAction(
@@ -589,21 +589,21 @@ def test_compressor_rebuilds_split_same_source_prefix_window():
             source_track="存1",
             target_track="存3",
             vehicle_nos=["C", "D"],
-            path_tracks=["存1", "临1", "渡3", "存3"],
+            path_tracks=["存1", "机北1", "渡3", "存3"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["A", "B"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="存2",
             vehicle_nos=["A", "B"],
-            path_tracks=["临1", "渡3", "存2"],
+            path_tracks=["机北1", "渡3", "存2"],
             action_type="DETACH",
         ),
     ]
@@ -630,7 +630,7 @@ def test_compressor_rebuilds_wider_single_source_window_with_interleaved_detour(
             {"trackName": "存3", "trackDistance": 160},
             {"trackName": "存4北", "trackDistance": 317.8},
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临1", "trackDistance": 160},
+            {"trackName": "机北1", "trackDistance": 160},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -673,7 +673,7 @@ def test_compressor_rebuilds_wider_single_source_window_with_interleaved_detour(
             source_track="存1",
             target_track="存3",
             vehicle_nos=["A", "B"],
-            path_tracks=["存1", "临1", "渡3", "存3"],
+            path_tracks=["存1", "机北1", "渡3", "存3"],
             action_type="DETACH",
         ),
         HookAction(
@@ -685,23 +685,23 @@ def test_compressor_rebuilds_wider_single_source_window_with_interleaved_detour(
         ),
         HookAction(
             source_track="存5北",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["X"],
-            path_tracks=["存5北", "渡1", "渡2", "临1"],
+            path_tracks=["存5北", "渡1", "渡2", "机北1"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["X"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="存5北",
             vehicle_nos=["X"],
-            path_tracks=["临1", "渡2", "渡1", "存5北"],
+            path_tracks=["机北1", "渡2", "渡1", "存5北"],
             action_type="DETACH",
         ),
         HookAction(
@@ -729,7 +729,7 @@ def test_compressor_rebuilds_wider_single_source_window_with_interleaved_detour(
             source_track="存1",
             target_track="存4北",
             vehicle_nos=["D", "E"],
-            path_tracks=["存1", "临1", "渡2", "渡1", "存4北"],
+            path_tracks=["存1", "机北1", "渡2", "渡1", "存4北"],
             action_type="DETACH",
         ),
     ]
@@ -765,23 +765,23 @@ def test_compressor_continues_until_multiple_rebuild_windows_removed():
                 ),
                 HookAction(
                     source_track="存1",
-                    target_track="临1",
+                    target_track="机北1",
                     vehicle_nos=group,
-                    path_tracks=["存1", "临1"],
+                    path_tracks=["存1", "机北1"],
                     action_type="DETACH",
                 ),
                 HookAction(
-                    source_track="临1",
-                    target_track="临1",
+                    source_track="机北1",
+                    target_track="机北1",
                     vehicle_nos=group,
-                    path_tracks=["临1"],
+                    path_tracks=["机北1"],
                     action_type="ATTACH",
                 ),
                 HookAction(
-                    source_track="临1",
+                    source_track="机北1",
                     target_track="存3",
                     vehicle_nos=group[1:],
-                    path_tracks=["临1", "渡3", "存3"],
+                    path_tracks=["机北1", "渡3", "存3"],
                     action_type="DETACH",
                 ),
                 HookAction(
@@ -820,23 +820,23 @@ def test_compressor_convergence_limit_covers_many_rebuild_windows():
                 ),
                 HookAction(
                     source_track="存1",
-                    target_track="临1",
+                    target_track="机北1",
                     vehicle_nos=group,
-                    path_tracks=["存1", "临1"],
+                    path_tracks=["存1", "机北1"],
                     action_type="DETACH",
                 ),
                 HookAction(
-                    source_track="临1",
-                    target_track="临1",
+                    source_track="机北1",
+                    target_track="机北1",
                     vehicle_nos=group,
-                    path_tracks=["临1"],
+                    path_tracks=["机北1"],
                     action_type="ATTACH",
                 ),
                 HookAction(
-                    source_track="临1",
+                    source_track="机北1",
                     target_track="存3",
                     vehicle_nos=group[1:],
-                    path_tracks=["临1", "渡3", "存3"],
+                    path_tracks=["机北1", "渡3", "存3"],
                     action_type="DETACH",
                 ),
                 HookAction(
@@ -869,23 +869,23 @@ def test_compressor_rejects_source_discontinuous_candidate():
         ),
         HookAction(
             source_track="存1",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["A"],
-            path_tracks=["存1", "临1"],
+            path_tracks=["存1", "机北1"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["A"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="存2",
             vehicle_nos=["A"],
-            path_tracks=["临1", "渡3", "存2"],
+            path_tracks=["机北1", "渡3", "存2"],
             action_type="DETACH",
         ),
     ]
@@ -926,7 +926,7 @@ def test_compressor_merges_adjacent_attach_detach_pairs_when_final_order_is_pres
             source_track="存1",
             target_track="存3",
             vehicle_nos=["A"],
-            path_tracks=["存1", "临1", "渡3", "存3"],
+            path_tracks=["存1", "机北1", "渡3", "存3"],
             action_type="DETACH",
         ),
     ]
@@ -1059,7 +1059,7 @@ def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "洗北", "trackDistance": 71.6},
             {"trackName": "洗南", "trackDistance": 90.0},
             {"trackName": "存3", "trackDistance": 85},
@@ -1088,7 +1088,7 @@ def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临3",
+        "locoTrackName": "洗油北",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     initial = build_initial_state(normalized)
@@ -1104,7 +1104,7 @@ def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():
             source_track="洗北",
             target_track="存3",
             vehicle_nos=["B"],
-            path_tracks=["洗北", "临3", "机棚", "机北", "渡6", "渡7", "存3"],
+            path_tracks=["洗北", "洗油北", "机棚", "机北3", "渡6", "渡7", "存3"],
             action_type="DETACH",
         ),
         HookAction(
@@ -1118,7 +1118,7 @@ def test_compressor_rejects_adjacent_merge_when_reordered_access_is_blocked():
             source_track="洗南",
             target_track="存3",
             vehicle_nos=["A"],
-            path_tracks=["洗南", "洗北", "临3", "机棚", "机北", "渡6", "渡7", "存3"],
+            path_tracks=["洗南", "洗北", "洗油北", "机棚", "机北3", "渡6", "渡7", "存3"],
             action_type="DETACH",
         ),
     ]

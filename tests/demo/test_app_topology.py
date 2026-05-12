@@ -331,7 +331,7 @@ def test_format_pre_hook_loco_carry_text_uses_previous_step_carry():
             "sourceTrack": "存5北",
             "targetTrack": "机库",
             "vehicleNos": ["CARRY_SHOW_1"],
-            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            "pathTracks": ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         },
     ]
 
@@ -453,7 +453,7 @@ def test_build_workflow_transition_rows_summarizes_track_loco_and_spot_changes()
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "initialVehicleInfo": [
             {
@@ -498,8 +498,8 @@ def test_build_workflow_transition_rows_summarizes_track_loco_and_spot_changes()
         {
             "stageIndex": 2,
             "stageName": "depot_spot",
-            "locoTransition": "调棚 -> 修1库内",
-            "movedVehicles": "WFTRANS1(调棚->修1库内)",
+            "locoTransition": "调棚 -> 修1",
+            "movedVehicles": "WFTRANS1(调棚->修1)",
             "newWeighedVehicles": "无",
             "spotChanges": "WFTRANS1(无->101)",
         },
@@ -615,7 +615,7 @@ def test_build_comparison_panel_uses_demo_view_model_summary():
             "sourceTrack": "存5北",
             "targetTrack": "机库",
             "vehicleNos": ["APP_CMP_1"],
-            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            "pathTracks": ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         }
     ]
 

@@ -74,8 +74,8 @@ class ContinuousNetworkLayout(BaseModel):
 PRIMARY_CORRIDOR_TRACK_CODES = (
     "联6",
     "渡2",
-    "临1",
-    "临2",
+    "机北1",
+    "机北2",
     "渡5",
     "渡6",
     "渡7",
@@ -89,13 +89,13 @@ PRIMARY_CORRIDOR_TRACK_CODES = (
 
 ROUTE_LANE_SPACING = 28.0
 DIRECT_CONNECTOR_TRACK_CODES = {
-    "临2",
+    "机北2",
     "渡4",
     "渡5",
     "渡6",
     "渡7",
-    "临3",
-    "临4",
+    "洗油北",
+    "机南",
 }
 ROUTE_GRID_BASELINE_NODE_NAMES = (
     "L13",
@@ -134,19 +134,19 @@ TRACK_TEXT_LAYOUTS: dict[str, str] = {
     "存2": "above",
     "存1": "above",
     "预修": "above",
-    "机北": "above",
+    "机北3": "above",
     "机棚": "above",
     "渡7": "above",
     "渡6": "above",
     "渡5": "above",
-    "临2": "above",
-    "临1": "above",
+    "机北2": "above",
+    "机北1": "above",
     "调北": "below",
     "调棚": "below",
     "机库": "below",
     "渡4": "below",
-    "临3": "below",
-    "临4": "above",
+    "洗油北": "below",
+    "机南": "above",
     "油": "below",
     "洗北": "below",
     "洗南": "below",
@@ -162,9 +162,9 @@ TRACK_TEXT_ANCHOR_BIASES = {
     "渡6": 18.0,
     "渡4": -8.0,
     "渡5": 8.0,
-    "临2": 28.0,
+    "机北2": 28.0,
     "机棚": -10.0,
-    "机北": -20.0,
+    "机北3": -20.0,
     "调棚": -8.0,
     "调北": 10.0,
     "机库": -72.0,
@@ -176,10 +176,10 @@ TRACK_TEXT_ANCHOR_BIASES = {
     "轮": 72.0,
 }
 TRACK_TEXT_BASELINE_OVERRIDE_OFFSETS: dict[str, tuple[float, float]] = {
-    "临2": (-58.0, -36.0),
+    "机北2": (-58.0, -36.0),
     "渡6": (-58.0, -36.0),
     "渡5": (62.0, 84.0),
-    "临3": (14.0, 36.0),
+    "洗油北": (14.0, 36.0),
     "油": (4.0, 26.0),
 }
 NODE_X_ALIGNMENT_GROUPS = (
@@ -522,7 +522,7 @@ def _build_primary_corridor(
             if indegree[spec.end_node] == 0:
                 queue.append(spec.end_node)
 
-    anchor_node = "279" if "279" in node_names else topological_order[0]
+    anchor_node = "5号门" if "5号门" in node_names else topological_order[0]
     best_score = {node_name: float("-inf") for node_name in node_names}
     parent_node: dict[str, str] = {}
     best_score[anchor_node] = 0.0
@@ -690,28 +690,28 @@ def _track_alignment_band(track_code: str) -> float:
         "存5北": 3.0,
         "存5南": 3.0,
         "修4库外": 3.0,
-        "修4库内": 3.0,
+        "修4": 3.0,
         "存4北": 2.0,
         "存4南": 2.0,
         "存3": 2.0,
         "存2": 1.8,
         "修3库外": 2.0,
-        "修3库内": 2.0,
-        "机北": 1.2,
+        "修3": 2.0,
+        "机北3": 1.2,
         "机棚": 1.0,
         "预修": 0.8,
         "修2库外": 1.0,
-        "修2库内": 1.0,
+        "修2": 1.0,
         "渡4": -0.6,
         "调北": -1.0,
         "调棚": -1.2,
         "存1": -0.7,
         "修1库外": -0.2,
-        "修1库内": -0.2,
+        "修1": -0.2,
         "轮": -1.0,
         "抛": -0.8,
         "机库": -1.5,
-        "临3": -1.5,
+        "洗油北": -1.5,
         "油": -2.1,
         "洗北": -2.0,
         "洗南": -2.6,
@@ -939,7 +939,7 @@ def _fixed_track_lane_index(track_code: str) -> int | None:
         "存2": 5,
         "预修": 0,
         "存1": -2,
-        "机北": -4,
+        "机北3": -4,
         "机棚": -4,
         "调北": -6,
         "调棚": -6,
@@ -1171,7 +1171,7 @@ def _solve_node_x_coordinates(
         matrix_rows.append(row)
         target_values.append(spec.display_span_px)
 
-    anchor_node = "279" if "279" in node_index else node_names[0]
+    anchor_node = "5号门" if "5号门" in node_index else node_names[0]
     anchor_row = [0.0] * len(node_names)
     anchor_row[node_index[anchor_node]] = 1.0
     matrix_rows.append(anchor_row)

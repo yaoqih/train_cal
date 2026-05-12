@@ -66,7 +66,7 @@ from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
 
-STAGING_TRACKS = frozenset({"临1", "临2", "临3", "临4", "存4南"})
+STAGING_TRACKS = frozenset({"机北1", "机北2", "洗油北", "机南", "存4南"})
 _INVERSE_GUARD_WINDOW = 12
 
 # W3-N backtracking controls

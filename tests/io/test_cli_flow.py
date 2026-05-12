@@ -436,7 +436,7 @@ def test_verify_cli_returns_hook_reports(tmp_path: Path):
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": 367},
                     {"trackName": "存5南", "trackDistance": 156},
-                    {"trackName": "修1库内", "trackDistance": 151.7},
+                    {"trackName": "修1", "trackDistance": 151.7},
                 ],
                 "vehicleInfo": [
                     {
@@ -472,9 +472,9 @@ def test_verify_cli_returns_hook_reports(tmp_path: Path):
         json.dumps(
             _native_direct_plan(
                 source_track="存5北",
-                target_track="修1库内",
+                target_track="修1",
                 vehicle_nos=["C1"],
-                detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+                detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
             ),
             ensure_ascii=False,
         )
@@ -631,7 +631,7 @@ def test_solve_workflow_cli_executes_stage_sequence(tmp_path: Path):
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": 367},
                     {"trackName": "调棚", "trackDistance": 174.3},
-                    {"trackName": "修1库内", "trackDistance": 151.7},
+                    {"trackName": "修1", "trackDistance": 151.7},
                     {"trackName": "存4北", "trackDistance": 317.8},
                 ],
                 "initialVehicleInfo": [
@@ -798,7 +798,7 @@ def test_solve_workflow_cli_supports_multi_vehicle_workflow(tmp_path: Path):
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": 367},
                     {"trackName": "调棚", "trackDistance": 174.3},
-                    {"trackName": "修1库内", "trackDistance": 151.7},
+                    {"trackName": "修1", "trackDistance": 151.7},
                     {"trackName": "存4北", "trackDistance": 317.8},
                 ],
                 "initialVehicleInfo": [

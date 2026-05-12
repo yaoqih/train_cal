@@ -20,7 +20,7 @@ def test_generate_micro_scenario_returns_valid_shape():
     assert "trackInfo" in scenario
     assert "vehicleInfo" in scenario
     assert len(scenario["vehicleInfo"]) == 6
-    assert scenario["locoTrackName"] in {"机库", "机北"}
+    assert scenario["locoTrackName"] in {"机库", "机北3"}
 
 
 def test_generated_vehicle_orders_are_unique_per_track():
@@ -98,7 +98,7 @@ def test_generated_scenario_includes_all_depot_inner_tracks_for_random_depot_goa
         if any(vehicle["targetTrack"] == "大库" and vehicle["isSpotting"] in {"", "迎检"} for vehicle in scenario["vehicleInfo"]):
             found = True
             track_names = {track["trackName"] for track in scenario["trackInfo"]}
-            assert {"修1库内", "修2库内", "修3库内", "修4库内"} <= track_names
+            assert {"修1", "修2", "修3", "修4"} <= track_names
             break
 
     assert found is True
@@ -121,7 +121,7 @@ def test_generated_scenario_includes_exact_inner_track_for_exact_depot_spot():
         if exact_spot_vehicle is not None:
             found = True
             track_names = {track["trackName"] for track in scenario["trackInfo"]}
-            expected = "修1库内" if exact_spot_vehicle["isSpotting"] == "101" else "修3库内"
+            expected = "修1" if exact_spot_vehicle["isSpotting"] == "101" else "修3"
             assert expected in track_names
             break
 
@@ -159,7 +159,7 @@ def test_generate_typical_suite_contains_inspection_scenario():
     assert payload["vehicleInfo"][0]["targetTrack"] == "大库"
     assert "inspection" in payload["scenarioMeta"]["tags"]
     track_names = {track["trackName"] for track in payload["trackInfo"]}
-    assert {"修1库内", "修2库内", "修3库内", "修4库内"} <= track_names
+    assert {"修1", "修2", "修3", "修4"} <= track_names
 
 
 def test_generate_typical_suite_contains_dispatch_pre_repair_scenario():

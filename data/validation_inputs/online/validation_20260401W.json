@@ -1,23 +1,23 @@
 {
   "trackInfo": [
     {
-      "trackName": "临1",
+      "trackName": "机北1",
       "trackDistance": 81.4
     },
     {
-      "trackName": "临2",
+      "trackName": "机北2",
       "trackDistance": 55.7
     },
     {
-      "trackName": "临3",
+      "trackName": "洗油北",
       "trackDistance": 62.9
     },
     {
-      "trackName": "临4",
+      "trackName": "机南",
       "trackDistance": 90.1
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "trackDistance": 151.7
     },
     {
@@ -25,7 +25,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "trackDistance": 151.7
     },
     {
@@ -33,7 +33,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "trackDistance": 151.7
     },
     {
@@ -41,7 +41,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "trackDistance": 151.7
     },
     {
@@ -81,7 +81,7 @@
       "trackDistance": 131.8
     },
     {
-      "trackName": "机北",
+      "trackName": "机北3",
       "trackDistance": 69.1
     },
     {
@@ -691,7 +691,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "101",
       "vehicleModel": "X70",
       "vehicleNo": "5347256",
@@ -703,7 +703,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "301",
       "vehicleModel": "C64K",
       "vehicleNo": "4872364",
@@ -715,7 +715,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "102",
       "vehicleModel": "NX70AF",
       "vehicleNo": "5491483",
@@ -727,7 +727,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "302",
       "vehicleModel": "NX17KF",
       "vehicleNo": "5270499",
@@ -739,7 +739,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "103",
       "vehicleModel": "X70",
       "vehicleNo": "5328280",
@@ -751,7 +751,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "303",
       "vehicleModel": "C70E",
       "vehicleNo": "1676076",
@@ -763,7 +763,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "104",
       "vehicleModel": "X70",
       "vehicleNo": "5310851",
@@ -775,7 +775,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "304",
       "vehicleModel": "C70E",
       "vehicleNo": "1673805",
@@ -787,7 +787,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "105",
       "vehicleModel": "X70",
       "vehicleNo": "5243882",
@@ -799,7 +799,7 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "order": "305",
       "vehicleModel": "C64K",
       "vehicleNo": "4887260",
@@ -811,20 +811,20 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "201",
       "vehicleModel": "C70E",
       "vehicleNo": "1769023",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetTrack": "修2库内",
+      "targetTrack": "修2",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",
       "targetMode": "SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "401",
       "vehicleModel": "X70",
       "vehicleNo": "5331124",
@@ -836,20 +836,20 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "202",
       "vehicleModel": "NX70AF",
       "vehicleNo": "5494393",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetTrack": "修2库内",
+      "targetTrack": "修2",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",
       "targetMode": "SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "402",
       "vehicleModel": "X70",
       "vehicleNo": "5334574",
@@ -861,20 +861,20 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "203",
       "vehicleModel": "C70E",
       "vehicleNo": "1680198",
       "repairProcess": "段修",
       "vehicleLength": 14.3,
-      "targetTrack": "修2库内",
+      "targetTrack": "修2",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",
       "targetMode": "SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "403",
       "vehicleModel": "X70",
       "vehicleNo": "5331604",
@@ -886,20 +886,20 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "204",
       "vehicleModel": "X70",
       "vehicleNo": "5313927",
       "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetTrack": "修2库内",
+      "targetTrack": "修2",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",
       "targetMode": "SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "404",
       "vehicleModel": "X70",
       "vehicleNo": "5330038",
@@ -911,26 +911,26 @@
       "targetSource": "ONLINE_EXPLICIT_TARGET"
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "order": "205",
       "vehicleModel": "X70",
       "vehicleNo": "5310825",
       "repairProcess": "厂修",
       "vehicleLength": 13.2,
-      "targetTrack": "修2库内",
+      "targetTrack": "修2",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",
       "targetMode": "SNAPSHOT"
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "order": "405",
       "vehicleModel": "NX17BK",
       "vehicleNo": "5281608",
       "repairProcess": "段修",
       "vehicleLength": 16.5,
-      "targetTrack": "修4库内",
+      "targetTrack": "修4",
       "isSpotting": "",
       "vehicleAttributes": "",
       "targetSource": "ONLINE_EMPTY_TARGET",

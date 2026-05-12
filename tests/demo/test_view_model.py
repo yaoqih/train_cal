@@ -103,7 +103,7 @@ def test_build_demo_view_model_for_single_hook_case():
     assert view.hook_plan[1].remark
     assert view.track_map.track_nodes["存5北"].is_occupied is True
     assert view.track_map.track_nodes["机库"].is_occupied is False
-    assert view.steps[2].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert view.steps[2].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
     assert view.steps[2].track_map.changed_tracks == ["存5北", "机库"]
     assert view.steps[2].track_map.track_nodes["机库"].has_loco is True
 
@@ -321,7 +321,7 @@ def test_build_demo_view_model_counts_atomic_attach_and_detach_hooks():
             "sourceTrack": "存5北",
             "targetTrack": "机库",
             "vehicleNos": ["V_ATOMIC_1"],
-            "pathTracks": ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            "pathTracks": ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         },
     ]
 
@@ -390,7 +390,7 @@ def test_build_demo_view_model_skips_external_plan_comparison_by_default(monkeyp
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["CMP_SKIP_1"],
-        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
     )
 
     def fail_if_called(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -467,7 +467,7 @@ def test_build_demo_view_model_exposes_depot_spot_assignments():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -533,7 +533,7 @@ def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存5南", "trackDistance": 156},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -563,9 +563,9 @@ def test_build_demo_view_model_accepts_external_plan_and_surfaces_step_errors():
     }
     plan_payload = _native_direct_plan(
         source_track="存5北",
-        target_track="修1库内",
+        target_track="修1",
         vehicle_nos=["V4"],
-        detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+        detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
     )
 
     view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
@@ -607,7 +607,7 @@ def test_build_demo_view_model_computes_external_plan_comparison_summary():
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["CMP1"],
-        detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
     )
 
     view = build_demo_view_model(master, payload, plan_payload=plan_payload, compare_external_plan=True)
@@ -715,10 +715,10 @@ def test_build_demo_view_model_exposes_track_map_for_intermediate_step():
     detach_steps = _detach_steps(view)
 
     assert len(view.steps) == 5
-    assert detach_steps[0].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert detach_steps[0].track_map.active_path_tracks == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
     assert detach_steps[0].track_map.track_nodes["机库"].is_occupied is True
     assert detach_steps[0].track_map.track_nodes["机库"].has_loco is True
-    assert detach_steps[1].track_map.active_path_tracks == ["机库", "渡4", "临2", "临1", "渡2", "渡1", "存4北"]
+    assert detach_steps[1].track_map.active_path_tracks == ["机库", "渡4", "机北2", "机北1", "渡2", "渡1", "存4北"]
     assert detach_steps[1].track_map.track_nodes["存4北"].is_occupied is True
 
 
@@ -754,9 +754,9 @@ def test_build_demo_view_model_exposes_topology_graph_edges():
     assert _detach_steps(view)[0].topology_graph.active_edge_keys == [
         ("存5北", "渡1"),
         ("渡1", "渡2"),
-        ("渡2", "临1"),
-        ("临1", "临2"),
-        ("临2", "渡4"),
+        ("渡2", "机北1"),
+        ("机北1", "机北2"),
+        ("机北2", "渡4"),
         ("渡4", "机库"),
     ]
 
@@ -794,7 +794,7 @@ def test_build_demo_view_model_exposes_transition_frames_for_hook_motion():
     assert frames[0].current_track == "存5北"
     assert frames[-1].progress == 1.0
     assert frames[-1].current_track == "机库"
-    assert frames[-1].passed_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert frames[-1].passed_tracks == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
 
 
 def test_build_demo_view_model_supports_new_typical_suite_scenarios():

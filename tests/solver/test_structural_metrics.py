@@ -22,12 +22,12 @@ def _payload(vehicles: list[dict], track_distances: dict[str, float] | None = No
         "存5北": 367,
         "存4北": 317.8,
         "存1": 113,
-        "临1": 81.4,
+        "机北1": 81.4,
         "洗南": 88.7,
-        "修1库内": 151.7,
-        "修2库内": 151.7,
-        "修3库内": 151.7,
-        "修4库内": 151.7,
+        "修1": 151.7,
+        "修2": 151.7,
+        "修3": 151.7,
+        "修4": 151.7,
         "机库": 71.6,
     }
     if track_distances:
@@ -104,9 +104,9 @@ def test_structural_metrics_zero_for_finished_state():
 
 
 def test_structural_metrics_counts_staging_debt_by_track():
-    normalized, _ = _normalize(_payload([_vehicle("A", "临1", "存4北")]))
+    normalized, _ = _normalize(_payload([_vehicle("A", "机北1", "存4北")]))
     state = ReplayState(
-        track_sequences={"临1": ["A"], "存4北": [], "机库": []},
+        track_sequences={"机北1": ["A"], "存4北": [], "机库": []},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -116,7 +116,7 @@ def test_structural_metrics_counts_staging_debt_by_track():
 
     assert metrics.unfinished_count == 1
     assert metrics.staging_debt_count == 1
-    assert metrics.staging_debt_by_track == {"临1": 1}
+    assert metrics.staging_debt_by_track == {"机北1": 1}
 
 
 def test_structural_metrics_counts_random_area_unfinished():
@@ -266,9 +266,9 @@ def test_structural_capacity_uses_initial_overlength_as_effective_capacity():
 
 def test_plan_shape_counts_staging_hooks_and_rehandles():
     moves = [
-        HookAction(source_track="存5北", target_track="临1", vehicle_nos=["A", "B"], action_type="DETACH"),
-        HookAction(source_track="临1", target_track="临2", vehicle_nos=["A"], action_type="DETACH"),
-        HookAction(source_track="临2", target_track="存4北", vehicle_nos=["A"], action_type="ATTACH"),
+        HookAction(source_track="存5北", target_track="机北1", vehicle_nos=["A", "B"], action_type="DETACH"),
+        HookAction(source_track="机北1", target_track="机北2", vehicle_nos=["A"], action_type="DETACH"),
+        HookAction(source_track="机北2", target_track="存4北", vehicle_nos=["A"], action_type="ATTACH"),
         HookAction(source_track="存4北", target_track="存1", vehicle_nos=["A"], action_type="DETACH"),
     ]
 
@@ -291,21 +291,21 @@ def test_native_move_scoring_avoids_polluting_needed_goal_track_within_same_tier
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     state = ReplayState(
-        track_sequences={"存5北": ["B"], "临1": [], "存1": [], "机库": [], "存4北": []},
-        loco_track_name="临1",
+        track_sequences={"存5北": ["B"], "机北1": [], "存1": [], "机库": [], "存4北": []},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("A",),
     )
     staging = HookAction(
-        source_track="临1",
-        target_track="临1",
+        source_track="机北1",
+        target_track="机北1",
         vehicle_nos=["A"],
         path_tracks=[],
         action_type="DETACH",
     )
     polluting_goal_track = HookAction(
-        source_track="临1",
+        source_track="机北1",
         target_track="存1",
         vehicle_nos=["A"],
         path_tracks=[],
@@ -365,7 +365,7 @@ def test_native_move_scoring_delays_close_door_pushers_until_close_door_is_place
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     state = ReplayState(
-        track_sequences={"存1": [], "存5北": ["CD"], "临1": [], "存4北": [], "机库": []},
+        track_sequences={"存1": [], "存5北": ["CD"], "机北1": [], "存4北": [], "机库": []},
         loco_track_name="存1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -380,7 +380,7 @@ def test_native_move_scoring_delays_close_door_pushers_until_close_door_is_place
     )
     hold_as_pushers = HookAction(
         source_track="存1",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["N1", "N2", "N3"],
         path_tracks=[],
         action_type="DETACH",
@@ -438,7 +438,7 @@ def test_native_move_scoring_drops_close_door_pushers_before_attaching_close_doo
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     state = ReplayState(
-        track_sequences={"存1": [], "存5北": ["CD"], "临1": [], "存4北": [], "机库": []},
+        track_sequences={"存1": [], "存5北": ["CD"], "机北1": [], "存4北": [], "机库": []},
         loco_track_name="存1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -453,7 +453,7 @@ def test_native_move_scoring_drops_close_door_pushers_before_attaching_close_doo
     )
     hold_as_pushers = HookAction(
         source_track="存1",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["N1", "N2", "N3"],
         path_tracks=[],
         action_type="DETACH",
@@ -500,8 +500,8 @@ def test_random_depot_candidate_targets_prefer_less_loaded_same_preference_track
         _payload(
             [
                 _vehicle("R", "存5北", "大库", order=1),
-                _vehicle("OCC1", "修1库内", "修1库内", order=1),
-                _vehicle("OCC2", "修1库内", "修1库内", order=2),
+                _vehicle("OCC1", "修1", "修1", order=1),
+                _vehicle("OCC2", "修1", "修1", order=2),
             ]
         )
     )
@@ -509,10 +509,10 @@ def test_random_depot_candidate_targets_prefer_less_loaded_same_preference_track
     state = ReplayState(
         track_sequences={
             "存5北": ["R"],
-            "修1库内": ["OCC1", "OCC2"],
-            "修2库内": [],
-            "修3库内": [],
-            "修4库内": [],
+            "修1": ["OCC1", "OCC2"],
+            "修2": [],
+            "修3": [],
+            "修4": [],
             "机库": [],
         },
         loco_track_name="机库",
@@ -522,4 +522,4 @@ def test_random_depot_candidate_targets_prefer_less_loaded_same_preference_track
 
     targets = _candidate_targets(["R"], normalized, state, vehicle_by_no)
 
-    assert targets.index("修2库内") < targets.index("修1库内")
+    assert targets.index("修2") < targets.index("修1")

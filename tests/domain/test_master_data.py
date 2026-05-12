@@ -37,15 +37,19 @@ def test_special_spots_and_areas_exist():
     assert not any(spot.category == "WORK_GROUP" for spot in master.spots.values())
 
 
-def test_oil_and_shot_physical_routes_use_40m_missing_segment_without_changing_track_capacity():
+def test_physical_route_lengths_follow_business_appendix_without_overwriting_track_capacity():
     master = load_master_data(DATA_DIR)
 
     assert master.physical_routes["L9-油漆尽头"].status == "已确认"
+    assert master.physical_routes["大门L1"].total_length_m == 68.0
+    assert master.physical_routes["大门L1"].left_node == "5号门"
     assert master.physical_routes["L9-油漆尽头"].total_length_m == 209.0
     assert master.physical_routes["L15-抛丸尽头"].status == "已确认"
     assert master.physical_routes["L15-抛丸尽头"].total_length_m == 129.8
-    assert master.tracks["油"].effective_length_m == 124.0
-    assert master.tracks["抛"].effective_length_m == 131.8
+    assert master.tracks["油"].effective_length_m == 109.0
+    assert master.tracks["抛"].effective_length_m == 42.3
+    assert master.tracks["轮"].effective_length_m == 47.3
+    assert master.tracks["机棚"].effective_length_m == 106.8
 
 
 def test_master_data_contains_track_and_branch_topology():

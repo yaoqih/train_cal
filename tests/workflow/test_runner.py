@@ -15,7 +15,7 @@ def test_solve_workflow_executes_explicit_stage_sequence():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -68,7 +68,7 @@ def test_solve_workflow_executes_explicit_stage_sequence():
     assert result.stages[0].view.final_spot_assignments == {}
     assert result.stages[0].input_payload["locoTrackName"] == "机库"
     assert result.stages[1].input_payload["locoTrackName"] == "调棚"
-    assert result.stages[2].input_payload["locoTrackName"] == "修1库内"
+    assert result.stages[2].input_payload["locoTrackName"] == "修1"
     assert result.stages[1].view.final_spot_assignments == {"WFSEQ1": "101"}
     assert result.stages[2].view.steps[-1].track_sequences["存4北"] == ["WFSEQ1"]
 
@@ -200,7 +200,7 @@ def test_solve_workflow_supports_multi_vehicle_diverge_and_merge():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -267,7 +267,7 @@ def test_solve_workflow_supports_wash_depot_departure_chain():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "洗南", "trackDistance": 88.7},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -368,7 +368,7 @@ def test_solve_workflow_supports_paint_depot_departure_chain():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "油", "trackDistance": 124},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -422,7 +422,7 @@ def test_solve_workflow_supports_shot_depot_departure_chain():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "抛", "trackDistance": 131.8},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -722,10 +722,10 @@ def test_solve_workflow_supports_inspection_depot_then_departure():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],
         "initialVehicleInfo": [
@@ -948,7 +948,7 @@ def test_solve_workflow_supports_depot_then_wheel_then_departure():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "轮", "trackDistance": 118.2},
             {"trackName": "存4北", "trackDistance": 317.8},
         ],

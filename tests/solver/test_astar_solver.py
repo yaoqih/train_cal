@@ -129,13 +129,13 @@ def test_goal_frontier_tail_handles_work_position_only_staging_debt(monkeypatch)
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
                 {"trackName": "洗南", "trackDistance": 80},
                 {"trackName": "机库", "trackDistance": 80},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "罐车",
                     "vehicleNo": "WP1",
@@ -187,13 +187,13 @@ def test_partial_goal_frontier_pressure_includes_work_position_debt():
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
                 {"trackName": "洗南", "trackDistance": 80},
                 {"trackName": "机库", "trackDistance": 80},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "罐车",
                     "vehicleNo": "WP_ONLY",
@@ -241,16 +241,16 @@ def test_work_position_tail_continues_goal_frontier_after_local_progress(monkeyp
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
                 {"trackName": "洗南", "trackDistance": 80},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "机库", "trackDistance": 80},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "PAD1",
@@ -323,7 +323,7 @@ def test_work_position_tail_continues_goal_frontier_after_local_progress(monkeyp
         (move.action_type, move.source_track, move.target_track, tuple(move.vehicle_nos))
         for move in result.plan
     ]
-    assert ("DETACH", "临1", "洗南", ("PAD1",)) in hook_shape
+    assert ("DETACH", "机北1", "洗南", ("PAD1",)) in hook_shape
     assert ("DETACH", "预修", "存4北", ("GF_TAIL",)) in hook_shape
 
 
@@ -333,7 +333,7 @@ def test_work_position_tail_moves_south_neighbors_before_exact_rank_target():
         {
             "trackInfo": [
                 {"trackName": "调棚", "trackDistance": 174.3},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -414,7 +414,7 @@ def test_work_position_tail_moves_south_neighbors_before_exact_rank_target():
         and vehicles == ("EXACT",)
         for action, _source, target, vehicles in hook_shape
     )
-    assert ("DETACH", "临4", "调棚", ("PAD_A", "PAD_B")) in hook_shape
+    assert ("DETACH", "机南", "调棚", ("PAD_A", "PAD_B")) in hook_shape
 
 
 def test_goal_frontier_rejects_target_detach_that_does_not_satisfy_target():
@@ -671,11 +671,11 @@ def test_goal_frontier_rejects_staging_that_only_allows_non_goal_target_detach()
                 for track in [
                     "油",
                     "修2库外",
-                    "临3",
-                    "临4",
+                    "洗油北",
+                    "机南",
                     "机库",
                     "机棚",
-                    "机北",
+                    "机北3",
                     "存4南",
                     "洗北",
                 ]
@@ -704,9 +704,9 @@ def test_goal_frontier_rejects_staging_that_only_allows_non_goal_target_detach()
     )
     weak_staging = HookAction(
         source_track="油",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["O_DONE1", "O_DONE2", "O_DONE3"],
-        path_tracks=["油", "临3"],
+        path_tracks=["油", "洗油北"],
         action_type="DETACH",
     )
 
@@ -773,11 +773,11 @@ def test_goal_frontier_detaches_contiguous_same_goal_tail_together():
                 for track in [
                     "油",
                     "修2库外",
-                    "临3",
-                    "临4",
+                    "洗油北",
+                    "机南",
                     "机库",
                     "机棚",
-                    "机北",
+                    "机北3",
                     "存4南",
                     "洗北",
                 ]
@@ -902,13 +902,13 @@ def test_goal_frontier_tail_prepends_pad_for_exact_work_position_rank():
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
                 {"trackName": "洗南", "trackDistance": 80},
                 {"trackName": "机库", "trackDistance": 80},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "PAD1",
@@ -949,8 +949,8 @@ def test_goal_frontier_tail_prepends_pad_for_exact_work_position_rank():
     assert result is not None
     assert result.is_complete is True
     assert [(move.action_type, move.source_track, move.target_track, tuple(move.vehicle_nos)) for move in result.plan] == [
-        ("ATTACH", "临1", "临1", ("PAD1",)),
-        ("DETACH", "临1", "洗南", ("PAD1",)),
+        ("ATTACH", "机北1", "机北1", ("PAD1",)),
+        ("DETACH", "机北1", "洗南", ("PAD1",)),
     ]
 
 
@@ -1134,7 +1134,7 @@ def test_goal_frontier_tail_clears_work_track_prefix_before_spotting_insert(monk
     ]
     vehicle_info.append(
         {
-            "trackName": "临1",
+            "trackName": "机北1",
             "order": "1",
             "vehicleModel": "平车",
             "vehicleNo": "SPOT",
@@ -1148,8 +1148,8 @@ def test_goal_frontier_tail_clears_work_track_prefix_before_spotting_insert(monk
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
-                {"trackName": "临2", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
+                {"trackName": "机北2", "trackDistance": 80},
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "机库", "trackDistance": 80},
             ],
@@ -1180,8 +1180,8 @@ def test_goal_frontier_tail_clears_work_track_prefix_before_spotting_insert(monk
         (move.action_type, move.source_track, move.target_track, tuple(move.vehicle_nos))
         for move in result.plan
     ]
-    assert ("ATTACH", "临1", "临1", ("SPOT",)) in hook_shape
-    assert ("DETACH", "临1", "调棚", ("SPOT",)) in hook_shape
+    assert ("ATTACH", "机北1", "机北1", ("SPOT",)) in hook_shape
+    assert ("DETACH", "机北1", "调棚", ("SPOT",)) in hook_shape
     final_state = replay_plan(
         snapshot,
         [
@@ -1220,8 +1220,8 @@ def test_goal_frontier_segments_satisfied_prefix_to_reach_deep_free_work_vehicle
         {
             "trackInfo": [
                 {"trackName": "预修", "trackDistance": 208.5},
-                {"trackName": "临3", "trackDistance": 62.9},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "洗油北", "trackDistance": 62.9},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "抛", "trackDistance": 131.8},
             ],
             "vehicleInfo": [
@@ -1289,10 +1289,10 @@ def test_goal_frontier_places_free_work_vehicle_when_final_capacity_overflows():
                 {"trackName": "存4南", "trackDistance": 154.5},
                 {"trackName": "抛", "trackDistance": 20},
                 {"trackName": "机库", "trackDistance": 71.6},
-                {"trackName": "机北", "trackDistance": 69.1},
+                {"trackName": "机北3", "trackDistance": 69.1},
                 {"trackName": "机棚", "trackDistance": 105.8},
-                {"trackName": "临3", "trackDistance": 62.9},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "洗油北", "trackDistance": 62.9},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "渡6", "trackDistance": 68.2},
                 {"trackName": "渡7", "trackDistance": 45.4},
                 {"trackName": "渡8", "trackDistance": 36.9},
@@ -1424,7 +1424,7 @@ def test_goal_frontier_tail_skips_blocked_work_position_and_solves_available_spo
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "平车",
                 "vehicleNo": "SPOT",
@@ -1439,8 +1439,8 @@ def test_goal_frontier_tail_skips_blocked_work_position_and_solves_available_spo
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
-                {"trackName": "临2", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
+                {"trackName": "机北2", "trackDistance": 80},
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "抛", "trackDistance": 131.8},
@@ -1473,7 +1473,7 @@ def test_goal_frontier_tail_skips_blocked_work_position_and_solves_available_spo
         (move.action_type, move.source_track, move.target_track, tuple(move.vehicle_nos))
         for move in result.partial_plan
     ]
-    assert ("DETACH", "临1", "调棚", ("SPOT",)) in hook_shape
+    assert ("DETACH", "机北1", "调棚", ("SPOT",)) in hook_shape
     final_state = replay_plan(
         snapshot,
         [
@@ -1502,7 +1502,7 @@ def test_repair_input_keeps_work_position_rank_participants_movable():
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 80},
+                {"trackName": "机北1", "trackDistance": 80},
                 {"trackName": "洗南", "trackDistance": 80},
                 {"trackName": "机库", "trackDistance": 80},
             ],
@@ -1519,7 +1519,7 @@ def test_repair_input_keeps_work_position_rank_participants_movable():
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "罐车",
                     "vehicleNo": "WP1",
@@ -1612,31 +1612,31 @@ def test_route_release_constructive_keeps_strict_staging_regrab_first():
 
 def test_anytime_fallback_preserves_best_partial_when_no_stage_solves():
     initial = ReplayState(
-        track_sequences={"临1": ["A"], "临2": []},
-        loco_track_name="临1",
+        track_sequences={"机北1": ["A"], "机北2": []},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=(),
     )
     weak_partial = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["A"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="ATTACH",
     )
     better_prefix = HookAction(
-        source_track="临2",
-        target_track="临1",
+        source_track="机北2",
+        target_track="机北1",
         vehicle_nos=["B"],
-        path_tracks=["临2", "临1"],
+        path_tracks=["机北2", "机北1"],
         action_type="ATTACH",
     )
     better_tail = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["B"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="DETACH",
     )
     calls = {"count": 0}
@@ -1757,7 +1757,7 @@ def test_route_release_regression_penalty_detects_blocked_focus_source():
     master = load_master_data(DATA_DIR)
     oracle = RouteOracle(master)
     blocked_state = ReplayState(
-        track_sequences={"存5北": ["BLOCKER"], "存5南": ["SEEK"], "修4库内": []},
+        track_sequences={"存5北": ["BLOCKER"], "存5南": ["SEEK"], "修4": []},
         loco_track_name="存5北",
         loco_node="L2",
         weighed_vehicle_nos=set(),
@@ -1765,7 +1765,7 @@ def test_route_release_regression_penalty_detects_blocked_focus_source():
         loco_carry=(),
     )
     clear_state = blocked_state.model_copy(
-        update={"track_sequences": {"存5北": [], "存5南": ["SEEK"], "修4库内": []}}
+        update={"track_sequences": {"存5北": [], "存5南": ["SEEK"], "修4": []}}
     )
 
     assert _route_release_regression_penalty(
@@ -1790,7 +1790,7 @@ def test_route_release_repark_penalty_discourages_parking_back_on_active_blocker
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存5南", "trackDistance": 156.0},
-                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "修4", "trackDistance": 151.7},
                 {"trackName": "存2", "trackDistance": 239.2},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
@@ -1824,7 +1824,7 @@ def test_route_release_repark_penalty_discourages_parking_back_on_active_blocker
                     "vehicleNo": "SEEK",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修4库内",
+                    "targetTrack": "修4",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
@@ -1838,7 +1838,7 @@ def test_route_release_repark_penalty_discourages_parking_back_on_active_blocker
         track_sequences={
             "存5北": ["REMAINING_BLOCK"],
             "存5南": ["SEEK"],
-            "修4库内": [],
+            "修4": [],
             "存2": [],
         },
         loco_track_name="存5北",
@@ -1925,7 +1925,7 @@ def test_route_release_focus_ttl_scales_with_blocking_group_size():
                     blocking_vehicle_nos=[f"B{idx}" for idx in range(5)],
                     blocked_vehicle_nos=["S004"],
                     source_tracks=["存5南"],
-                    target_tracks=["修4库内"],
+                    target_tracks=["修4"],
                     blockage_count=1,
                 )
             }
@@ -1979,7 +1979,7 @@ def test_simple_astar_solves_direct_single_vehicle_case():
 
     assert len(plan) == 2
     assert [move.action_type for move in plan] == ["ATTACH", "DETACH"]
-    assert plan[-1].path_tracks == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert plan[-1].path_tracks == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
     assert replay.final_state.track_sequences["机库"] == ["E1"]
 
 
@@ -2047,8 +2047,8 @@ def test_simple_astar_result_can_return_debug_stats():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -2380,7 +2380,7 @@ def test_exact_spot_clearance_bonus_keeps_spot_blocker_attach_in_beam_frontier()
             move=move,
             next_state=next_state,
         )
-        if move.source_track == "修2库内" and "1661900" in move.vehicle_nos:
+        if move.source_track == "修2" and "1661900" in move.vehicle_nos:
             spot_release_bonus = blocker_bonus
         ranked_moves.append(
             (
@@ -2399,8 +2399,8 @@ def test_exact_spot_clearance_bonus_keeps_spot_blocker_attach_in_beam_frontier()
 
     assert spot_release_bonus > 0
     assert any(
-        move.source_track == "修2库内"
-        and move.target_track == "修2库内"
+        move.source_track == "修2"
+        and move.target_track == "修2"
         and move.vehicle_nos == ["1574125", "1658566", "1661900"]
         for move in top_moves
     )
@@ -2424,7 +2424,7 @@ def test_exact_spot_clearance_bonus_prefers_staging_continuation_after_attach():
     attach = next(
         move
         for move in generate_real_hook_moves(normalized, initial, master=master, route_oracle=route_oracle)
-        if move.source_track == "修2库内" and "1661900" in move.vehicle_nos
+        if move.source_track == "修2" and "1661900" in move.vehicle_nos
     )
     carrying_blocker = _apply_move(
         state=initial,
@@ -2441,8 +2441,8 @@ def test_exact_spot_clearance_bonus_prefers_staging_continuation_after_attach():
             route_oracle=route_oracle,
         )
         if move.action_type == "DETACH"
-        and move.source_track == "修2库内"
-        and move.target_track == "临4"
+        and move.source_track == "修2"
+        and move.target_track == "机南"
         and move.vehicle_nos == ["1574125", "1658566", "1661900"]
     )
     next_state = _apply_move(
@@ -2479,7 +2479,7 @@ def test_constructive_scores_exact_spot_staging_before_same_track_repark():
     spot_release = next(
         move
         for move in generate_real_hook_moves(normalized, initial, master=master, route_oracle=route_oracle)
-        if move.source_track == "修2库内" and "1661900" in move.vehicle_nos
+        if move.source_track == "修2" and "1661900" in move.vehicle_nos
     )
     carrying_blocker = _apply_move(
         state=initial,
@@ -2498,8 +2498,8 @@ def test_constructive_scores_exact_spot_staging_before_same_track_repark():
             route_oracle=route_oracle,
         )
         if move.action_type == "DETACH"
-        and move.source_track == "修2库内"
-        and move.target_track == "临4"
+        and move.source_track == "修2"
+        and move.target_track == "机南"
         and move.vehicle_nos == ["1574125", "1658566", "1661900"]
     )
     same_track_repark = next(
@@ -2511,8 +2511,8 @@ def test_constructive_scores_exact_spot_staging_before_same_track_repark():
             route_oracle=route_oracle,
         )
         if move.action_type == "DETACH"
-        and move.source_track == "修2库内"
-        and move.target_track == "修2库内"
+        and move.source_track == "修2"
+        and move.target_track == "修2"
         and move.vehicle_nos == ["1661900"]
     )
 
@@ -2647,15 +2647,15 @@ def test_constructive_scores_exact_spot_seeker_exposure_before_unrelated_attach(
     route_oracle = RouteOracle(master)
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     prefix = [
-        ("ATTACH", "修1库内", "修1库内", ["1854691"]),
-        ("DETACH", "修1库内", "修3库内", ["1854691"]),
+        ("ATTACH", "修1", "修1", ["1854691"]),
+        ("DETACH", "修1", "修3", ["1854691"]),
         ("ATTACH", "洗北", "洗北", ["3830796", "3826674", "3480253", "4203711", "5491591", "1765109"]),
-        ("DETACH", "洗北", "修3库内", ["1765109"]),
-        ("DETACH", "修3库内", "修4库内", ["5491591"]),
-        ("DETACH", "修4库内", "修3库内", ["4203711"]),
-        ("DETACH", "修3库内", "修4库内", ["3830796", "3826674", "3480253"]),
+        ("DETACH", "洗北", "修3", ["1765109"]),
+        ("DETACH", "修3", "修4", ["5491591"]),
+        ("DETACH", "修4", "修3", ["4203711"]),
+        ("DETACH", "修3", "修4", ["3830796", "3826674", "3480253"]),
         ("ATTACH", "洗南", "洗南", ["1503133"]),
-        ("DETACH", "洗南", "修3库内", ["1503133"]),
+        ("DETACH", "洗南", "修3", ["1503133"]),
         ("ATTACH", "调北", "调北", ["1579777", "5281893"]),
         ("DETACH", "调北", "机棚", ["1579777", "5281893"]),
     ]
@@ -2768,15 +2768,15 @@ def test_beam_search_keeps_exact_spot_seeker_exposure_in_frontier():
     route_oracle = RouteOracle(master)
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     prefix = [
-        ("ATTACH", "修1库内", "修1库内", ["1854691"]),
-        ("DETACH", "修1库内", "修3库内", ["1854691"]),
+        ("ATTACH", "修1", "修1", ["1854691"]),
+        ("DETACH", "修1", "修3", ["1854691"]),
         ("ATTACH", "洗北", "洗北", ["3830796", "3826674", "3480253", "4203711", "5491591", "1765109"]),
-        ("DETACH", "洗北", "修3库内", ["1765109"]),
-        ("DETACH", "修3库内", "修4库内", ["5491591"]),
-        ("DETACH", "修4库内", "修3库内", ["4203711"]),
-        ("DETACH", "修3库内", "修4库内", ["3830796", "3826674", "3480253"]),
+        ("DETACH", "洗北", "修3", ["1765109"]),
+        ("DETACH", "修3", "修4", ["5491591"]),
+        ("DETACH", "修4", "修3", ["4203711"]),
+        ("DETACH", "修3", "修4", ["3830796", "3826674", "3480253"]),
         ("ATTACH", "洗南", "洗南", ["1503133"]),
-        ("DETACH", "洗南", "修3库内", ["1503133"]),
+        ("DETACH", "洗南", "修3", ["1503133"]),
         ("ATTACH", "调北", "调北", ["1579777", "5281893"]),
         ("DETACH", "调北", "机棚", ["1579777", "5281893"]),
     ]
@@ -2855,29 +2855,29 @@ def test_constructive_prioritizes_global_route_pressure_drop_over_local_release_
         ("ATTACH", "洗北", "洗北", ["5337890", "5335224", "1572902", "5238901", "5460824", "5484423", "4639021"]),
         ("DETACH", "洗北", "存1", ["5337890", "5335224", "1572902", "5238901", "5460824", "5484423", "4639021"]),
         ("ATTACH", "洗南", "洗南", ["3422436", "3834747", "3466047"]),
-        ("DETACH", "洗南", "修1库内", ["3466047"]),
-        ("DETACH", "修1库内", "修3库内", ["3834747"]),
-        ("DETACH", "修3库内", "修2库内", ["3422436"]),
-        ("ATTACH", "修4库内", "修4库内", ["1579087", "5770585", "1785160", "4967457", "5221985"]),
-        ("DETACH", "修4库内", "存4北", ["1579087", "5770585", "1785160", "4967457", "5221985"]),
+        ("DETACH", "洗南", "修1", ["3466047"]),
+        ("DETACH", "修1", "修3", ["3834747"]),
+        ("DETACH", "修3", "修2", ["3422436"]),
+        ("ATTACH", "修4", "修4", ["1579087", "5770585", "1785160", "4967457", "5221985"]),
+        ("DETACH", "修4", "存4北", ["1579087", "5770585", "1785160", "4967457", "5221985"]),
         ("ATTACH", "油", "油", ["5249128", "5313705"]),
-        ("DETACH", "油", "临3", ["5249128", "5313705"]),
+        ("DETACH", "油", "洗油北", ["5249128", "5313705"]),
         ("ATTACH", "轮", "轮", ["4904478"]),
         ("DETACH", "轮", "存4北", ["4904478"]),
         ("ATTACH", "存5北", "存5北", ["5239035", "5238956"]),
         ("DETACH", "存5北", "存2", ["5239035", "5238956"]),
         ("ATTACH", "调棚", "调棚", ["5330243", "5337668", "4873053", "1677317", "5270420", "5324500", "5323244", "5739986"]),
-        ("DETACH", "调棚", "修1库内", ["5323244", "5739986"]),
-        ("DETACH", "修1库内", "修2库内", ["5270420", "5324500"]),
-        ("DETACH", "修2库内", "预修", ["1677317"]),
-        ("DETACH", "预修", "修4库内", ["5330243", "5337668", "4873053"]),
+        ("DETACH", "调棚", "修1", ["5323244", "5739986"]),
+        ("DETACH", "修1", "修2", ["5270420", "5324500"]),
+        ("DETACH", "修2", "预修", ["1677317"]),
+        ("DETACH", "预修", "修4", ["5330243", "5337668", "4873053"]),
         ("ATTACH", "存5北", "存5北", ["3463425", "3470063", "3471895", "1784931", "5321138", "1680198", "4952071"]),
         ("DETACH", "存5北", "调棚", ["3470063", "3471895", "1784931", "5321138", "1680198", "4952071"]),
         ("DETACH", "调棚", "机库", ["3463425"]),
-        ("ATTACH", "临3", "临3", ["5249128", "5313705"]),
-        ("DETACH", "临3", "修2库外", ["5249128", "5313705"]),
+        ("ATTACH", "洗油北", "洗油北", ["5249128", "5313705"]),
+        ("DETACH", "洗油北", "修2库外", ["5249128", "5313705"]),
         ("ATTACH", "修2库外", "修2库外", ["5249128", "5313705"]),
-        ("DETACH", "修2库外", "临4", ["5249128", "5313705"]),
+        ("DETACH", "修2库外", "机南", ["5249128", "5313705"]),
     ]
     for action_type, source_track, target_track, vehicle_nos in prefix:
         move = HookAction(
@@ -2916,7 +2916,7 @@ def test_constructive_prioritizes_global_route_pressure_drop_over_local_release_
         move
         for move in moves
         if move.action_type == "ATTACH"
-        and move.source_track == "临4"
+        and move.source_track == "机南"
         and move.vehicle_nos == ["5249128", "5313705"]
     )
     clear_local_blocker = next(
@@ -3000,7 +3000,7 @@ def test_constructive_scores_exact_spot_release_as_clearance():
     spot_release = next(
         move
         for move in generate_real_hook_moves(normalized, initial, master=master, route_oracle=route_oracle)
-        if move.source_track == "修2库内" and "1661900" in move.vehicle_nos
+        if move.source_track == "修2" and "1661900" in move.vehicle_nos
     )
     next_state = _apply_move(
         state=initial,
@@ -3052,7 +3052,7 @@ def test_blocker_bonus_rewards_partial_prefix_when_whole_block_cannot_move_once(
         _blocking_goal_target_bonus(
             state=state,
             move=move,
-            blocking_goal_targets_by_source={"存5北": {"修4库内"}},
+            blocking_goal_targets_by_source={"存5北": {"修4"}},
         )
         == 1
     )
@@ -3062,17 +3062,17 @@ def test_blocker_bonus_rewards_route_blockage_release_attach():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "机南", "trackDistance": 90.1},
             {"trackName": "存5南", "trackDistance": 156.0},
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临2", "trackDistance": 62.9},
-            {"trackName": "临3", "trackDistance": 77.9},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "机北2", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 77.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "临4",
+                "trackName": "机南",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SEEK",
@@ -3152,7 +3152,7 @@ def test_blocker_bonus_prefers_released_source_after_route_blocker_is_parked():
         source_track="调北",
         target_track="机棚",
         vehicle_nos=["1579777", "5281893"],
-        path_tracks=["调北", "渡4", "渡5", "机北", "机棚"],
+        path_tracks=["调北", "渡4", "渡5", "机北3", "机棚"],
         action_type="DETACH",
     )
     released_state = _apply_move(
@@ -3473,7 +3473,7 @@ def test_apply_move_matches_replay_plan_for_weigh_move():
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["APPLY1"],
-        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         action_type="DETACH",
     )
 
@@ -3519,11 +3519,11 @@ def test_apply_move_matches_replay_plan_for_attach_releases_source_spot_assignme
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "APPLY_ATTACH_1",
@@ -3540,10 +3540,10 @@ def test_apply_move_matches_replay_plan_for_attach_releases_source_spot_assignme
     initial = build_initial_state(normalized)
     vehicle = normalized.vehicles[0]
     move = HookAction(
-        source_track="修1库内",
-        target_track="修1库内",
+        source_track="修1",
+        target_track="修1",
         vehicle_nos=["APPLY_ATTACH_1"],
-        path_tracks=["修1库内"],
+        path_tracks=["修1"],
         action_type="ATTACH",
     )
 
@@ -3579,7 +3579,7 @@ def test_apply_move_detach_removes_tail_block_from_loco_carry():
     payload = {
         "trackInfo": [
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -3600,7 +3600,7 @@ def test_apply_move_detach_removes_tail_block_from_loco_carry():
     normalized = normalize_plan_input(payload, master)
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     state = ReplayState(
-        track_sequences={"修2库内": ["OLD"]},
+        track_sequences={"修2": ["OLD"]},
         loco_track_name="调棚",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -3608,9 +3608,9 @@ def test_apply_move_detach_removes_tail_block_from_loco_carry():
     )
     move = HookAction(
         source_track="调棚",
-        target_track="修2库内",
+        target_track="修2",
         vehicle_nos=["TAIL1", "TAIL2"],
-        path_tracks=["调棚", "修2库内"],
+        path_tracks=["调棚", "修2"],
         action_type="DETACH",
     )
 
@@ -3622,14 +3622,14 @@ def test_apply_move_detach_removes_tail_block_from_loco_carry():
     )
 
     assert applied.loco_carry == ("HEAD1", "HEAD2")
-    assert applied.track_sequences["修2库内"] == ["TAIL1", "TAIL2", "OLD"]
+    assert applied.track_sequences["修2"] == ["TAIL1", "TAIL2", "OLD"]
 
 
 def test_vehicle_track_lookup_returns_current_tracks():
     state = ReplayState(
         track_sequences={
             "存5北": ["L1", "L2"],
-            "修1库内": ["L3"],
+            "修1": ["L3"],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -3639,7 +3639,7 @@ def test_vehicle_track_lookup_returns_current_tracks():
     assert _vehicle_track_lookup(state) == {
         "L1": "存5北",
         "L2": "存5北",
-        "L3": "修1库内",
+        "L3": "修1",
     }
 
 
@@ -3700,7 +3700,7 @@ def test_simple_astar_solves_oil_and_shot_targets_when_missing_segment_is_40m_pl
     assert len(oil_plan) == 2
     assert [move.action_type for move in oil_plan] == ["ATTACH", "DETACH"]
     assert oil_plan[-1].target_track == "油"
-    assert oil_plan[-1].path_tracks == ["机库", "渡4", "渡5", "机北", "机棚", "临3", "油"]
+    assert oil_plan[-1].path_tracks == ["机库", "渡4", "渡5", "机北3", "机棚", "洗油北", "油"]
 
 
 def test_simple_astar_rejects_two_vehicles_competing_for_same_exact_spot():
@@ -3708,7 +3708,7 @@ def test_simple_astar_rejects_two_vehicles_competing_for_same_exact_spot():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -3833,8 +3833,8 @@ def test_simple_astar_can_clear_front_blocker_via_temporary_track():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -3957,8 +3957,8 @@ def test_simple_astar_uses_clear_alternate_path_when_shortest_path_is_blocked():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存5南", "trackDistance": 156},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -4009,7 +4009,7 @@ def test_simple_astar_uses_clear_alternate_path_when_shortest_path_is_blocked():
     assert len(plan) == 2
     assert [move.action_type for move in plan] == ["ATTACH", "DETACH"]
     assert "存5南" not in plan[1].path_tracks
-    assert replay.final_state.track_sequences["修1库内"] == ["E9"]
+    assert replay.final_state.track_sequences["修1"] == ["E9"]
     assert replay.final_state.track_sequences["存5南"] == ["E10"]
 
 
@@ -4159,16 +4159,16 @@ def test_beam_stops_after_first_local_repair_round_when_second_round_does_not_im
     incumbent_plan = [
         HookAction(
             source_track="存5北",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["B1"],
-            path_tracks=["存5北", "临1"],
+            path_tracks=["存5北", "机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="机库",
             vehicle_nos=["B1"],
-            path_tracks=["临1", "机库"],
+            path_tracks=["机北1", "机库"],
             action_type="DETACH",
         ),
     ]
@@ -4195,8 +4195,8 @@ def test_beam_stops_after_first_local_repair_round_when_second_round_does_not_im
                 "snapshots": [
                     initial,
                     ReplayState(
-                        track_sequences={"临1": ["B1"], "存5北": ["B2"]},
-                        loco_track_name="临1",
+                        track_sequences={"机北1": ["B1"], "存5北": ["B2"]},
+                        loco_track_name="机北1",
                         weighed_vehicle_nos=set(),
                         spot_assignments={},
                     ),
@@ -4245,7 +4245,7 @@ def test_beam_stops_after_first_local_repair_round_when_second_round_does_not_im
                         {
                             "trackInfo": [
                                 {"trackName": "存5北", "trackDistance": 367},
-                                {"trackName": "临1", "trackDistance": 81.4},
+                                {"trackName": "机北1", "trackDistance": 81.4},
                                 {"trackName": "机库", "trackDistance": 71.6},
                             ],
                             "vehicleInfo": [
@@ -4288,7 +4288,7 @@ def test_beam_stops_after_first_local_repair_round_when_second_round_does_not_im
     assert result.expanded_nodes == 3
     assert result.generated_nodes == 3
     assert result.closed_nodes == 3
-    assert cut_point_calls == [["存5北->临1", "临1->机库"]]
+    assert cut_point_calls == [["存5北->机北1", "机北1->机库"]]
     assert replay_call_count >= 1
     assert search_call_count == 2
 
@@ -4300,7 +4300,7 @@ def test_beam_stops_after_second_local_repair_round_when_third_round_does_not_im
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -4340,9 +4340,9 @@ def test_beam_stops_after_second_local_repair_round_when_third_round_does_not_im
         plan=[
             HookAction(
                 source_track="存5北",
-                target_track="临1",
+                target_track="机北1",
                 vehicle_nos=["R1"],
-                path_tracks=["存5北", "临1"],
+                path_tracks=["存5北", "机北1"],
                 action_type="ATTACH",
             )
         ]
@@ -4498,7 +4498,7 @@ def test_beam_applies_third_local_repair_round_when_second_result_is_still_long(
         {
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -4522,9 +4522,9 @@ def test_beam_applies_third_local_repair_round_when_second_result_is_still_long(
     initial = build_initial_state(normalized)
     seed_move = HookAction(
         source_track="存5北",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["R3"],
-        path_tracks=["存5北", "临1"],
+        path_tracks=["存5北", "机北1"],
         action_type="ATTACH",
     )
     seed = SolverResult(plan=[seed_move] * 120, expanded_nodes=10, generated_nodes=20, closed_nodes=8, elapsed_ms=100.0, is_complete=True)
@@ -4570,16 +4570,16 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
     incumbent_plan = [
         HookAction(
             source_track="存5北",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["L1"],
-            path_tracks=["存5北", "临1"],
+            path_tracks=["存5北", "机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="机库",
             vehicle_nos=["L1"],
-            path_tracks=["临1", "机库"],
+            path_tracks=["机北1", "机库"],
             action_type="DETACH",
         ),
     ]
@@ -4606,8 +4606,8 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
                 "snapshots": [
                     initial,
                     ReplayState(
-                        track_sequences={"临1": ["L1"], "存5北": ["L2"]},
-                        loco_track_name="临1",
+                        track_sequences={"机北1": ["L1"], "存5北": ["L2"]},
+                        loco_track_name="机北1",
                         weighed_vehicle_nos=set(),
                         spot_assignments={},
                     ),
@@ -4656,7 +4656,7 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
                         {
                             "trackInfo": [
                                 {"trackName": "存5北", "trackDistance": 367},
-                                {"trackName": "临1", "trackDistance": 81.4},
+                                {"trackName": "机北1", "trackDistance": 81.4},
                                 {"trackName": "机库", "trackDistance": 71.6},
                             ],
                             "vehicleInfo": [
@@ -4695,7 +4695,7 @@ def test_lns_recomputes_cut_points_after_plan_improvement():
                 )
 
     assert len(result.plan) == 1
-    assert cut_point_calls == [["存5北->临1", "临1->机库"], ["存5北->机库"]]
+    assert cut_point_calls == [["存5北->机北1", "机北1->机库"], ["存5北->机库"]]
     assert replay_call_count >= 2
 
 
@@ -4707,21 +4707,21 @@ def test_candidate_repair_cut_points_prioritize_repeated_touch_before_unrelated_
             source_track="存5北",
             target_track="调北",
             vehicle_nos=["HOT1"],
-            path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北"],
+            path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "调北"],
             action_type="DETACH",
         ),
         HookAction(
             source_track="调北",
-            target_track="临1",
+            target_track="机北1",
             vehicle_nos=["HOT1"],
-            path_tracks=["调北", "渡4", "临2", "临1"],
+            path_tracks=["调北", "渡4", "机北2", "机北1"],
             action_type="DETACH",
         ),
         HookAction(
-            source_track="临1",
+            source_track="机北1",
             target_track="存4北",
             vehicle_nos=["HOT1"],
-            path_tracks=["临1", "渡2", "渡1", "存4北"],
+            path_tracks=["机北1", "渡2", "渡1", "存4北"],
             action_type="DETACH",
         ),
         HookAction(
@@ -4837,15 +4837,15 @@ def test_build_repair_plan_input_keeps_exact_spot_occupant_movable_when_it_block
     payload = {
         "trackInfo": [
             {"trackName": "机库", "trackDistance": 71.6},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT106",
@@ -4856,7 +4856,7 @@ def test_build_repair_plan_input_keeps_exact_spot_occupant_movable_when_it_block
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT107",
@@ -4867,14 +4867,14 @@ def test_build_repair_plan_input_keeps_exact_spot_occupant_movable_when_it_block
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SPOT106",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "106",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -4884,7 +4884,7 @@ def test_build_repair_plan_input_keeps_exact_spot_occupant_movable_when_it_block
     }
     normalized = normalize_plan_input(payload, master)
     snapshot = ReplayState(
-        track_sequences={"修1库内": ["DEPOT106", "DEPOT107"], "临1": ["SPOT106"]},
+        track_sequences={"修1": ["DEPOT106", "DEPOT107"], "机北1": ["SPOT106"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"DEPOT106": "106", "DEPOT107": "107"},
@@ -4893,27 +4893,27 @@ def test_build_repair_plan_input_keeps_exact_spot_occupant_movable_when_it_block
     localized = _build_repair_plan_input(normalized, snapshot)
     goals = {vehicle.vehicle_no: vehicle.goal for vehicle in localized.vehicles}
 
-    assert goals["DEPOT107"].target_track == "修1库内"
-    assert goals["DEPOT107"].allowed_target_tracks == ["修1库内"]
+    assert goals["DEPOT107"].target_track == "修1"
+    assert goals["DEPOT107"].allowed_target_tracks == ["修1"]
     assert goals["DEPOT106"].target_area_code == "大库:RANDOM"
-    assert set(goals["DEPOT106"].allowed_target_tracks) == {"修1库内", "修2库内", "修3库内", "修4库内"}
+    assert set(goals["DEPOT106"].allowed_target_tracks) == {"修1", "修2", "修3", "修4"}
 
 
 def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT_ROUTE",
@@ -4924,7 +4924,7 @@ def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable(
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SEEK_ROUTE",
@@ -4949,13 +4949,13 @@ def test_build_repair_plan_input_keeps_route_blocking_satisfied_vehicle_movable(
     frozen_goals = {vehicle.vehicle_no: vehicle.goal for vehicle in frozen.vehicles}
     goals = {vehicle.vehicle_no: vehicle.goal for vehicle in localized.vehicles}
 
-    assert frozen_goals["DEPOT_ROUTE"].allowed_target_tracks == ["修1库内"]
+    assert frozen_goals["DEPOT_ROUTE"].allowed_target_tracks == ["修1"]
     assert goals["DEPOT_ROUTE"].target_area_code == "大库:RANDOM"
     assert set(goals["DEPOT_ROUTE"].allowed_target_tracks) == {
-        "修1库内",
-        "修2库内",
-        "修3库内",
-        "修4库内",
+        "修1",
+        "修2",
+        "修3",
+        "修4",
     }
 
 
@@ -4964,16 +4964,16 @@ def test_build_repair_plan_input_keeps_satisfied_front_blocker_movable():
     payload = {
         "trackInfo": [
             {"trackName": "机库", "trackDistance": 71.6},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
             {"trackName": "存4北", "trackDistance": 317.8},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SAT_FRONT",
@@ -4984,7 +4984,7 @@ def test_build_repair_plan_input_keeps_satisfied_front_blocker_movable():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEEP_NEED",
@@ -5005,10 +5005,10 @@ def test_build_repair_plan_input_keeps_satisfied_front_blocker_movable():
 
     assert goals["SAT_FRONT"].target_area_code == "大库:RANDOM"
     assert set(goals["SAT_FRONT"].allowed_target_tracks) == {
-        "修1库内",
-        "修2库内",
-        "修3库内",
-        "修4库内",
+        "修1",
+        "修2",
+        "修3",
+        "修4",
     }
     assert goals["DEEP_NEED"].target_track == "存4北"
 
@@ -5018,16 +5018,16 @@ def test_build_repair_plan_input_keeps_capacity_release_front_movable():
     payload = {
         "trackInfo": [
             {"trackName": "机库", "trackDistance": 71.6},
-            {"trackName": "修1库内", "trackDistance": 40.0},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 40.0},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
             {"trackName": "存2", "trackDistance": 100.0},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SAT_FRONT",
@@ -5038,7 +5038,7 @@ def test_build_repair_plan_input_keeps_capacity_release_front_movable():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SAT_BACK",
@@ -5055,7 +5055,7 @@ def test_build_repair_plan_input_keeps_capacity_release_front_movable():
                 "vehicleNo": "INBOUND",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetMode": "TRACK",
                 "isSpotting": "",
                 "vehicleAttributes": "",
@@ -5071,12 +5071,12 @@ def test_build_repair_plan_input_keeps_capacity_release_front_movable():
 
     assert goals["SAT_FRONT"].target_area_code == "大库:RANDOM"
     assert set(goals["SAT_FRONT"].allowed_target_tracks) == {
-        "修1库内",
-        "修2库内",
-        "修3库内",
-        "修4库内",
+        "修1",
+        "修2",
+        "修3",
+        "修4",
     }
-    assert goals["INBOUND"].target_track == "修1库内"
+    assert goals["INBOUND"].target_track == "修1"
 
 
 def test_route_blockage_tail_clearance_moves_blockers_off_route_before_resume():
@@ -5085,12 +5085,12 @@ def test_route_blockage_tail_clearance_moves_blockers_off_route_before_resume():
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367.0},
             {"trackName": "存5南", "trackDistance": 156.0},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临2", "trackDistance": 55.7},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "机北2", "trackDistance": 55.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -5319,7 +5319,7 @@ def test_route_blockage_tail_clearance_parks_clear_carry_before_suffix_search():
     payload = {
         "trackInfo": [
             {"trackName": "存2", "trackDistance": 239.2},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
         ],
         "vehicleInfo": [
             {
@@ -5384,8 +5384,8 @@ def test_route_blockage_tail_clearance_prefers_goal_detach_for_carried_blocker()
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "存2", "trackDistance": 239.2},
         ],
         "vehicleInfo": [
@@ -5408,7 +5408,7 @@ def test_route_blockage_tail_clearance_prefers_goal_detach_for_carried_blocker()
                 "vehicleNo": "ROUTE_NEED",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetMode": "TRACK",
                 "isSpotting": "",
                 "vehicleAttributes": "",
@@ -5420,8 +5420,8 @@ def test_route_blockage_tail_clearance_prefers_goal_detach_for_carried_blocker()
     state = ReplayState(
         track_sequences={
             "存5北": ["ROUTE_NEED"],
-            "临1": [],
-            "修1库内": [],
+            "机北1": [],
+            "修1": [],
             "存2": [],
         },
         loco_track_name="存5北",
@@ -5433,12 +5433,12 @@ def test_route_blockage_tail_clearance_prefers_goal_detach_for_carried_blocker()
     current_blockage = SimpleNamespace(
         total_blockage_pressure=1,
         facts_by_blocking_track={
-            "临1": SimpleNamespace(
-                blocking_track="临1",
+            "机北1": SimpleNamespace(
+                blocking_track="机北1",
                 blocking_vehicle_nos=["BLOCKER_GOAL"],
                 blocked_vehicle_nos=["ROUTE_NEED"],
                 source_tracks=["存5北"],
-                target_tracks=["修1库内"],
+                target_tracks=["修1"],
                 blockage_count=1,
             )
         },
@@ -5465,14 +5465,14 @@ def test_route_blockage_tail_clearance_allows_goal_detach_to_active_blocking_tra
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "机北2", "trackDistance": 55.7},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "临2",
+                "trackName": "机北2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "CARRIED_BLOCKER",
@@ -5484,30 +5484,30 @@ def test_route_blockage_tail_clearance_allows_goal_detach_to_active_blocking_tra
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "NEEDS_DEPOT",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetMode": "TRACK",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临2",
+        "locoTrackName": "机北2",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
         track_sequences={
             "存5北": [],
-            "临1": ["NEEDS_DEPOT"],
-            "临2": [],
+            "机北1": ["NEEDS_DEPOT"],
+            "机北2": [],
             "调棚": [],
-            "修1库内": [],
+            "修1": [],
         },
-        loco_track_name="临2",
+        loco_track_name="机北2",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -5520,8 +5520,8 @@ def test_route_blockage_tail_clearance_allows_goal_detach_to_active_blocking_tra
                 blocking_track="调棚",
                 blocking_vehicle_nos=["CARRIED_BLOCKER"],
                 blocked_vehicle_nos=["NEEDS_DEPOT"],
-                source_tracks=["临1"],
-                target_tracks=["修1库内"],
+                source_tracks=["机北1"],
+                target_tracks=["修1"],
                 blockage_count=1,
             )
         },
@@ -5547,27 +5547,27 @@ def test_route_blockage_tail_clearance_can_pull_reachable_blocked_source_prefix(
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临2", "trackDistance": 55.7},
-            {"trackName": "临3", "trackDistance": 62.9},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "机北2", "trackDistance": 55.7},
+            {"trackName": "洗油北", "trackDistance": 62.9},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "调棚", "trackDistance": 174.3},
         ],
         "vehicleInfo": [
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SOURCE_BLOCKED",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetMode": "TRACK",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临2",
+                "trackName": "机北2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "ROUTE_BLOCKER",
@@ -5579,19 +5579,19 @@ def test_route_blockage_tail_clearance_can_pull_reachable_blocked_source_prefix(
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临3",
+        "locoTrackName": "洗油北",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = build_initial_state(normalized)
     current_blockage = SimpleNamespace(
         total_blockage_pressure=1,
         facts_by_blocking_track={
-            "临2": SimpleNamespace(
-                blocking_track="临2",
+            "机北2": SimpleNamespace(
+                blocking_track="机北2",
                 blocking_vehicle_nos=["ROUTE_BLOCKER"],
                 blocked_vehicle_nos=["SOURCE_BLOCKED"],
-                source_tracks=["临1"],
-                target_tracks=["修1库内"],
+                source_tracks=["机北1"],
+                target_tracks=["修1"],
                 blockage_count=1,
             )
         },
@@ -5607,7 +5607,7 @@ def test_route_blockage_tail_clearance_can_pull_reachable_blocked_source_prefix(
 
     assert any(
         move.action_type == "ATTACH"
-        and move.source_track == "临1"
+        and move.source_track == "机北1"
         and "SOURCE_BLOCKED" in move.vehicle_nos
         for move, _next_state in candidates
     )
@@ -5618,8 +5618,8 @@ def test_route_blockage_can_stage_satisfied_route_blocker_prefix():
     payload = {
         "trackInfo": [
             {"trackName": "机棚", "trackDistance": 105.8},
-            {"trackName": "临3", "trackDistance": 62.9},
-            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "洗油北", "trackDistance": 62.9},
+            {"trackName": "机北2", "trackDistance": 55.7},
             {"trackName": "调北", "trackDistance": 70.1},
         ],
         "vehicleInfo": [
@@ -5679,10 +5679,10 @@ def test_route_blockage_can_stage_satisfied_route_blocker_prefix():
         for move in step_plan
     ] == [
         ("ATTACH", "机棚", "机棚", ("SETTLED_ROUTE_A", "SETTLED_ROUTE_B")),
-        ("DETACH", "机棚", "临3", ("SETTLED_ROUTE_A", "SETTLED_ROUTE_B")),
+        ("DETACH", "机棚", "洗油北", ("SETTLED_ROUTE_A", "SETTLED_ROUTE_B")),
     ]
     assert next_state.track_sequences["机棚"] == []
-    assert next_state.track_sequences["临3"] == [
+    assert next_state.track_sequences["洗油北"] == [
         "SETTLED_ROUTE_A",
         "SETTLED_ROUTE_B",
     ]
@@ -5768,7 +5768,7 @@ def test_carried_route_blocker_can_pull_source_block_before_restoring_goal_track
                 "1635606",
                 "5495579",
             ],
-            path_tracks=["存5北", "渡1", "渡2", "临1", "存3"],
+            path_tracks=["存5北", "渡1", "渡2", "机北1", "存3"],
             action_type="DETACH",
         ),
         HookAction(
@@ -6359,10 +6359,10 @@ def test_route_clean_direct_tail_places_random_area_prefix_on_shared_target():
         {
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367.0},
-                {"trackName": "修1库内", "trackDistance": 151.7},
-                {"trackName": "修2库内", "trackDistance": 151.7},
-                {"trackName": "修3库内", "trackDistance": 151.7},
-                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "修1", "trackDistance": 151.7},
+                {"trackName": "修2", "trackDistance": 151.7},
+                {"trackName": "修3", "trackDistance": 151.7},
+                {"trackName": "修4", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
                 {
@@ -6414,7 +6414,7 @@ def test_route_clean_direct_tail_places_random_area_prefix_on_shared_target():
         for move in direct_plan
     ] == [
         ("ATTACH", "存5北", "存5北", ("RANDOM_A", "RANDOM_B")),
-        ("DETACH", "存5北", "修1库内", ("RANDOM_A", "RANDOM_B")),
+        ("DETACH", "存5北", "修1", ("RANDOM_A", "RANDOM_B")),
     ]
 
 
@@ -6482,15 +6482,15 @@ def test_route_blockage_tail_clearance_allows_staging_carried_blocked_source():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "临2", "trackDistance": 55.7},
-            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "机北2", "trackDistance": 55.7},
+            {"trackName": "机南", "trackDistance": 90.1},
             {"trackName": "调棚", "trackDistance": 174.3},
             {"trackName": "存5南", "trackDistance": 156.0},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "CARRIED_BLOCKED",
@@ -6502,7 +6502,7 @@ def test_route_blockage_tail_clearance_allows_staging_carried_blocked_source():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临2",
+                "trackName": "机北2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PATH_BLOCKER",
@@ -6514,38 +6514,38 @@ def test_route_blockage_tail_clearance_allows_staging_carried_blocked_source():
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "修2库内",
+        "locoTrackName": "修2",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
         track_sequences={
-            "修2库内": [],
-            "临2": ["PATH_BLOCKER"],
-            "临4": [],
+            "修2": [],
+            "机北2": ["PATH_BLOCKER"],
+            "机南": [],
             "调棚": [],
             "存5南": [],
         },
-        loco_track_name="修2库内",
+        loco_track_name="修2",
         loco_node="修2门",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("CARRIED_BLOCKED",),
     )
     staging_move = HookAction(
-        source_track="修2库内",
-        target_track="临4",
+        source_track="修2",
+        target_track="机南",
         vehicle_nos=["CARRIED_BLOCKED"],
-        path_tracks=["修2库内", "临4"],
+        path_tracks=["修2", "机南"],
         action_type="DETACH",
     )
     current_blockage = SimpleNamespace(
         total_blockage_pressure=1,
         facts_by_blocking_track={
-            "临2": SimpleNamespace(
-                blocking_track="临2",
+            "机北2": SimpleNamespace(
+                blocking_track="机北2",
                 blocking_vehicle_nos=["PATH_BLOCKER"],
                 blocked_vehicle_nos=["CARRIED_BLOCKED"],
-                source_tracks=["修2库内"],
+                source_tracks=["修2"],
                 target_tracks=["存5南"],
                 blockage_count=1,
             )
@@ -6580,8 +6580,8 @@ def test_route_blockage_tail_clearance_allows_carried_blocker_to_lowest_risk_sta
     payload = {
         "trackInfo": [
             {"trackName": "洗北", "trackDistance": 100.0},
-            {"trackName": "临2", "trackDistance": 55.7},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机北2", "trackDistance": 55.7},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "存4南", "trackDistance": 154.5},
             {"trackName": "调棚", "trackDistance": 174.3},
             {"trackName": "洗南", "trackDistance": 88.7},
@@ -6618,8 +6618,8 @@ def test_route_blockage_tail_clearance_allows_carried_blocker_to_lowest_risk_sta
     state = ReplayState(
         track_sequences={
             "洗北": [],
-            "临2": [],
-            "临3": [],
+            "机北2": [],
+            "洗油北": [],
             "存4南": [],
             "调棚": ["BLOCKED_TO_WASH"],
             "洗南": [],
@@ -6645,9 +6645,9 @@ def test_route_blockage_tail_clearance_allows_carried_blocker_to_lowest_risk_sta
     )
     low_risk_staging = HookAction(
         source_track="洗北",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["CARRIED_ROUTE_BLOCKER"],
-        path_tracks=["洗北", "临3"],
+        path_tracks=["洗北", "洗油北"],
         action_type="DETACH",
     )
     worse_staging = HookAction(
@@ -6661,7 +6661,7 @@ def test_route_blockage_tail_clearance_allows_carried_blocker_to_lowest_risk_sta
     def fake_route_blockage(_plan_input, next_state, _route_oracle):
         if next_state.loco_carry:
             return current_blockage
-        if next_state.loco_track_name == "临3":
+        if next_state.loco_track_name == "洗油北":
             return SimpleNamespace(total_blockage_pressure=4, facts_by_blocking_track={})
         return SimpleNamespace(total_blockage_pressure=9, facts_by_blocking_track={})
 
@@ -6689,15 +6689,15 @@ def test_route_blockage_tail_clearance_stages_carried_blocked_source_for_seconda
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临3", "trackDistance": 62.9},
-            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "洗油北", "trackDistance": 62.9},
+            {"trackName": "机南", "trackDistance": 90.1},
             {"trackName": "预修", "trackDistance": 208.5},
             {"trackName": "机棚", "trackDistance": 105.8},
             {"trackName": "油", "trackDistance": 124.0},
         ],
         "vehicleInfo": [
             {
-                "trackName": "临3",
+                "trackName": "洗油北",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "CARRIED_BLOCKED_SOURCE",
@@ -6721,18 +6721,18 @@ def test_route_blockage_tail_clearance_stages_carried_blocked_source_for_seconda
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临3",
+        "locoTrackName": "洗油北",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
         track_sequences={
-            "临3": [],
-            "临4": [],
+            "洗油北": [],
+            "机南": [],
             "预修": ["SECONDARY_ROUTE_BLOCKER"],
             "机棚": [],
             "油": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -6745,17 +6745,17 @@ def test_route_blockage_tail_clearance_stages_carried_blocked_source_for_seconda
                 blocking_track="预修",
                 blocking_vehicle_nos=["SECONDARY_ROUTE_BLOCKER"],
                 blocked_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-                source_tracks=["临3"],
+                source_tracks=["洗油北"],
                 target_tracks=["机棚"],
                 blockage_count=1,
             )
         },
     )
     staging_move = HookAction(
-        source_track="临3",
-        target_track="临4",
+        source_track="洗油北",
+        target_track="机南",
         vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-        path_tracks=["临3", "临4"],
+        path_tracks=["洗油北", "机南"],
         action_type="DETACH",
     )
 
@@ -6788,15 +6788,15 @@ def test_route_blockage_tail_clearance_keeps_low_risk_staging_for_carried_blocke
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "洗北", "trackDistance": 100.0},
-            {"trackName": "临2", "trackDistance": 55.7},
+            {"trackName": "机北2", "trackDistance": 55.7},
             {"trackName": "预修", "trackDistance": 208.5},
             {"trackName": "机棚", "trackDistance": 105.8},
         ],
         "vehicleInfo": [
             {
-                "trackName": "临3",
+                "trackName": "洗油北",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "CARRIED_BLOCKED_SOURCE",
@@ -6820,18 +6820,18 @@ def test_route_blockage_tail_clearance_keeps_low_risk_staging_for_carried_blocke
                 "vehicleAttributes": "",
             },
         ],
-        "locoTrackName": "临3",
+        "locoTrackName": "洗油北",
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
         track_sequences={
-            "临3": [],
+            "洗油北": [],
             "洗北": [],
-            "临2": [],
+            "机北2": [],
             "预修": ["SECONDARY_ROUTE_BLOCKER"],
             "机棚": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -6844,24 +6844,24 @@ def test_route_blockage_tail_clearance_keeps_low_risk_staging_for_carried_blocke
                 blocking_track="预修",
                 blocking_vehicle_nos=["SECONDARY_ROUTE_BLOCKER"],
                 blocked_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-                source_tracks=["临3"],
+                source_tracks=["洗油北"],
                 target_tracks=["机棚"],
                 blockage_count=3,
             )
         },
     )
     low_risk_staging = HookAction(
-        source_track="临3",
+        source_track="洗油北",
         target_track="洗北",
         vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-        path_tracks=["临3", "洗北"],
+        path_tracks=["洗油北", "洗北"],
         action_type="DETACH",
     )
     high_risk_staging = HookAction(
-        source_track="临3",
-        target_track="临2",
+        source_track="洗油北",
+        target_track="机北2",
         vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-        path_tracks=["临3", "机棚", "机北", "渡5", "临2"],
+        path_tracks=["洗油北", "机棚", "机北3", "渡5", "机北2"],
         action_type="DETACH",
     )
 
@@ -6877,7 +6877,7 @@ def test_route_blockage_tail_clearance_keeps_low_risk_staging_for_carried_blocke
                         blocking_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
                         blocked_vehicle_nos=["OTHER_BLOCKED"],
                         source_tracks=["油"],
-                        target_tracks=["修1库内"],
+                        target_tracks=["修1"],
                         blockage_count=5,
                     )
                 },
@@ -6885,12 +6885,12 @@ def test_route_blockage_tail_clearance_keeps_low_risk_staging_for_carried_blocke
         return SimpleNamespace(
             total_blockage_pressure=21,
             facts_by_blocking_track={
-                "临2": SimpleNamespace(
-                    blocking_track="临2",
+                "机北2": SimpleNamespace(
+                    blocking_track="机北2",
                     blocking_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
                     blocked_vehicle_nos=["OTHER_BLOCKED"],
                     source_tracks=["油"],
-                    target_tracks=["修1库内"],
+                    target_tracks=["修1"],
                     blockage_count=21,
                 )
             },
@@ -6921,7 +6921,7 @@ def test_route_blockage_tail_clearance_can_drop_carry_after_route_is_clear():
     payload = {
         "trackInfo": [
             {"trackName": "洗北", "trackDistance": 100.0},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "存4南", "trackDistance": 154.5},
         ],
         "vehicleInfo": [
@@ -6942,7 +6942,7 @@ def test_route_blockage_tail_clearance_can_drop_carry_after_route_is_clear():
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
-        track_sequences={"洗北": [], "临3": [], "存4南": []},
+        track_sequences={"洗北": [], "洗油北": [], "存4南": []},
         loco_track_name="洗北",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -6952,9 +6952,9 @@ def test_route_blockage_tail_clearance_can_drop_carry_after_route_is_clear():
     current_blockage = SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
     low_risk_detach = HookAction(
         source_track="洗北",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["CLEARED_CARRY"],
-        path_tracks=["洗北", "临3"],
+        path_tracks=["洗北", "洗油北"],
         action_type="DETACH",
     )
     high_risk_detach = HookAction(
@@ -6968,7 +6968,7 @@ def test_route_blockage_tail_clearance_can_drop_carry_after_route_is_clear():
     def fake_route_blockage(_plan_input, next_state, _route_oracle):
         if next_state.loco_carry:
             return current_blockage
-        if next_state.loco_track_name == "临3":
+        if next_state.loco_track_name == "洗油北":
             return SimpleNamespace(total_blockage_pressure=1, facts_by_blocking_track={})
         return SimpleNamespace(total_blockage_pressure=5, facts_by_blocking_track={})
 
@@ -6998,7 +6998,7 @@ def test_route_blockage_tail_clearance_requests_relaxed_empty_carry_detach_candi
         {
             "trackInfo": [
                 {"trackName": "洗北", "trackDistance": 100.0},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
             ],
             "vehicleInfo": [
                 {
@@ -7020,7 +7020,7 @@ def test_route_blockage_tail_clearance_requests_relaxed_empty_carry_detach_candi
         allow_internal_loco_tracks=True,
     )
     state = ReplayState(
-        track_sequences={"洗北": [], "临3": []},
+        track_sequences={"洗北": [], "洗油北": []},
         loco_track_name="洗北",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -7030,9 +7030,9 @@ def test_route_blockage_tail_clearance_requests_relaxed_empty_carry_detach_candi
     current_blockage = SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
     detach = HookAction(
         source_track="洗北",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["RELAXED_CARRY"],
-        path_tracks=["洗北", "临3"],
+        path_tracks=["洗北", "洗油北"],
         action_type="DETACH",
     )
     seen_flags: list[bool] = []
@@ -7061,7 +7061,7 @@ def test_route_blockage_tail_clearance_can_peel_carried_tail_to_goal_target():
         {
             "trackInfo": [
                 {"trackName": "油", "trackDistance": 124.0},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -7094,7 +7094,7 @@ def test_route_blockage_tail_clearance_can_peel_carried_tail_to_goal_target():
         allow_internal_loco_tracks=True,
     )
     state = ReplayState(
-        track_sequences={"油": [], "临1": [], "存4北": []},
+        track_sequences={"油": [], "机北1": [], "存4北": []},
         loco_track_name="油",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -7122,7 +7122,7 @@ def test_route_blockage_tail_clearance_can_peel_carried_tail_to_goal_target():
 
     assert any(
         move.action_type == "DETACH"
-        and move.target_track in {"修1库内", "修2库内", "修3库内", "修4库内"}
+        and move.target_track in {"修1", "修2", "修3", "修4"}
         and move.vehicle_nos == ["TAIL_AREA"]
         and next_state.loco_carry == ("HEAD_AREA",)
         for move, next_state in candidates
@@ -7135,7 +7135,7 @@ def test_tail_clearance_resume_peels_carried_tail_under_active_route_pressure(mo
         {
             "trackInfo": [
                 {"trackName": "油", "trackDistance": 124.0},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -7168,7 +7168,7 @@ def test_tail_clearance_resume_peels_carried_tail_under_active_route_pressure(mo
         allow_internal_loco_tracks=True,
     )
     carried_state = ReplayState(
-        track_sequences={"油": [], "临1": [], "存4北": []},
+        track_sequences={"油": [], "机北1": [], "存4北": []},
         loco_track_name="油",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -7178,9 +7178,9 @@ def test_tail_clearance_resume_peels_carried_tail_under_active_route_pressure(mo
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     tail_detach = HookAction(
         source_track="油",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["TAIL_CLEAR"],
-        path_tracks=["油", "临1"],
+        path_tracks=["油", "机北1"],
         action_type="DETACH",
     )
     peeled_state = _apply_move(
@@ -7259,14 +7259,14 @@ def test_tail_clearance_resume_accepts_carried_blocked_source_staging_pressure_i
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临3", "trackDistance": 62.9},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "洗油北", "trackDistance": 62.9},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "机棚", "trackDistance": 105.8},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "CARRIED_BLOCKED_SOURCE",
@@ -7288,29 +7288,29 @@ def test_tail_clearance_resume_accepts_carried_blocked_source_staging_pressure_i
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "临3",
+            "locoTrackName": "洗油北",
         },
         master,
         allow_internal_loco_tracks=True,
     )
     carried_state = ReplayState(
         track_sequences={
-            "临3": [],
-            "临4": [],
+            "洗油北": [],
+            "机南": [],
             "预修": ["SECONDARY_ROUTE_BLOCKER"],
             "机棚": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("CARRIED_BLOCKED_SOURCE",),
     )
     staging_move = HookAction(
-        source_track="临3",
-        target_track="临4",
+        source_track="洗油北",
+        target_track="机南",
         vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-        path_tracks=["临3", "临4"],
+        path_tracks=["洗油北", "机南"],
         action_type="DETACH",
     )
     staged_state = _apply_move(
@@ -7336,7 +7336,7 @@ def test_tail_clearance_resume_accepts_carried_blocked_source_staging_pressure_i
                         blocking_track="预修",
                         blocking_vehicle_nos=["SECONDARY_ROUTE_BLOCKER"],
                         blocked_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
-                        source_tracks=["临3"],
+                        source_tracks=["洗油北"],
                         target_tracks=["机棚"],
                         blockage_count=1,
                     )
@@ -7345,8 +7345,8 @@ def test_tail_clearance_resume_accepts_carried_blocked_source_staging_pressure_i
         return SimpleNamespace(
             total_blockage_pressure=2,
             facts_by_blocking_track={
-                "临4": SimpleNamespace(
-                    blocking_track="临4",
+                "机南": SimpleNamespace(
+                    blocking_track="机南",
                     blocking_vehicle_nos=["CARRIED_BLOCKED_SOURCE"],
                     blocked_vehicle_nos=["SECONDARY_ROUTE_BLOCKER"],
                     source_tracks=["预修"],
@@ -7408,7 +7408,7 @@ def test_tail_clearance_resume_returns_peeling_partial_when_suffix_cannot_finish
         {
             "trackInfo": [
                 {"trackName": "油", "trackDistance": 124.0},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -7441,7 +7441,7 @@ def test_tail_clearance_resume_returns_peeling_partial_when_suffix_cannot_finish
         allow_internal_loco_tracks=True,
     )
     carried_state = ReplayState(
-        track_sequences={"油": [], "临1": [], "存4北": []},
+        track_sequences={"油": [], "机北1": [], "存4北": []},
         loco_track_name="油",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -7450,9 +7450,9 @@ def test_tail_clearance_resume_returns_peeling_partial_when_suffix_cannot_finish
     )
     tail_detach = HookAction(
         source_track="油",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["TAIL_CLEAR"],
-        path_tracks=["油", "临1"],
+        path_tracks=["油", "机北1"],
         action_type="DETACH",
     )
     peeled_state = _apply_move(
@@ -7525,7 +7525,7 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
     ]
     vehicle_info.append(
         {
-            "trackName": "临3",
+            "trackName": "洗油北",
             "order": "1",
             "vehicleModel": "棚车",
             "vehicleNo": "CARRIED_SPOT",
@@ -7539,12 +7539,12 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临3", "trackDistance": 62.9},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "洗油北", "trackDistance": 62.9},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "调棚", "trackDistance": 174.3},
             ],
             "vehicleInfo": vehicle_info,
-            "locoTrackName": "临3",
+            "locoTrackName": "洗油北",
         },
         master,
         allow_internal_loco_tracks=True,
@@ -7552,11 +7552,11 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
     original_initial = build_initial_state(normalized)
     carried_state = ReplayState(
         track_sequences={
-            "临3": [],
-            "临4": [],
+            "洗油北": [],
+            "机南": [],
             "调棚": [f"SHELTER_DONE_{index}" for index in range(1, 7)],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -7564,10 +7564,10 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     staging_move = HookAction(
-        source_track="临3",
-        target_track="临4",
+        source_track="洗油北",
+        target_track="机南",
         vehicle_nos=["CARRIED_SPOT"],
-        path_tracks=["临3", "临4"],
+        path_tracks=["洗油北", "机南"],
         action_type="DETACH",
     )
     staged_state = _apply_move(
@@ -7580,7 +7580,7 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
     def fake_route_blockage(_plan_input, state, _route_oracle):
         if state.loco_carry:
             return SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
-        if state.loco_track_name == "临4" and state.track_sequences.get("临4") == ["CARRIED_SPOT"]:
+        if state.loco_track_name == "机南" and state.track_sequences.get("机南") == ["CARRIED_SPOT"]:
             return SimpleNamespace(total_blockage_pressure=2, facts_by_blocking_track={})
         return SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
 
@@ -7620,7 +7620,7 @@ def test_route_blockage_tail_clearance_stages_carried_work_position_before_inser
         target
         for action, source, target, vehicles in hook_shape
         if action == "DETACH"
-        and source == "临3"
+        and source == "洗油北"
         and vehicles == ("CARRIED_SPOT",)
         and target != "调棚"
     }
@@ -7638,15 +7638,15 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临1", "trackDistance": 81.4},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机北1", "trackDistance": 81.4},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "油", "trackDistance": 124.0},
                 {"trackName": "修2库外", "trackDistance": 49.3},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "CARRIED_SPOT",
@@ -7668,7 +7668,7 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "临1",
+            "locoTrackName": "机北1",
         },
         master,
         allow_internal_loco_tracks=True,
@@ -7676,13 +7676,13 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
     original_initial = build_initial_state(normalized)
     state = ReplayState(
         track_sequences={
-            "临1": [],
-            "临4": [],
+            "机北1": [],
+            "机南": [],
             "调棚": [],
             "油": ["ROUTE_NEED"],
             "修2库外": [],
         },
-        loco_track_name="临1",
+        loco_track_name="机北1",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -7692,7 +7692,7 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
     def fake_route_blockage(_plan_input, next_state, _route_oracle):
         if next_state.loco_carry:
             return SimpleNamespace(total_blockage_pressure=4, facts_by_blocking_track={})
-        if next_state.loco_track_name == "临4":
+        if next_state.loco_track_name == "机南":
             return SimpleNamespace(total_blockage_pressure=6, facts_by_blocking_track={})
         return SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
 
@@ -7701,8 +7701,8 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
     progressed_state = state.model_copy(
         update={
             "track_sequences": {
-                "临1": [],
-                "临4": [],
+                "机北1": [],
+                "机南": [],
                 "调棚": ["CARRIED_SPOT"],
                 "油": ["ROUTE_NEED"],
                 "修2库外": [],
@@ -7762,7 +7762,7 @@ def test_carried_work_position_clearance_can_stage_after_pressure_drop(monkeypat
     assert result is not None
     assert result.is_complete
     assert result.plan[0].action_type == "DETACH"
-    assert result.plan[0].target_track in {"临2", "临3", "临4", "存4南"}
+    assert result.plan[0].target_track in {"机北2", "洗油北", "机南", "存4南"}
     assert result.plan[0].vehicle_nos == ["CARRIED_SPOT"]
 
 
@@ -7771,7 +7771,7 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "油", "trackDistance": 124.0},
                 {"trackName": "修2库外", "trackDistance": 49.3},
@@ -7800,7 +7800,7 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "PARKED_SPOT",
@@ -7822,7 +7822,7 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "临3",
+            "locoTrackName": "洗油北",
         },
         master,
         allow_internal_loco_tracks=True,
@@ -7830,12 +7830,12 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
     original_initial = build_initial_state(normalized)
     state = ReplayState(
         track_sequences={
-            "临3": ["PARKED_SPOT"],
+            "洗油北": ["PARKED_SPOT"],
             "调棚": ["SHELTER_PAD_1", "SHELTER_PAD_2"],
             "油": ["ROUTE_NEED"],
             "修2库外": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -7843,7 +7843,7 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
     progressed_state = state.model_copy(
         update={
             "track_sequences": {
-                "临3": [],
+                "洗油北": [],
                 "调棚": ["PARKED_SPOT", "SHELTER_PAD_1", "SHELTER_PAD_2"],
                 "油": ["ROUTE_NEED"],
                 "修2库外": [],
@@ -7854,17 +7854,17 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
         }
     )
     attach_blocker = HookAction(
-        source_track="临3",
-        target_track="临3",
+        source_track="洗油北",
+        target_track="洗油北",
         vehicle_nos=["PARKED_SPOT"],
-        path_tracks=["临3"],
+        path_tracks=["洗油北"],
         action_type="ATTACH",
     )
     detach_blocker = HookAction(
-        source_track="临3",
+        source_track="洗油北",
         target_track="调棚",
         vehicle_nos=["PARKED_SPOT"],
-        path_tracks=["临3", "调棚"],
+        path_tracks=["洗油北", "调棚"],
         action_type="DETACH",
     )
 
@@ -7880,8 +7880,8 @@ def test_route_blockage_tail_moves_parked_work_position_blocker_to_goal(monkeypa
                 blocking_vehicle_nos=["PARKED_SPOT"],
                 blocked_vehicle_nos=["ROUTE_NEED"],
                 facts_by_blocking_track={
-                    "临3": SimpleNamespace(
-                        blocking_track="临3",
+                    "洗油北": SimpleNamespace(
+                        blocking_track="洗油北",
                         blocking_vehicle_nos=["PARKED_SPOT"],
                         blocked_vehicle_nos=["ROUTE_NEED"],
                         source_tracks=["油"],
@@ -7933,14 +7933,14 @@ def test_route_blockage_tail_detaches_carried_goal_blocker_to_goal(monkeypatch):
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "油", "trackDistance": 124.0},
                 {"trackName": "修2库外", "trackDistance": 49.3},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临4",
+                    "trackName": "机南",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "CARRIED_GOAL_BLOCKER",
@@ -7962,25 +7962,25 @@ def test_route_blockage_tail_detaches_carried_goal_blocker_to_goal(monkeypatch):
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "临4",
+            "locoTrackName": "机南",
         },
         master,
         allow_internal_loco_tracks=True,
     )
     original_initial = build_initial_state(normalized)
     state = ReplayState(
-        track_sequences={"临4": [], "预修": [], "油": ["ROUTE_NEED"], "修2库外": []},
-        loco_track_name="临4",
+        track_sequences={"机南": [], "预修": [], "油": ["ROUTE_NEED"], "修2库外": []},
+        loco_track_name="机南",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("CARRIED_GOAL_BLOCKER",),
     )
     detach_goal = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="预修",
         vehicle_nos=["CARRIED_GOAL_BLOCKER"],
-        path_tracks=["临4", "预修"],
+        path_tracks=["机南", "预修"],
         action_type="DETACH",
     )
 
@@ -8151,9 +8151,9 @@ def test_route_blockage_tail_clearance_rejects_reparking_to_still_blocking_track
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "存5南", "trackDistance": 156.0},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -8187,7 +8187,7 @@ def test_route_blockage_tail_clearance_rejects_reparking_to_still_blocking_track
                 "vehicleNo": "BLOCKED_SPOT",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修4库内",
+                "targetTrack": "修4",
                 "targetMode": "TRACK",
                 "isSpotting": "",
                 "vehicleAttributes": "",
@@ -8199,9 +8199,9 @@ def test_route_blockage_tail_clearance_rejects_reparking_to_still_blocking_track
     state = ReplayState(
         track_sequences={
             "存5北": ["REMAINING_ROUTE_BLOCKER"],
-            "临3": [],
+            "洗油北": [],
             "存5南": ["BLOCKED_SPOT"],
-            "修4库内": [],
+            "修4": [],
         },
         loco_track_name="存5北",
         loco_node=None,
@@ -8217,7 +8217,7 @@ def test_route_blockage_tail_clearance_rejects_reparking_to_still_blocking_track
                 blocking_vehicle_nos=["REMAINING_ROUTE_BLOCKER"],
                 blocked_vehicle_nos=["BLOCKED_SPOT"],
                 source_tracks=["存5南"],
-                target_tracks=["修4库内"],
+                target_tracks=["修4"],
                 blockage_count=1,
             )
         },
@@ -8231,9 +8231,9 @@ def test_route_blockage_tail_clearance_rejects_reparking_to_still_blocking_track
     )
     staging_detach = HookAction(
         source_track="存5北",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["CARRIED_ALREADY_CLEARED"],
-        path_tracks=["存5北", "临3"],
+        path_tracks=["存5北", "洗油北"],
         action_type="DETACH",
     )
 
@@ -8271,7 +8271,7 @@ def test_route_blockage_tail_clearance_keeps_searching_after_route_clear_partial
         {
             "trackInfo": [
                 {"trackName": "修3库外", "trackDistance": 49.3},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
@@ -8303,8 +8303,8 @@ def test_route_blockage_tail_clearance_keeps_searching_after_route_clear_partial
         loco_carry=("ROUTE_CLEAR_ONLY",),
     )
     productive_state = ReplayState(
-        track_sequences={"临3": ["ROUTE_CLEAR_ONLY"]},
-        loco_track_name="临3",
+        track_sequences={"洗油北": ["ROUTE_CLEAR_ONLY"]},
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -8319,9 +8319,9 @@ def test_route_blockage_tail_clearance_keeps_searching_after_route_clear_partial
     )
     productive_move = HookAction(
         source_track="修3库外",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["ROUTE_CLEAR_ONLY"],
-        path_tracks=["修3库外", "临3"],
+        path_tracks=["修3库外", "洗油北"],
         action_type="DETACH",
     )
     route_clear_partial = SolverResult(
@@ -8349,7 +8349,7 @@ def test_route_blockage_tail_clearance_keeps_searching_after_route_clear_partial
             return SimpleNamespace(total_blockage_pressure=2, facts_by_blocking_track={"修3库外": object()})
         if probe_state is route_clear_state:
             return SimpleNamespace(total_blockage_pressure=0, facts_by_blocking_track={})
-        return SimpleNamespace(total_blockage_pressure=1, facts_by_blocking_track={"临3": object()})
+        return SimpleNamespace(total_blockage_pressure=1, facts_by_blocking_track={"洗油北": object()})
 
     def fake_candidates(**kwargs):
         probe_state = kwargs["state"]
@@ -8404,7 +8404,7 @@ def test_route_blockage_tail_clearance_prefers_low_pressure_staging_over_goal_dr
             "trackInfo": [
                 {"trackName": "修2库外", "trackDistance": 49.3},
                 {"trackName": "修1库外", "trackDistance": 49.3},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "存1", "trackDistance": 113.0},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "预修", "trackDistance": 208.5},
@@ -8453,7 +8453,7 @@ def test_route_blockage_tail_clearance_prefers_low_pressure_staging_over_goal_dr
         track_sequences={
             "修2库外": [],
             "修1库外": [],
-            "临3": [],
+            "洗油北": [],
             "存1": ["ROUTE_BLOCKER"],
             "存5北": ["ROUTE_NEED"],
             "预修": [],
@@ -8486,9 +8486,9 @@ def test_route_blockage_tail_clearance_prefers_low_pressure_staging_over_goal_dr
     )
     low_pressure_staging = HookAction(
         source_track="修2库外",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["DONE_CARRY"],
-        path_tracks=["修2库外", "临3"],
+        path_tracks=["修2库外", "洗油北"],
         action_type="DETACH",
     )
 
@@ -8506,7 +8506,7 @@ def test_route_blockage_tail_clearance_prefers_low_pressure_staging_over_goal_dr
         return SimpleNamespace(
             total_blockage_pressure=9,
             facts_by_blocking_track={
-                "临3": SimpleNamespace(blocking_vehicle_nos=["DONE_CARRY"]),
+                "洗油北": SimpleNamespace(blocking_vehicle_nos=["DONE_CARRY"]),
                 "存1": current_blockage.facts_by_blocking_track["存1"],
             },
         )
@@ -8537,9 +8537,9 @@ def test_route_blockage_tail_clearance_continues_local_clearance_before_suffix_s
         {
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367.0},
-                {"trackName": "临2", "trackDistance": 55.7},
+                {"trackName": "机北2", "trackDistance": 55.7},
                 {"trackName": "存5南", "trackDistance": 156.0},
-                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "修4", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
                 {
@@ -8561,7 +8561,7 @@ def test_route_blockage_tail_clearance_continues_local_clearance_before_suffix_s
                     "vehicleNo": "BLOCKED_TO_DEPOT",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修4库内",
+                    "targetTrack": "修4",
                     "targetMode": "TRACK",
                     "isSpotting": "",
                     "vehicleAttributes": "",
@@ -8576,9 +8576,9 @@ def test_route_blockage_tail_clearance_continues_local_clearance_before_suffix_s
     state = ReplayState(
         track_sequences={
             "存5北": [],
-            "临2": [],
+            "机北2": [],
             "存5南": ["BLOCKED_TO_DEPOT"],
-            "修4库内": [],
+            "修4": [],
         },
         loco_track_name="存5北",
         loco_node=None,
@@ -8588,9 +8588,9 @@ def test_route_blockage_tail_clearance_continues_local_clearance_before_suffix_s
     )
     detach_clear_carry = HookAction(
         source_track="存5北",
-        target_track="临2",
+        target_track="机北2",
         vehicle_nos=["ROUTE_BLOCKER"],
-        path_tracks=["存5北", "临2"],
+        path_tracks=["存5北", "机北2"],
         action_type="DETACH",
     )
     with patch(
@@ -8656,7 +8656,7 @@ def test_route_blockage_tail_clearance_preserves_cleared_route_before_goal_repar
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 62.9},
         ],
         "vehicleInfo": [
             {
@@ -8676,7 +8676,7 @@ def test_route_blockage_tail_clearance_preserves_cleared_route_before_goal_repar
     }
     normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
     state = ReplayState(
-        track_sequences={"存5北": [], "临3": []},
+        track_sequences={"存5北": [], "洗油北": []},
         loco_track_name="存5北",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -8693,9 +8693,9 @@ def test_route_blockage_tail_clearance_preserves_cleared_route_before_goal_repar
     )
     pressure_safe_staging = HookAction(
         source_track="存5北",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["CLEARED_ROUTE_BLOCKER"],
-        path_tracks=["存5北", "临3"],
+        path_tracks=["存5北", "洗油北"],
         action_type="DETACH",
     )
 
@@ -8711,7 +8711,7 @@ def test_route_blockage_tail_clearance_preserves_cleared_route_before_goal_repar
                         blocking_vehicle_nos=["CLEARED_ROUTE_BLOCKER"],
                         blocked_vehicle_nos=["ROUTE_NEED"],
                         source_tracks=["存5南"],
-                        target_tracks=["修4库内"],
+                        target_tracks=["修4"],
                         blockage_count=1,
                     )
                 },
@@ -8833,7 +8833,7 @@ def test_route_blockage_tail_clearance_uses_goal_drop_fallback_for_unrelated_car
                     blocking_vehicle_nos=["DONE_CARRY"],
                     blocked_vehicle_nos=["OTHER_ROUTE_NEED"],
                     source_tracks=["预修"],
-                    target_tracks=["修1库内"],
+                    target_tracks=["修1"],
                     blockage_count=13,
                 ),
                 "存1": current_blockage.facts_by_blocking_track["存1"],
@@ -8867,7 +8867,7 @@ def test_route_blockage_tail_clearance_prefers_same_track_goal_drop_over_lower_p
         {
             "trackInfo": [
                 {"trackName": "修2库外", "trackDistance": 49.3},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "存1", "trackDistance": 113.0},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "预修", "trackDistance": 208.5},
@@ -8915,7 +8915,7 @@ def test_route_blockage_tail_clearance_prefers_same_track_goal_drop_over_lower_p
     state = ReplayState(
         track_sequences={
             "修2库外": [],
-            "临3": [],
+            "洗油北": [],
             "存1": ["ROUTE_BLOCKER"],
             "存5北": ["ROUTE_NEED"],
             "预修": [],
@@ -8948,16 +8948,16 @@ def test_route_blockage_tail_clearance_prefers_same_track_goal_drop_over_lower_p
     )
     staging_drop = HookAction(
         source_track="修2库外",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["DONE_CARRY"],
-        path_tracks=["修2库外", "临3"],
+        path_tracks=["修2库外", "洗油北"],
         action_type="DETACH",
     )
 
     def fake_route_blockage(_plan_input, next_state, _route_oracle):
         if next_state.loco_carry:
             return current_blockage
-        if next_state.track_sequences.get("临3"):
+        if next_state.track_sequences.get("洗油北"):
             pressure = 17
         else:
             pressure = 20
@@ -8999,7 +8999,7 @@ def test_tail_clearance_resume_continues_route_clearance_after_goal_drop_fallbac
                 {"trackName": "存1", "trackDistance": 113.0},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "预修", "trackDistance": 208.5},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
             ],
             "vehicleInfo": [
                 {
@@ -9048,7 +9048,7 @@ def test_tail_clearance_resume_continues_route_clearance_after_goal_drop_fallbac
             "存1": ["ROUTE_BLOCKER"],
             "存5北": ["ROUTE_NEED"],
             "预修": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="修2库外",
         loco_node=None,
@@ -9084,9 +9084,9 @@ def test_tail_clearance_resume_continues_route_clearance_after_goal_drop_fallbac
     )
     detach_blocker = HookAction(
         source_track="存1",
-        target_track="临4",
+        target_track="机南",
         vehicle_nos=["ROUTE_BLOCKER"],
-        path_tracks=["存1", "临4"],
+        path_tracks=["存1", "机南"],
         action_type="DETACH",
     )
     cleared_state = _apply_move(
@@ -9116,7 +9116,7 @@ def test_tail_clearance_resume_continues_route_clearance_after_goal_drop_fallbac
                         blocking_vehicle_nos=["DONE_CARRY"],
                         blocked_vehicle_nos=["OTHER_ROUTE_NEED"],
                         source_tracks=["预修"],
-                        target_tracks=["修1库内"],
+                        target_tracks=["修1"],
                         blockage_count=13,
                     ),
                     "存1": initial_fact,
@@ -9179,7 +9179,7 @@ def test_tail_clearance_resume_tries_next_candidate_after_partial_branch(monkeyp
         {
             "trackInfo": [
                 {"trackName": "预修", "trackDistance": 208.5},
-                {"trackName": "修1库内", "trackDistance": 151.7},
+                {"trackName": "修1", "trackDistance": 151.7},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -9190,7 +9190,7 @@ def test_tail_clearance_resume_tries_next_candidate_after_partial_branch(monkeyp
                     "vehicleNo": "HEAD",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修1库内",
+                    "targetTrack": "修1",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
@@ -9214,7 +9214,7 @@ def test_tail_clearance_resume_tries_next_candidate_after_partial_branch(monkeyp
     carried_state = ReplayState(
         track_sequences={
             "预修": [],
-            "修1库内": [],
+            "修1": [],
             "存4北": [],
         },
         loco_track_name="预修",
@@ -9225,9 +9225,9 @@ def test_tail_clearance_resume_tries_next_candidate_after_partial_branch(monkeyp
     )
     partial_move = HookAction(
         source_track="预修",
-        target_track="修1库内",
+        target_track="修1",
         vehicle_nos=["TAIL"],
-        path_tracks=["预修", "修1库内"],
+        path_tracks=["预修", "修1"],
         action_type="DETACH",
     )
     complete_move = HookAction(
@@ -9329,7 +9329,7 @@ def test_tail_clearance_resume_skips_goal_drop_reattach_cycle(monkeypatch):
             "trackInfo": [
                 {"trackName": "修2库外", "trackDistance": 49.3},
                 {"trackName": "存1", "trackDistance": 113.0},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -9366,7 +9366,7 @@ def test_tail_clearance_resume_skips_goal_drop_reattach_cycle(monkeypatch):
         track_sequences={
             "修2库外": [],
             "存1": ["ROUTE_BLOCKER"],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="修2库外",
         loco_node=None,
@@ -9409,9 +9409,9 @@ def test_tail_clearance_resume_skips_goal_drop_reattach_cycle(monkeypatch):
     )
     detach_blocker = HookAction(
         source_track="存1",
-        target_track="临4",
+        target_track="机南",
         vehicle_nos=["ROUTE_BLOCKER"],
-        path_tracks=["存1", "临4"],
+        path_tracks=["存1", "机南"],
         action_type="DETACH",
     )
     cleared_state = _apply_move(
@@ -9490,7 +9490,7 @@ def test_tail_clearance_resume_keeps_searching_after_dead_end_partial(monkeypatc
             "trackInfo": [
                 {"trackName": "修2库外", "trackDistance": 49.3},
                 {"trackName": "存1", "trackDistance": 113.0},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -9527,7 +9527,7 @@ def test_tail_clearance_resume_keeps_searching_after_dead_end_partial(monkeypatc
         track_sequences={
             "修2库外": ["DONE_AT_GOAL"],
             "存1": ["REAL_BLOCKER"],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="修2库外",
         loco_node=None,
@@ -9570,9 +9570,9 @@ def test_tail_clearance_resume_keeps_searching_after_dead_end_partial(monkeypatc
     )
     detach_blocker = HookAction(
         source_track="存1",
-        target_track="临4",
+        target_track="机南",
         vehicle_nos=["REAL_BLOCKER"],
-        path_tracks=["存1", "临4"],
+        path_tracks=["存1", "机南"],
         action_type="DETACH",
     )
     cleared_state = _apply_move(
@@ -9652,7 +9652,7 @@ def test_tail_clearance_resume_keeps_best_partial_when_later_branch_exhausts_bud
             "trackInfo": [
                 {"trackName": "存1", "trackDistance": 113.0},
                 {"trackName": "存2", "trackDistance": 239.2},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
@@ -9688,7 +9688,7 @@ def test_tail_clearance_resume_keeps_best_partial_when_later_branch_exhausts_bud
         track_sequences={
             "存1": ["PARTIAL_BLOCKER"],
             "存2": ["SLOW_BLOCKER"],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="存1",
         loco_node=None,
@@ -10181,7 +10181,7 @@ def test_route_blockage_tail_clearance_avoids_repark_to_still_blocking_goal_trac
                 blocking_vehicle_nos=["REMAINING_BLOCKER"],
                 blocked_vehicle_nos=["ROUTE_NEED"],
                 source_tracks=["存5南"],
-                target_tracks=["修4库内"],
+                target_tracks=["修4"],
                 blockage_count=1,
             )
         },
@@ -10210,7 +10210,7 @@ def test_route_blockage_tail_clearance_avoids_repark_to_still_blocking_goal_trac
                 blocking_vehicle_nos=["REMAINING_BLOCKER"],
                 blocked_vehicle_nos=["ROUTE_NEED"],
                 source_tracks=["存5南"],
-                target_tracks=["修4库内"],
+                target_tracks=["修4"],
                 blockage_count=1,
             )
         }
@@ -10302,7 +10302,7 @@ def test_route_blockage_tail_clearance_prefers_whole_safe_block_detach():
                 blocking_vehicle_nos=["REMAINING_BLOCKER"],
                 blocked_vehicle_nos=["ROUTE_NEED"],
                 source_tracks=["存5南"],
-                target_tracks=["修4库内"],
+                target_tracks=["修4"],
                 blockage_count=1,
             )
         },
@@ -10349,7 +10349,7 @@ def test_goal_frontier_tail_completion_moves_satisfied_prefix_to_finish_blocked_
             "trackInfo": [
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -10385,7 +10385,7 @@ def test_goal_frontier_tail_completion_moves_satisfied_prefix_to_finish_blocked_
         track_sequences={
             "预修": ["GF_DONE", "GF_TAIL"],
             "存4北": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -10412,7 +10412,7 @@ def test_goal_frontier_tail_completion_moves_satisfied_prefix_to_finish_blocked_
         "DETACH",
     ]
     assert result.plan[0].vehicle_nos == ["GF_DONE"]
-    assert result.plan[1].target_track == "临4"
+    assert result.plan[1].target_track == "机南"
     assert result.plan[2].vehicle_nos == ["GF_TAIL"]
     assert result.plan[3].target_track == "存4北"
     assert result.plan[-1].target_track == "预修"
@@ -10424,9 +10424,9 @@ def test_goal_frontier_tail_completion_preserves_partial_when_resume_cannot_fini
         {
             "trackInfo": [
                 {"trackName": "预修", "trackDistance": 208.5},
-                {"trackName": "修1库内", "trackDistance": 151.7},
+                {"trackName": "修1", "trackDistance": 151.7},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -10453,7 +10453,7 @@ def test_goal_frontier_tail_completion_preserves_partial_when_resume_cannot_fini
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "GF_PARTIAL_OTHER",
@@ -10471,9 +10471,9 @@ def test_goal_frontier_tail_completion_preserves_partial_when_resume_cannot_fini
     state = ReplayState(
         track_sequences={
             "预修": ["GF_PARTIAL_DONE", "GF_PARTIAL_TAIL"],
-            "修1库内": ["GF_PARTIAL_OTHER"],
+            "修1": ["GF_PARTIAL_OTHER"],
             "存4北": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -10507,7 +10507,7 @@ def test_goal_frontier_tail_completion_preserves_partial_when_resume_cannot_fini
         "DETACH",
     ]
     assert result.partial_plan[0].vehicle_nos == ["GF_PARTIAL_DONE"]
-    assert result.partial_plan[1].target_track == "临4"
+    assert result.partial_plan[1].target_track == "机南"
     assert result.partial_plan[2].vehicle_nos == ["GF_PARTIAL_TAIL"]
     assert result.partial_plan[3].target_track == "存4北"
 
@@ -10519,7 +10519,7 @@ def test_goal_frontier_tail_completion_preserves_partial_when_budget_expires_aft
             "trackInfo": [
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -10554,7 +10554,7 @@ def test_goal_frontier_tail_completion_preserves_partial_when_budget_expires_aft
         track_sequences={
             "预修": ["GF_BUDGET_DONE", "GF_BUDGET_TAIL"],
             "存4北": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -10580,7 +10580,7 @@ def test_goal_frontier_tail_completion_preserves_partial_when_budget_expires_aft
     assert result.partial_fallback_stage == "goal_frontier_tail_completion"
     assert len(result.partial_plan) >= 2
     assert result.partial_plan[0].vehicle_nos == ["GF_BUDGET_DONE"]
-    assert result.partial_plan[1].target_track == "临4"
+    assert result.partial_plan[1].target_track == "机南"
 
 
 def test_goal_frontier_tail_completion_skips_unserviceable_first_frontier(monkeypatch):
@@ -10591,7 +10591,7 @@ def test_goal_frontier_tail_completion_skips_unserviceable_first_frontier(monkey
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存2", "trackDistance": 239.2},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临2", "trackDistance": 55.7},
+                {"trackName": "机北2", "trackDistance": 55.7},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -10649,7 +10649,7 @@ def test_goal_frontier_tail_completion_skips_unserviceable_first_frontier(monkey
             "预修": ["BLOCKED_DONE", "BLOCKED_TAIL"],
             "存2": ["SERVICEABLE_DONE", "SERVICEABLE_TAIL"],
             "存4北": [],
-            "临2": [],
+            "机北2": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -10664,9 +10664,9 @@ def test_goal_frontier_tail_completion_skips_unserviceable_first_frontier(monkey
     )
     service_detach = HookAction(
         source_track="存2",
-        target_track="临2",
+        target_track="机北2",
         vehicle_nos=["SERVICEABLE_DONE"],
-        path_tracks=["存2", "临2"],
+        path_tracks=["存2", "机北2"],
         action_type="DETACH",
     )
     target_attach = HookAction(
@@ -10762,7 +10762,7 @@ def test_resume_from_checkpoint_tries_goal_frontier_before_returning_clear_parti
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
             ],
             "vehicleInfo": [
                 {
@@ -10796,7 +10796,7 @@ def test_resume_from_checkpoint_tries_goal_frontier_before_returning_clear_parti
         track_sequences={
             "预修": ["GF_RESUME_DONE", "GF_RESUME_TAIL"],
             "存4北": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -10964,7 +10964,7 @@ def test_tail_clearance_resume_tries_goal_frontier_before_localized_resume():
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "预修", "trackDistance": 208.5},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
             ],
             "vehicleInfo": [
                 {
@@ -10998,7 +10998,7 @@ def test_tail_clearance_resume_tries_goal_frontier_before_localized_resume():
         track_sequences={
             "预修": ["TC_GF_DONE", "TC_GF_TAIL"],
             "存4北": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
@@ -11036,13 +11036,13 @@ def test_route_blockage_tail_clearance_hands_off_after_material_pressure_drop():
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "洗北", "trackDistance": 100.0},
                 {"trackName": "机棚", "trackDistance": 105.8},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "BLOCKER",
@@ -11064,7 +11064,7 @@ def test_route_blockage_tail_clearance_hands_off_after_material_pressure_drop():
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "临3",
+            "locoTrackName": "洗油北",
         },
         master,
         allow_internal_loco_tracks=True,
@@ -11072,11 +11072,11 @@ def test_route_blockage_tail_clearance_hands_off_after_material_pressure_drop():
     initial = build_initial_state(normalized)
     state = ReplayState(
         track_sequences={
-            "临3": ["BLOCKER"],
+            "洗油北": ["BLOCKER"],
             "洗北": ["BLOCKER", "TAIL"],
             "机棚": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -11084,21 +11084,21 @@ def test_route_blockage_tail_clearance_hands_off_after_material_pressure_drop():
     )
     lowered_state = ReplayState(
         track_sequences={
-            "临3": [],
+            "洗油北": [],
             "洗北": ["BLOCKER", "TAIL"],
             "机棚": [],
         },
-        loco_track_name="临3",
+        loco_track_name="洗油北",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=(),
     )
     clearing_move = HookAction(
-        source_track="临3",
-        target_track="临3",
+        source_track="洗油北",
+        target_track="洗油北",
         vehicle_nos=["BLOCKER"],
-        path_tracks=["临3"],
+        path_tracks=["洗油北"],
         action_type="ATTACH",
     )
     completion = SolverResult(
@@ -11533,15 +11533,15 @@ def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
     payload = {
         "trackInfo": [
             {"trackName": "机库", "trackDistance": 71.6},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT106",
@@ -11552,7 +11552,7 @@ def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "DEPOT107",
@@ -11563,14 +11563,14 @@ def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "临1",
+                "trackName": "机北1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "SPOT106",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "106",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -11580,7 +11580,7 @@ def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
     }
     normalized = normalize_plan_input(payload, master)
     snapshot = ReplayState(
-        track_sequences={"修1库内": ["DEPOT106", "DEPOT107"], "临1": ["SPOT106"]},
+        track_sequences={"修1": ["DEPOT106", "DEPOT107"], "机北1": ["SPOT106"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"DEPOT106": "106", "DEPOT107": "107"},
@@ -11597,7 +11597,7 @@ def test_try_localized_resume_completion_solves_small_exact_spot_conflict():
     assert result is not None
     assert result.is_complete is True
     assert len(result.plan) == 3
-    assert result.plan[-1].target_track == "修1库内"
+    assert result.plan[-1].target_track == "修1"
 
 
 def test_work_position_tail_step_restores_carried_prefix_after_target_detach():
@@ -11675,7 +11675,7 @@ def test_route_clean_structural_tail_cleanup_repeats_work_position_and_frontier_
             {"trackName": "机库", "trackDistance": 71.6},
             {"trackName": "存1", "trackDistance": 113.0},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
             {"trackName": "修2库外", "trackDistance": 49.3},
         ],
         "vehicleInfo": [
@@ -11704,18 +11704,18 @@ def test_route_clean_structural_tail_cleanup_repeats_work_position_and_frontier_
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "INNER_OK",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "OUT_TARGET",
@@ -12131,9 +12131,9 @@ def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_retur
             "trackInfo": [
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存5南", "trackDistance": 156.0},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
                 {"trackName": "机库", "trackDistance": 71.6},
-                {"trackName": "修1库内", "trackDistance": 151.7},
+                {"trackName": "修1", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
                 {
@@ -12154,12 +12154,12 @@ def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_retur
                     "vehicleNo": "CHECK_SEEK",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修1库内",
+                    "targetTrack": "修1",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临1",
+                    "trackName": "机北1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "CHECK_OTHER",
@@ -12194,17 +12194,17 @@ def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_retur
     ]
     partial_suffix = [
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["CHECK_OTHER"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="临1",
-            target_track="临1",
+            source_track="机北1",
+            target_track="机北1",
             vehicle_nos=["CHECK_OTHER"],
-            path_tracks=["临1"],
+            path_tracks=["机北1"],
             action_type="DETACH",
         ),
     ]
@@ -12225,9 +12225,9 @@ def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_retur
             *partial_suffix,
             HookAction(
                 source_track="存5南",
-                target_track="修1库内",
+                target_track="修1",
                 vehicle_nos=["CHECK_SEEK"],
-                path_tracks=["存5南", "修1库内"],
+                path_tracks=["存5南", "修1"],
                 action_type="DETACH",
             ),
         ],
@@ -12266,7 +12266,7 @@ def test_resume_from_checkpoint_tries_route_blockage_tail_clearance_before_retur
     assert tail_kwargs["original_initial_state"] is initial
     assert tail_kwargs["prefix_plan"] == prefix + partial_suffix
     assert tail_kwargs["state"].loco_carry == ()
-    assert tail_kwargs["state"].track_sequences["临1"] == ["CHECK_OTHER"]
+    assert tail_kwargs["state"].track_sequences["机北1"] == ["CHECK_OTHER"]
 
 
 def test_resume_from_checkpoint_does_not_tail_rescue_after_budget_exhausted():
@@ -12354,7 +12354,7 @@ def test_direct_blocked_tail_completion_uses_native_suffix_when_restoring_carry_
             "trackInfo": [
                 {"trackName": "存5南", "trackDistance": 156.0},
                 {"trackName": "存3", "trackDistance": 258.5},
-                {"trackName": "修3库内", "trackDistance": 151.7},
+                {"trackName": "修3", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
                 {
@@ -12406,17 +12406,17 @@ def test_direct_blocked_tail_completion_uses_native_suffix_when_restoring_carry_
     )
     detach_depot = HookAction(
         source_track="存5南",
-        target_track="修3库内",
+        target_track="修3",
         vehicle_nos=["RESTORE_DEPOT"],
-        path_tracks=["存5南", "修3库内"],
+        path_tracks=["存5南", "修3"],
         action_type="DETACH",
     )
     searched_suffix = [
         HookAction(
-            source_track="修3库内",
+            source_track="修3",
             target_track="存3",
             vehicle_nos=["RESTORE_B"],
-            path_tracks=["修3库内", "存3"],
+            path_tracks=["修3", "存3"],
             action_type="DETACH",
         ),
         HookAction(
@@ -12456,7 +12456,7 @@ def test_direct_blocked_tail_completion_uses_native_suffix_when_restoring_carry_
             "存5北": SimpleNamespace(
                 blocking_track="存5北",
                 blocked_vehicle_nos=["RESTORE_DEPOT"],
-                target_tracks=["修3库内"],
+                target_tracks=["修3"],
                 blockage_count=1,
             )
         }
@@ -12564,7 +12564,7 @@ def test_constructive_stage_budget_solves_spot_203_mid_regression():
     assert any(
         move.action_type == "DETACH"
         and move.source_track == "存2"
-        and move.target_track == "修2库内"
+        and move.target_track == "修2"
         and move.vehicle_nos == ["S002"]
         for move in result.plan
     )
@@ -12589,7 +12589,7 @@ def test_is_better_plan_uses_branch_count_before_path_length():
             source_track="存5北",
             target_track="机库",
             vehicle_nos=["Q1"],
-            path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+            path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
             action_type="DETACH",
         )
     ]
@@ -12700,13 +12700,13 @@ def test_state_key_distinguishes_weighed_state():
 
 def test_state_key_distinguishes_spot_assignments():
     first = ReplayState(
-        track_sequences={"修1库内": ["S1"]},
+        track_sequences={"修1": ["S1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"S1": "101"},
     )
     second = ReplayState(
-        track_sequences={"修1库内": ["S1"]},
+        track_sequences={"修1": ["S1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"S1": "102"},
@@ -12719,12 +12719,12 @@ def test_state_key_ignores_random_depot_spots_when_no_exact_depot_goal_exists():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "R1",
@@ -12739,13 +12739,13 @@ def test_state_key_ignores_random_depot_spots_when_no_exact_depot_goal_exists():
     }
     normalized = normalize_plan_input(payload, master)
     first = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "102"},
     )
     second = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "103"},
@@ -12758,12 +12758,12 @@ def test_state_key_ignores_nonreserved_random_depot_spots_when_exact_depot_goal_
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "R1",
@@ -12789,13 +12789,13 @@ def test_state_key_ignores_nonreserved_random_depot_spots_when_exact_depot_goal_
     }
     normalized = normalize_plan_input(payload, master)
     first = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "102"},
     )
     second = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "103"},
@@ -12808,12 +12808,12 @@ def test_state_key_keeps_random_depot_spot_when_it_occupies_exact_reserved_spot(
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "R1",
@@ -12839,13 +12839,13 @@ def test_state_key_keeps_random_depot_spot_when_it_occupies_exact_reserved_spot(
     }
     normalized = normalize_plan_input(payload, master)
     reserved = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "101"},
     )
     nonreserved = ReplayState(
-        track_sequences={"修1库内": ["R1"]},
+        track_sequences={"修1": ["R1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"R1": "102"},
@@ -12856,13 +12856,13 @@ def test_state_key_keeps_random_depot_spot_when_it_occupies_exact_reserved_spot(
 
 def test_state_key_ignores_empty_track_entries():
     compact = ReplayState(
-        track_sequences={"修1库内": ["S1"]},
+        track_sequences={"修1": ["S1"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"S1": "101"},
     )
     with_empty_tracks = ReplayState(
-        track_sequences={"修1库内": ["S1"], "临1": [], "存4南": []},
+        track_sequences={"修1": ["S1"], "机北1": [], "存4南": []},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"S1": "101"},
@@ -12880,7 +12880,7 @@ def test_state_key_distinguishes_loco_track_position():
     )
     second = ReplayState(
         track_sequences={"存5北": ["S1"], "机库": ["S2"]},
-        loco_track_name="临1",
+        loco_track_name="机北1",
         weighed_vehicle_nos={"S2"},
         spot_assignments={"S2": "机库:1"},
     )
@@ -14301,24 +14301,24 @@ def test_partial_score_prefers_route_clean_tail_over_slightly_lower_unfinished_b
 def test_goal_frontier_uses_shortest_attach_prefix_that_contains_target_vehicle():
     moves = [
         HookAction(
-            source_track="修1库内",
-            target_track="修1库内",
+            source_track="修1",
+            target_track="修1",
             vehicle_nos=["TARGET", "KEEP_A", "KEEP_B"],
-            path_tracks=["修1库内"],
+            path_tracks=["修1"],
             action_type="ATTACH",
         ),
         HookAction(
-            source_track="修1库内",
-            target_track="修1库内",
+            source_track="修1",
+            target_track="修1",
             vehicle_nos=["TARGET", "KEEP_A", "KEEP_B", "EXTRA"],
-            path_tracks=["修1库内"],
+            path_tracks=["修1"],
             action_type="ATTACH",
         ),
     ]
 
     selected = _find_goal_frontier_attach_move(
         moves,
-        source_track="修1库内",
+        source_track="修1",
         target_vehicle_no="TARGET",
     )
 
@@ -14330,35 +14330,35 @@ def test_goal_frontier_can_build_exact_satisfied_prefix_attach_missing_from_gene
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "修1库内", "trackDistance": 151.7},
+                {"trackName": "修1", "trackDistance": 151.7},
                 {"trackName": "存4北", "trackDistance": 317.8},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "SAT_A",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修1库内",
+                    "targetTrack": "修1",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": "2",
                     "vehicleModel": "棚车",
                     "vehicleNo": "SAT_B",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修1库内",
+                    "targetTrack": "修1",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": "3",
                     "vehicleModel": "棚车",
                     "vehicleNo": "TARGET",
@@ -14379,14 +14379,14 @@ def test_goal_frontier_can_build_exact_satisfied_prefix_attach_missing_from_gene
         plan_input=normalized,
         state=state,
         master=master,
-        source_track="修1库内",
+        source_track="修1",
         prefix_block=["SAT_A", "SAT_B"],
     )
 
     assert attach is not None
     assert attach.action_type == "ATTACH"
-    assert attach.source_track == "修1库内"
-    assert attach.target_track == "修1库内"
+    assert attach.source_track == "修1"
+    assert attach.target_track == "修1"
     assert attach.vehicle_nos == ["SAT_A", "SAT_B"]
 
 
@@ -14523,8 +14523,8 @@ def test_goal_frontier_staging_detach_prefers_route_clean_temporary_track():
         {
             "trackInfo": [
                 {"trackName": "存5南", "trackDistance": 156.0},
-                {"trackName": "临1", "trackDistance": 81.4},
-                {"trackName": "临2", "trackDistance": 55.7},
+                {"trackName": "机北1", "trackDistance": 81.4},
+                {"trackName": "机北2", "trackDistance": 55.7},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -14562,8 +14562,8 @@ def test_goal_frontier_staging_detach_prefers_route_clean_temporary_track():
     state = ReplayState(
         track_sequences={
             "存5南": ["TARGET"],
-            "临1": ["EXISTING"],
-            "临2": [],
+            "机北1": ["EXISTING"],
+            "机北2": [],
         },
         loco_track_name="存5南",
         loco_node="存5中",
@@ -14573,16 +14573,16 @@ def test_goal_frontier_staging_detach_prefers_route_clean_temporary_track():
     )
     route_blocking_staging = HookAction(
         source_track="存5南",
-        target_track="临2",
+        target_track="机北2",
         vehicle_nos=["SAT_A"],
-        path_tracks=["存5南", "临2"],
+        path_tracks=["存5南", "机北2"],
         action_type="DETACH",
     )
     route_clean_staging = HookAction(
         source_track="存5南",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["SAT_A"],
-        path_tracks=["存5南", "临1"],
+        path_tracks=["存5南", "机北1"],
         action_type="DETACH",
     )
     target_attach = HookAction(
@@ -14603,14 +14603,14 @@ def test_goal_frontier_staging_detach_prefers_route_clean_temporary_track():
     def fake_generate_real_hook_moves(_plan_input, candidate_state, **_kwargs):
         if candidate_state.loco_carry == ("SAT_A",):
             return [route_blocking_staging, route_clean_staging]
-        if candidate_state.loco_track_name in {"临1", "临2"}:
+        if candidate_state.loco_track_name in {"机北1", "机北2"}:
             return [target_attach]
         if candidate_state.loco_carry == ("TARGET",):
             return [target_detach]
         return []
 
     def fake_route_blockage(_plan_input, candidate_state, _route_oracle):
-        pressure = 3 if candidate_state.track_sequences.get("临2") == ["SAT_A"] else 0
+        pressure = 3 if candidate_state.track_sequences.get("机北2") == ["SAT_A"] else 0
         return SimpleNamespace(total_blockage_pressure=pressure)
 
     with patch(
@@ -14632,7 +14632,7 @@ def test_goal_frontier_staging_detach_prefers_route_clean_temporary_track():
             )
 
     assert selected is not None
-    assert selected.target_track == "临1"
+    assert selected.target_track == "机北1"
 
 
 def test_goal_frontier_uses_deep_block_when_satisfied_prefix_cannot_be_staged():
@@ -14640,26 +14640,26 @@ def test_goal_frontier_uses_deep_block_when_satisfied_prefix_cannot_be_staged():
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "修4", "trackDistance": 151.7},
                 {"trackName": "存4北", "trackDistance": 317.8},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "修4库内",
+                    "trackName": "修4",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "SAT_A",
                     "repairProcess": "段修",
                     "vehicleLength": 14.3,
-                    "targetTrack": "修4库内",
+                    "targetTrack": "修4",
                     "targetMode": "SNAPSHOT",
                     "targetSource": "END_SNAPSHOT",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修4库内",
+                    "trackName": "修4",
                     "order": "2",
                     "vehicleModel": "棚车",
                     "vehicleNo": "TARGET",
@@ -14677,7 +14677,7 @@ def test_goal_frontier_uses_deep_block_when_satisfied_prefix_cannot_be_staged():
     )
     state = ReplayState(
         track_sequences={
-            "修4库内": ["SAT_A", "TARGET"],
+            "修4": ["SAT_A", "TARGET"],
             "存4北": [],
         },
         loco_track_name="机库",
@@ -14713,14 +14713,14 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "修3库内", "trackDistance": 151.7},
+                {"trackName": "修3", "trackDistance": 151.7},
                 {"trackName": "修3库外", "trackDistance": 49.3},
                 {"trackName": "存3", "trackDistance": 258.5},
                 {"trackName": "存2", "trackDistance": 239.2},
             ],
             "vehicleInfo": [
                 {
-                    "trackName": "修3库内",
+                    "trackName": "修3",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "AREA_PREFIX",
@@ -14732,7 +14732,7 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修3库内",
+                    "trackName": "修3",
                     "order": "2",
                     "vehicleModel": "棚车",
                     "vehicleNo": "TARGET_OUTER",
@@ -14743,7 +14743,7 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "修3库内",
+                    "trackName": "修3",
                     "order": "3",
                     "vehicleModel": "棚车",
                     "vehicleNo": "TAIL_OUTER",
@@ -14754,7 +14754,7 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
                     "vehicleAttributes": "",
                 },
             ],
-            "locoTrackName": "修3库内",
+            "locoTrackName": "修3",
         },
         master,
         allow_internal_loco_tracks=True,
@@ -14764,24 +14764,24 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
 
     target_attach = HookAction(
-        source_track="修3库内",
-        target_track="修3库内",
+        source_track="修3",
+        target_track="修3",
         vehicle_nos=["AREA_PREFIX", "TARGET_OUTER", "TAIL_OUTER"],
-        path_tracks=["修3库内"],
+        path_tracks=["修3"],
         action_type="ATTACH",
     )
     suffix_drop = HookAction(
-        source_track="修3库内",
+        source_track="修3",
         target_track="修3库外",
         vehicle_nos=["TARGET_OUTER", "TAIL_OUTER"],
-        path_tracks=["修3库内", "修3库外"],
+        path_tracks=["修3", "修3库外"],
         action_type="DETACH",
     )
     larger_drop = HookAction(
-        source_track="修3库内",
+        source_track="修3",
         target_track="修3库外",
         vehicle_nos=["AREA_PREFIX", "TARGET_OUTER", "TAIL_OUTER"],
-        path_tracks=["修3库内", "修3库外"],
+        path_tracks=["修3", "修3库外"],
         action_type="DETACH",
     )
     fallback_drop = HookAction(
@@ -14812,7 +14812,7 @@ def test_goal_frontier_deep_block_prefers_larger_target_drop_when_suffix_leaves_
         master=master,
         route_oracle=route_oracle,
         vehicle_by_no=vehicle_by_no,
-        source_track="修3库内",
+        source_track="修3",
         prefix_block=["AREA_PREFIX"],
         target_vehicle_no="TARGET_OUTER",
     )
@@ -14889,10 +14889,10 @@ def test_work_position_tail_uses_temporary_drop_when_target_is_not_detachable_di
                     "预修",
                     "抛",
                     "修1库外",
-                    "临4",
+                    "机南",
                     "机库",
                     "机棚",
-                    "机北",
+                    "机北3",
                     "联7",
                     "渡10",
                     "渡11",
@@ -15829,7 +15829,7 @@ def test_partial_tail_fixed_point_keeps_low_pressure_business_progress_when_foll
             "trackInfo": [
                 {"trackName": "调棚", "trackDistance": 174.3},
                 {"trackName": "预修", "trackDistance": 208.5},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "洗油北", "trackDistance": 62.9},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
@@ -16876,7 +16876,7 @@ def test_pre_primary_goal_frontier_completion_runs_even_with_work_position_debt(
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
             ],
             "vehicleInfo": [
                 {
@@ -17697,8 +17697,8 @@ def test_route_blockage_tail_clearance_continues_goal_frontier_after_route_drop(
         {
             "trackInfo": [
                 {"trackName": "修3库外", "trackDistance": 49.3},
-                {"trackName": "修3库内", "trackDistance": 151.7},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "修3", "trackDistance": 151.7},
+                {"trackName": "洗油北", "trackDistance": 62.9},
             ],
             "vehicleInfo": [
                 {
@@ -17708,18 +17708,18 @@ def test_route_blockage_tail_clearance_continues_goal_frontier_after_route_drop(
                     "vehicleNo": "CLEAR_A",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "FRONTIER_TAIL",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
@@ -17732,16 +17732,16 @@ def test_route_blockage_tail_clearance_continues_goal_frontier_after_route_drop(
     initial = build_initial_state(normalized)
     route_clear_move = HookAction(
         source_track="修3库外",
-        target_track="临3",
+        target_track="洗油北",
         vehicle_nos=["CLEAR_A"],
-        path_tracks=["修3库外", "临3"],
+        path_tracks=["修3库外", "洗油北"],
         action_type="DETACH",
     )
     goal_frontier_move = HookAction(
-        source_track="临3",
-        target_track="修3库内",
+        source_track="洗油北",
+        target_track="修3",
         vehicle_nos=["FRONTIER_TAIL"],
-        path_tracks=["临3", "修3库内"],
+        path_tracks=["洗油北", "修3"],
         action_type="DETACH",
     )
     route_partial = SolverResult(
@@ -17804,8 +17804,8 @@ def test_tail_clearance_continues_after_route_clear_carry_drop_when_suffix_needs
         {
             "trackInfo": [
                 {"trackName": "修3库外", "trackDistance": 49.3},
-                {"trackName": "修3库内", "trackDistance": 151.7},
-                {"trackName": "临3", "trackDistance": 62.9},
+                {"trackName": "修3", "trackDistance": 151.7},
+                {"trackName": "洗油北", "trackDistance": 62.9},
             ],
             "vehicleInfo": [
                 {
@@ -17815,18 +17815,18 @@ def test_tail_clearance_continues_after_route_clear_carry_drop_when_suffix_needs
                     "vehicleNo": "CLEAR_A",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "FRONTIER_TAIL",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
@@ -17837,7 +17837,7 @@ def test_tail_clearance_continues_after_route_clear_carry_drop_when_suffix_needs
         allow_internal_loco_tracks=True,
     )
     carried_state = ReplayState(
-        track_sequences={"修3库外": [], "修3库内": [], "临3": ["FRONTIER_TAIL"]},
+        track_sequences={"修3库外": [], "修3": [], "洗油北": ["FRONTIER_TAIL"]},
         loco_track_name="修3库外",
         loco_node=None,
         weighed_vehicle_nos=set(),
@@ -17848,26 +17848,26 @@ def test_tail_clearance_continues_after_route_clear_carry_drop_when_suffix_needs
         update={
             "track_sequences": {
                 "修3库外": [],
-                "修3库内": ["CLEAR_A"],
-                "临3": ["FRONTIER_TAIL"],
+                "修3": ["CLEAR_A"],
+                "洗油北": ["FRONTIER_TAIL"],
             },
-            "loco_track_name": "修3库内",
+            "loco_track_name": "修3",
             "loco_carry": (),
         }
     )
     drop_move = HookAction(
         source_track="修3库外",
-        target_track="修3库内",
+        target_track="修3",
         vehicle_nos=["CLEAR_A"],
-        path_tracks=["修3库外", "修3库内"],
+        path_tracks=["修3库外", "修3"],
         action_type="DETACH",
     )
     frontier_plan = [
         HookAction(
-            source_track="临3",
-            target_track="修3库内",
+            source_track="洗油北",
+            target_track="修3",
             vehicle_nos=["FRONTIER_TAIL"],
-            path_tracks=["临3", "修3库内"],
+            path_tracks=["洗油北", "修3"],
             action_type="ATTACH",
         )
     ]
@@ -17963,7 +17963,7 @@ def test_tail_clearance_returns_current_partial_when_empty_carry_followups_spend
         {
             "trackInfo": [
                 {"trackName": "修3库外", "trackDistance": 49.3},
-                {"trackName": "修3库内", "trackDistance": 151.7},
+                {"trackName": "修3", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
                 {
@@ -17973,18 +17973,18 @@ def test_tail_clearance_returns_current_partial_when_empty_carry_followups_spend
                     "vehicleNo": "CLEARED_ROUTE",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
                 {
-                    "trackName": "临3",
+                    "trackName": "洗油北",
                     "order": "1",
                     "vehicleModel": "棚车",
                     "vehicleNo": "TAIL_UNFINISHED",
                     "repairProcess": "段修",
                     "vehicleLength": 13.2,
-                    "targetTrack": "修3库内",
+                    "targetTrack": "修3",
                     "isSpotting": "",
                     "vehicleAttributes": "",
                 },
@@ -17997,10 +17997,10 @@ def test_tail_clearance_returns_current_partial_when_empty_carry_followups_spend
     state = ReplayState(
         track_sequences={
             "修3库外": [],
-            "修3库内": ["CLEARED_ROUTE"],
-            "临3": ["TAIL_UNFINISHED"],
+            "修3": ["CLEARED_ROUTE"],
+            "洗油北": ["TAIL_UNFINISHED"],
         },
-        loco_track_name="修3库内",
+        loco_track_name="修3",
         loco_node=None,
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -18008,9 +18008,9 @@ def test_tail_clearance_returns_current_partial_when_empty_carry_followups_spend
     )
     clearing_move = HookAction(
         source_track="修3库外",
-        target_track="修3库内",
+        target_track="修3",
         vehicle_nos=["CLEARED_ROUTE"],
-        path_tracks=["修3库外", "修3库内"],
+        path_tracks=["修3库外", "修3"],
         action_type="DETACH",
     )
 
@@ -21108,14 +21108,14 @@ def test_partial_result_score_can_compare_unannotated_partials_by_replaying_stat
                 source_track="存5北",
                 target_track="机库",
                 vehicle_nos=["TODO"],
-                path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+                path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
                 action_type="DETACH",
             ),
             HookAction(
                 source_track="机库",
                 target_track="存4北",
                 vehicle_nos=["DONE"],
-                path_tracks=["机库", "渡4", "临2", "临1", "渡2", "渡1", "存4北"],
+                path_tracks=["机库", "渡4", "机北2", "机北1", "渡2", "渡1", "存4北"],
                 action_type="DETACH",
             ),
         ],
@@ -21336,14 +21336,14 @@ def test_shorter_complete_result_can_compare_unannotated_partials_with_context()
                 source_track="存5北",
                 target_track="机库",
                 vehicle_nos=["TODO"],
-                path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+                path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
                 action_type="DETACH",
             ),
             HookAction(
                 source_track="机库",
                 target_track="存4北",
                 vehicle_nos=["DONE"],
-                path_tracks=["机库", "渡4", "临2", "临1", "渡2", "渡1", "存4北"],
+                path_tracks=["机库", "渡4", "机北2", "机北1", "渡2", "渡1", "存4北"],
                 action_type="DETACH",
             ),
         ],
@@ -23787,7 +23787,7 @@ def test_route_release_tail_splits_budget_across_ranked_checkpoints():
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存4北", "trackDistance": 317.8},
-                {"trackName": "临1", "trackDistance": 81.4},
+                {"trackName": "机北1", "trackDistance": 81.4},
             ],
             "vehicleInfo": [
                 {
@@ -23822,9 +23822,9 @@ def test_route_release_tail_splits_budget_across_ranked_checkpoints():
                 ),
                 HookAction(
                     source_track="存5北",
-                    target_track="临1",
+                    target_track="机北1",
                     vehicle_nos=[vehicle_no],
-                    path_tracks=["存5北", "临1"],
+                    path_tracks=["存5北", "机北1"],
                     action_type="DETACH",
                 ),
             ]
@@ -24183,18 +24183,18 @@ def test_route_release_constructive_replays_unannotated_partial_for_material_pre
     normalized = normalize_plan_input(
         {
             "trackInfo": [
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "存5南", "trackDistance": 156.0},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存1", "trackDistance": 113.0},
-                {"trackName": "临1", "trackDistance": 81.4},
-                {"trackName": "临2", "trackDistance": 62.9},
+                {"trackName": "机北1", "trackDistance": 81.4},
+                {"trackName": "机北2", "trackDistance": 62.9},
                 {"trackName": "机库", "trackDistance": 71.6},
             ],
             "vehicleInfo": [
                 *[
                     {
-                        "trackName": "临4",
+                        "trackName": "机南",
                         "order": str(index + 1),
                         "vehicleModel": "棚车",
                         "vehicleNo": f"ROUTE_SEEK_{index}",
@@ -24260,14 +24260,14 @@ def test_route_release_constructive_replays_unannotated_partial_for_material_pre
         ),
         HookAction(
             source_track="存5南",
-            target_track="临2",
+            target_track="机北2",
             vehicle_nos=["ROUTE_BLOCKER"],
-            path_tracks=["存5南", "临2"],
+            path_tracks=["存5南", "机北2"],
             action_type="DETACH",
         ),
     ]
     shuttle_tail: list[HookAction] = []
-    source, target = "存1", "临1"
+    source, target = "存1", "机北1"
     for _ in range(19):
         shuttle_tail.extend(
             [
@@ -25272,7 +25272,7 @@ def test_search_expands_multi_step_move_candidate_as_real_hook_plan(monkeypatch)
         source_track="存5北",
         target_track="机库",
         vehicle_nos=["MSC1"],
-        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
         action_type="DETACH",
     )
 
@@ -25406,7 +25406,7 @@ def test_beam_search_priority_prefers_bounded_random_snapshot_attach_over_whole_
             {"trackName": "存1", "trackDistance": 113.0},
             {"trackName": "存2", "trackDistance": 239.2},
             {"trackName": "存3", "trackDistance": 258.5},
-            {"trackName": "机北", "trackDistance": 80.0},
+            {"trackName": "机北3", "trackDistance": 80.0},
             {"trackName": "调北", "trackDistance": 70.1},
             {"trackName": "洗北", "trackDistance": 100.0},
             {"trackName": "机库", "trackDistance": 71.6},
@@ -25550,7 +25550,7 @@ def test_prune_queue_reserves_low_structural_debt_state_when_churn_pressure_is_h
 
 def test_beam_structural_key_prioritizes_target_sequence_defect():
     state = ReplayState(
-        track_sequences={"调棚": ["A"], "临1": ["B"]},
+        track_sequences={"调棚": ["A"], "机北1": ["B"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -25765,16 +25765,16 @@ def test_goal_frontier_structural_candidates_own_staging():
     next_state = state
     move = HookAction(
         source_track="A",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["X"],
-        path_tracks=["A", "临1"],
+        path_tracks=["A", "机北1"],
         action_type="DETACH",
     )
     candidate = MoveCandidate(
         steps=(move,),
         kind="structural",
         reason="goal_frontier_source_opening",
-        focus_tracks=("A", "临1"),
+        focus_tracks=("A", "机北1"),
         structural_reserve=True,
     )
 
@@ -25811,16 +25811,16 @@ def test_carried_structural_candidates_receive_beam_bonus():
     next_state = state
     move = HookAction(
         source_track="A",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["X"],
-        path_tracks=["A", "临1"],
+        path_tracks=["A", "机北1"],
         action_type="DETACH",
     )
     candidate = MoveCandidate(
         steps=(move,),
         kind="structural",
         reason="route_release_frontier",
-        focus_tracks=("A", "临1"),
+        focus_tracks=("A", "机北1"),
         structural_reserve=True,
     )
 
@@ -25855,17 +25855,17 @@ def test_primitive_partial_detach_from_carry_gets_fragmentation_penalty(monkeypa
         loco_carry=("A", "B", "C"),
     )
     next_state = ReplayState(
-        track_sequences={"临1": ["C"]},
-        loco_track_name="临1",
+        track_sequences={"机北1": ["C"]},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("A", "B"),
     )
     move = HookAction(
         source_track="机棚",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["C"],
-        path_tracks=["机棚", "临1"],
+        path_tracks=["机棚", "机北1"],
         action_type="DETACH",
     )
     candidate = MoveCandidate(

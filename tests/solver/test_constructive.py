@@ -78,7 +78,7 @@ def test_score_native_move_prefers_bounded_random_snapshot_attach_over_whole_pre
             {"trackName": "存1", "trackDistance": 113.0},
             {"trackName": "存2", "trackDistance": 239.2},
             {"trackName": "存3", "trackDistance": 258.5},
-            {"trackName": "机北", "trackDistance": 80.0},
+            {"trackName": "机北3", "trackDistance": 80.0},
             {"trackName": "调北", "trackDistance": 70.1},
             {"trackName": "洗北", "trackDistance": 100.0},
             {"trackName": "机库", "trackDistance": 71.6},
@@ -371,7 +371,7 @@ def test_constructive_stale_guard_allows_forced_restore_after_front_blocker_stag
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -421,8 +421,8 @@ def test_constructive_partial_rewinds_to_last_empty_carry_checkpoint():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临3", "trackDistance": 62.9},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "洗油北", "trackDistance": 62.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -619,8 +619,8 @@ class TestScoreMoveSatisfiedProtection:
             spot_assignments={},
         )
         move = HookAction(
-            source_track="存1", target_track="临2",
-            vehicle_nos=["V1"], path_tracks=["存1", "临2"], action_type="PUT",
+            source_track="存1", target_track="机北2",
+            vehicle_nos=["V1"], path_tracks=["存1", "机北2"], action_type="PUT",
         )
         score, tier = _score_move(
             move=move, state=state, vehicle_by_no={"V1": v1},
@@ -664,18 +664,18 @@ class TestScoreMoveSatisfiedProtection:
         from fzed_shunting.verify.replay import ReplayState
 
         v1 = NormalizedVehicle(
-            current_track="临1", order=1, vehicle_model="敞车", vehicle_no="V1",
+            current_track="机北1", order=1, vehicle_model="敞车", vehicle_no="V1",
             repair_process="段修", vehicle_length=12.0,
             goal=GoalSpec(target_mode="TRACK", target_track="存1",
                           allowed_target_tracks=["存1"]),
         )
         state = ReplayState(
-            track_sequences={"临1": ["V1"]},
+            track_sequences={"机北1": ["V1"]},
             loco_track_name="机库", weighed_vehicle_nos=set(), spot_assignments={},
         )
         move = HookAction(
-            source_track="临1", target_track="临2",
-            vehicle_nos=["V1"], path_tracks=["临1", "临2"], action_type="PUT",
+            source_track="机北1", target_track="机北2",
+            vehicle_nos=["V1"], path_tracks=["机北1", "机北2"], action_type="PUT",
         )
         score, tier = _score_move(
             move=move, state=state, vehicle_by_no={"V1": v1},
@@ -691,28 +691,28 @@ class TestScoreMoveSatisfiedProtection:
         from fzed_shunting.verify.replay import ReplayState
 
         v1 = NormalizedVehicle(
-            current_track="修3库内", order=1, vehicle_model="敞车", vehicle_no="S003",
+            current_track="修3", order=1, vehicle_model="敞车", vehicle_no="S003",
             repair_process="段修", vehicle_length=17.0,
             goal=GoalSpec(
                 target_mode="SPOT",
-                target_track="修3库内",
-                allowed_target_tracks=["修3库内"],
+                target_track="修3",
+                allowed_target_tracks=["修3"],
                 target_spot_code="305",
             ),
         )
         state = ReplayState(
-            track_sequences={"修3库内": ["S003"]},
+            track_sequences={"修3": ["S003"]},
             loco_track_name="机库",
             weighed_vehicle_nos=set(),
             spot_assignments={"S003": "305"},
         )
         move = HookAction(
-            source_track="修3库内", target_track="临4",
-            vehicle_nos=["S003"], path_tracks=["修3库内", "临4"], action_type="PUT",
+            source_track="修3", target_track="机南",
+            vehicle_nos=["S003"], path_tracks=["修3", "机南"], action_type="PUT",
         )
         score, tier = _score_move(
             move=move, state=state, vehicle_by_no={"S003": v1},
-            goal_tracks_needed={"修3库内"},
+            goal_tracks_needed={"修3"},
         )
         assert score[0] >= 100, f"SPOT-matched displacement should have tier >= 100, got {score[0]}"
 
@@ -725,28 +725,28 @@ class TestScoreMoveSatisfiedProtection:
         from fzed_shunting.verify.replay import ReplayState
 
         v1 = NormalizedVehicle(
-            current_track="修3库内", order=1, vehicle_model="敞车", vehicle_no="S003",
+            current_track="修3", order=1, vehicle_model="敞车", vehicle_no="S003",
             repair_process="段修", vehicle_length=17.0,
             goal=GoalSpec(
                 target_mode="SPOT",
-                target_track="修3库内",
-                allowed_target_tracks=["修3库内"],
+                target_track="修3",
+                allowed_target_tracks=["修3"],
                 target_spot_code="305",
             ),
         )
         state = ReplayState(
-            track_sequences={"修3库内": ["S003"]},
+            track_sequences={"修3": ["S003"]},
             loco_track_name="机库",
             weighed_vehicle_nos=set(),
             spot_assignments={"S003": "301"},  # wrong spot
         )
         move = HookAction(
-            source_track="修3库内", target_track="临4",
-            vehicle_nos=["S003"], path_tracks=["修3库内", "临4"], action_type="PUT",
+            source_track="修3", target_track="机南",
+            vehicle_nos=["S003"], path_tracks=["修3", "机南"], action_type="PUT",
         )
         score, tier = _score_move(
             move=move, state=state, vehicle_by_no={"S003": v1},
-            goal_tracks_needed={"修3库内"},
+            goal_tracks_needed={"修3"},
         )
         assert score[0] < 100, f"SPOT wrong-spot displacement should not be protected, got {score[0]}"
 
@@ -889,10 +889,10 @@ def test_score_native_move_prefers_short_random_depot_preferred_track_over_fallb
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -923,16 +923,16 @@ def test_score_native_move_prefers_short_random_depot_preferred_track_over_fallb
 
     move_pref = HookAction(
         source_track="存5北",
-        target_track="修1库内",
+        target_track="修1",
         vehicle_nos=["S1"],
-        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         action_type="DETACH",
     )
     move_fallback = HookAction(
         source_track="存5北",
-        target_track="修3库内",
+        target_track="修3",
         vehicle_nos=["S1"],
-        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修3库外", "修3库内"],
+        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修3库外", "修3"],
         action_type="DETACH",
     )
     pref_state = _apply_move(state=carry_state, move=move_pref, plan_input=normalized, vehicle_by_no=vehicle_by_no)
@@ -946,7 +946,7 @@ def test_score_native_move_prefers_short_random_depot_preferred_track_over_fallb
         current_heuristic=heuristic(carry_state),
         next_heuristic=heuristic(pref_state),
         vehicle_by_no=vehicle_by_no,
-        goal_tracks_needed={"修1库内", "修2库内"},
+        goal_tracks_needed={"修1", "修2"},
         satisfied_by_track={},
     )
     fallback_score, _ = _score_native_move(
@@ -957,7 +957,7 @@ def test_score_native_move_prefers_short_random_depot_preferred_track_over_fallb
         current_heuristic=heuristic(carry_state),
         next_heuristic=heuristic(fallback_state),
         vehicle_by_no=vehicle_by_no,
-        goal_tracks_needed={"修1库内", "修2库内"},
+        goal_tracks_needed={"修1", "修2"},
         satisfied_by_track={},
     )
 
@@ -973,10 +973,10 @@ def test_score_native_move_penalizes_fallback_detach_when_preferred_target_remai
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -1006,16 +1006,16 @@ def test_score_native_move_penalizes_fallback_detach_when_preferred_target_remai
 
     preferred_move = HookAction(
         source_track="存5北",
-        target_track="修1库内",
+        target_track="修1",
         vehicle_nos=["SHORT_PREF"],
-        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         action_type="DETACH",
     )
     fallback_move = HookAction(
         source_track="存5北",
-        target_track="修4库内",
+        target_track="修4",
         vehicle_nos=["SHORT_PREF"],
-        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修4库外", "修4库内"],
+        path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡12", "渡13", "修4库外", "修4"],
         action_type="DETACH",
     )
 
@@ -1040,7 +1040,7 @@ def test_score_native_move_penalizes_fallback_detach_when_preferred_target_remai
         current_heuristic=heuristic(carry_state),
         next_heuristic=heuristic(preferred_state),
         vehicle_by_no=vehicle_by_no,
-        goal_tracks_needed={"修1库内", "修2库内"},
+        goal_tracks_needed={"修1", "修2"},
         satisfied_by_track={},
     )
     fallback_score, _ = _score_native_move(
@@ -1051,7 +1051,7 @@ def test_score_native_move_penalizes_fallback_detach_when_preferred_target_remai
         current_heuristic=heuristic(carry_state),
         next_heuristic=heuristic(fallback_state),
         vehicle_by_no=vehicle_by_no,
-        goal_tracks_needed={"修1库内", "修2库内"},
+        goal_tracks_needed={"修1", "修2"},
         satisfied_by_track={},
     )
 
@@ -1102,14 +1102,14 @@ def test_score_native_move_prefers_snapshot_preferred_track_without_marking_fall
         source_track="机库",
         target_track="存5南",
         vehicle_nos=["SNAP_SOFT"],
-        path_tracks=["机库", "渡4", "临2", "临1", "渡2", "存5南"],
+        path_tracks=["机库", "渡4", "机北2", "机北1", "渡2", "存5南"],
         action_type="DETACH",
     )
     fallback_move = HookAction(
         source_track="机库",
         target_track="存5北",
         vehicle_nos=["SNAP_SOFT"],
-        path_tracks=["机库", "渡4", "临2", "临1", "渡2", "存5南", "存5北"],
+        path_tracks=["机库", "渡4", "机北2", "机北1", "渡2", "存5南", "存5北"],
         action_type="DETACH",
     )
     preferred_state = _apply_move(
@@ -1277,25 +1277,25 @@ def test_move_exposes_buried_goal_seeker_recognizes_same_track_preferred_violati
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修4库内",
+                "trackName": "修4",
                 "order": "1",
                 "vehicleModel": "C70",
                 "vehicleNo": "BLOCKER",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修4库内",
+                "targetTrack": "修4",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修4库内",
+                "trackName": "修4",
                 "order": "2",
                 "vehicleModel": "C70",
                 "vehicleNo": "SHORT_PREF",
@@ -1312,10 +1312,10 @@ def test_move_exposes_buried_goal_seeker_recognizes_same_track_preferred_violati
     state = build_initial_state(normalized)
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     move = HookAction(
-        source_track="修4库内",
-        target_track="临1",
+        source_track="修4",
+        target_track="机北1",
         vehicle_nos=["BLOCKER"],
-        path_tracks=["修4库内", "临1"],
+        path_tracks=["修4", "机北1"],
         action_type="ATTACH",
     )
 
@@ -1335,7 +1335,7 @@ def test_move_clears_goal_blocker_does_not_treat_same_track_weigh_pending_vehicl
     payload = {
         "trackInfo": [
             {"trackName": "存1", "trackDistance": 113},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -1369,9 +1369,9 @@ def test_move_clears_goal_blocker_does_not_treat_same_track_weigh_pending_vehicl
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     move = HookAction(
         source_track="存1",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["FRONT_BLOCK"],
-        path_tracks=["存1", "临1"],
+        path_tracks=["存1", "机北1"],
         action_type="ATTACH",
     )
 
@@ -1474,8 +1474,8 @@ def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_v
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
             {"trackName": "存2", "trackDistance": 239.2},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "存1", "trackDistance": 113.0},
         ],
         "vehicleInfo": [
@@ -1497,7 +1497,7 @@ def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_v
                 "vehicleNo": "CARRY_SPOT",
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "203",
                 "vehicleAttributes": "",
             },
@@ -1538,7 +1538,7 @@ def test_score_native_move_prefers_staging_detach_that_exposes_committed_carry_v
         move
         for move in moves
         if move.action_type == "DETACH"
-        and move.target_track == "临1"
+        and move.target_track == "机北1"
         and tuple(move.vehicle_nos) == ("CARRY_BLOCKER",)
     )
 
@@ -1595,9 +1595,9 @@ def test_score_native_move_prefers_parking_route_blocker_before_extra_attach():
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
             NormalizedTrackInfo(track_name="存2", track_distance=239.2),
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
         ],
         vehicles=[
             NormalizedVehicle(
@@ -1635,8 +1635,8 @@ def test_score_native_move_prefers_parking_route_blocker_before_extra_attach():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
             NormalizedVehicle(
@@ -1648,8 +1648,8 @@ def test_score_native_move_prefers_parking_route_blocker_before_extra_attach():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -1660,9 +1660,9 @@ def test_score_native_move_prefers_parking_route_blocker_before_extra_attach():
         track_sequences={
             "存5北": [],
             "存5南": ["SEEK"],
-            "修4库内": [],
+            "修4": [],
             "存2": ["EXTRA"],
-            "临1": [],
+            "机北1": [],
         },
         loco_track_name="存5北",
         loco_node="L2",
@@ -1684,9 +1684,9 @@ def test_score_native_move_prefers_parking_route_blocker_before_extra_attach():
     )
     blocker_staging_detach = HookAction(
         source_track="存5北",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["ROUTE_BLOCK_A", "ROUTE_BLOCK_B"],
-        path_tracks=["存5北", "渡1", "渡2", "临1"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1"],
         action_type="DETACH",
     )
     extra_state = _apply_move(
@@ -1745,8 +1745,8 @@ def test_score_native_move_defers_goal_detach_onto_active_route_blocker_track():
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
         ],
         vehicles=[
             NormalizedVehicle(
@@ -1784,8 +1784,8 @@ def test_score_native_move_defers_goal_detach_onto_active_route_blocker_track():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -1796,8 +1796,8 @@ def test_score_native_move_defers_goal_detach_onto_active_route_blocker_track():
         track_sequences={
             "存5北": ["ROUTE_PARK_BLOCK"],
             "存5南": ["ROUTE_PARK_SEEK"],
-            "修4库内": [],
-            "临1": [],
+            "修4": [],
+            "机北1": [],
         },
         loco_track_name="存5北",
         loco_node="L2",
@@ -1819,9 +1819,9 @@ def test_score_native_move_defers_goal_detach_onto_active_route_blocker_track():
     )
     staging_detach = HookAction(
         source_track="存5北",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["ROUTE_PARK_CARRY"],
-        path_tracks=["存5北", "渡1", "渡2", "临1"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1"],
         action_type="DETACH",
     )
     goal_state = _apply_move(
@@ -1879,8 +1879,8 @@ def test_score_native_move_demotes_goal_detach_that_restores_route_blockage():
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
-            NormalizedTrackInfo(track_name="临4", track_distance=42.9),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
+            NormalizedTrackInfo(track_name="机南", track_distance=42.9),
         ],
         vehicles=[
             NormalizedVehicle(
@@ -1905,8 +1905,8 @@ def test_score_native_move_demotes_goal_detach_that_restores_route_blockage():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -1917,8 +1917,8 @@ def test_score_native_move_demotes_goal_detach_that_restores_route_blockage():
         track_sequences={
             "存5北": [],
             "存5南": ["ROUTE_RESTORE_SEEK"],
-            "修4库内": [],
-            "临4": [],
+            "修4": [],
+            "机南": [],
         },
         loco_track_name="存5北",
         loco_node="L2",
@@ -1940,9 +1940,9 @@ def test_score_native_move_demotes_goal_detach_that_restores_route_blockage():
     )
     safe_staging = HookAction(
         source_track="存5北",
-        target_track="临4",
+        target_track="机南",
         vehicle_nos=["ROUTE_RESTORE_BLOCKER"],
-        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡5", "机北", "机棚", "临4"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡5", "机北3", "机棚", "机南"],
         action_type="DETACH",
     )
     restore_state = _apply_move(
@@ -2114,14 +2114,14 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
             NormalizedTrackInfo(track_name="存5北", track_distance=367),
             NormalizedTrackInfo(track_name="存4北", track_distance=317.8),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="STAGED",
@@ -2129,8 +2129,8 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="临1",
-                    allowed_target_tracks=["临1"],
+                    target_track="机北1",
+                    allowed_target_tracks=["机北1"],
                 ),
             ),
             NormalizedVehicle(
@@ -2151,7 +2151,7 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临1": ["STAGED"], "存5北": ["WORK"]},
+        track_sequences={"机北1": ["STAGED"], "存5北": ["WORK"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -2160,10 +2160,10 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     staging_attach = HookAction(
-        source_track="临1",
-        target_track="临1",
+        source_track="机北1",
+        target_track="机北1",
         vehicle_nos=["STAGED"],
-        path_tracks=["临1"],
+        path_tracks=["机北1"],
         action_type="ATTACH",
     )
 
@@ -2197,7 +2197,7 @@ def test_score_native_move_penalizes_regrabbing_unfinished_staging_vehicle():
         vehicle_by_no=vehicle_by_no,
         goal_tracks_needed=_collect_goal_tracks(normalized),
         satisfied_by_track={},
-        recent_moves=deque([("抛", "临1", ("STAGED",))]),
+        recent_moves=deque([("抛", "机北1", ("STAGED",))]),
     )
     work_score, _ = _score_native_move(
         move=work_attach,
@@ -2222,14 +2222,14 @@ def test_score_native_move_prioritizes_stale_staging_debt_recovery_over_new_work
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
             NormalizedTrackInfo(track_name="存5北", track_distance=367),
             NormalizedTrackInfo(track_name="存4北", track_distance=317.8),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="STAGED_DEBT",
@@ -2259,7 +2259,7 @@ def test_score_native_move_prioritizes_stale_staging_debt_recovery_over_new_work
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临1": ["STAGED_DEBT"], "存5北": ["NEW_WORK"]},
+        track_sequences={"机北1": ["STAGED_DEBT"], "存5北": ["NEW_WORK"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -2268,10 +2268,10 @@ def test_score_native_move_prioritizes_stale_staging_debt_recovery_over_new_work
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     staging_attach = HookAction(
-        source_track="临1",
-        target_track="临1",
+        source_track="机北1",
+        target_track="机北1",
         vehicle_nos=["STAGED_DEBT"],
-        path_tracks=["临1"],
+        path_tracks=["机北1"],
         action_type="ATTACH",
     )
     work_attach = HookAction(
@@ -2330,15 +2330,15 @@ def test_score_native_move_penalizes_staging_detach_with_blocked_goal_corridor()
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
-            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
+            NormalizedTrackInfo(track_name="机南", track_distance=90.1),
+            NormalizedTrackInfo(track_name="机南", track_distance=90.1),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="CARRY",
@@ -2364,12 +2364,12 @@ def test_score_native_move_penalizes_staging_detach_with_blocked_goal_corridor()
                 ),
             ),
         ],
-        loco_track_name="临4",
+        loco_track_name="机南",
         yard_mode="NORMAL",
     )
     state = ReplayState(
         track_sequences={"存5南": ["ROUTE_BLOCK"]},
-        loco_track_name="临4",
+        loco_track_name="机南",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("CARRY",),
@@ -2378,17 +2378,17 @@ def test_score_native_move_penalizes_staging_detach_with_blocked_goal_corridor()
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     blocked_staging_move = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="存4南",
         vehicle_nos=["CARRY"],
-        path_tracks=["临4", "渡9", "渡8", "存4南"],
+        path_tracks=["机南", "渡9", "渡8", "存4南"],
         action_type="DETACH",
     )
     clear_staging_move = HookAction(
-        source_track="临4",
-        target_track="临4",
+        source_track="机南",
+        target_track="机南",
         vehicle_nos=["CARRY"],
-        path_tracks=["临4"],
+        path_tracks=["机南"],
         action_type="DETACH",
     )
     blocked_state = _apply_move(
@@ -2438,14 +2438,14 @@ def test_score_native_move_applies_route_pressure_before_staging_heuristic_noise
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
             NormalizedTrackInfo(track_name="存4南", track_distance=154.5),
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="CARRY",
@@ -2462,25 +2462,25 @@ def test_score_native_move_applies_route_pressure_before_staging_heuristic_noise
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临1": [], "临2": [], "存4南": [], "存5北": []},
-        loco_track_name="临1",
+        track_sequences={"机北1": [], "机北2": [], "存4南": [], "存5北": []},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("CARRY",),
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     blocked_staging = HookAction(
-        source_track="临1",
+        source_track="机北1",
         target_track="存4南",
         vehicle_nos=["CARRY"],
-        path_tracks=["临1", "存4南"],
+        path_tracks=["机北1", "存4南"],
         action_type="DETACH",
     )
     clear_staging = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["CARRY"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="DETACH",
     )
     blocked_state = _apply_move(
@@ -2533,15 +2533,15 @@ def test_score_native_move_keeps_goal_detach_in_goal_tier_when_it_parks_on_corri
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
-            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机南", track_distance=90.1),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="NORTH_GOAL",
@@ -2554,7 +2554,7 @@ def test_score_native_move_keeps_goal_detach_in_goal_tier_when_it_parks_on_corri
                 ),
             ),
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=2,
                 vehicle_model="棚车",
                 vehicle_no="DEEP_GOAL",
@@ -2567,12 +2567,12 @@ def test_score_native_move_keeps_goal_detach_in_goal_tier_when_it_parks_on_corri
                 ),
             ),
         ],
-        loco_track_name="临4",
+        loco_track_name="机南",
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临4": ["DEEP_GOAL"], "临2": [], "存5南": [], "存5北": []},
-        loco_track_name="临4",
+        track_sequences={"机南": ["DEEP_GOAL"], "机北2": [], "存5南": [], "存5北": []},
+        loco_track_name="机南",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("NORTH_GOAL",),
@@ -2581,17 +2581,17 @@ def test_score_native_move_keeps_goal_detach_in_goal_tier_when_it_parks_on_corri
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     corridor_goal_detach = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="存5南",
         vehicle_nos=["NORTH_GOAL"],
-        path_tracks=["临4", "存5南"],
+        path_tracks=["机南", "存5南"],
         action_type="DETACH",
     )
     defer_to_staging = HookAction(
-        source_track="临4",
-        target_track="临2",
+        source_track="机南",
+        target_track="机北2",
         vehicle_nos=["NORTH_GOAL"],
-        path_tracks=["临4", "临2"],
+        path_tracks=["机南", "机北2"],
         action_type="DETACH",
     )
     corridor_state = _apply_move(
@@ -2646,8 +2646,8 @@ def test_score_native_move_avoids_reparking_current_route_blocker_during_release
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
         ],
         vehicles=[
             NormalizedVehicle(
@@ -2672,8 +2672,8 @@ def test_score_native_move_avoids_reparking_current_route_blocker_during_release
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -2681,7 +2681,7 @@ def test_score_native_move_avoids_reparking_current_route_blocker_during_release
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"存5北": [], "存5南": ["SEEK"], "修4库内": [], "临1": []},
+        track_sequences={"存5北": [], "存5南": ["SEEK"], "修4": [], "机北1": []},
         loco_track_name="存5北",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -2697,9 +2697,9 @@ def test_score_native_move_avoids_reparking_current_route_blocker_during_release
     )
     keep_released = HookAction(
         source_track="存5北",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["BLOCK"],
-        path_tracks=["存5北", "临1"],
+        path_tracks=["存5北", "机北1"],
         action_type="DETACH",
     )
     repark_state = _apply_move(
@@ -2757,7 +2757,7 @@ def test_score_native_move_keeps_goal_detach_when_staging_creates_more_route_pre
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
             NormalizedTrackInfo(track_name="机棚", track_distance=105.8),
             NormalizedTrackInfo(track_name="存2", track_distance=239.2),
             NormalizedTrackInfo(track_name="存4南", track_distance=154.5),
@@ -2798,8 +2798,8 @@ def test_score_native_move_keeps_goal_detach_when_staging_creates_more_route_pre
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="SPOT",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                     target_spot_code="407",
                 ),
             ),
@@ -2812,9 +2812,9 @@ def test_score_native_move_keeps_goal_detach_when_staging_creates_more_route_pre
             "存5北": ["BLOCK_ON_CORRIDOR"],
             "机棚": ["SOURCE_SEEK"],
             "存5南": ["SPOT_SEEK"],
-            "修4库内": [],
+            "修4": [],
             "存2": [],
-            "临4": [],
+            "机南": [],
         },
         loco_track_name="存5北",
         weighed_vehicle_nos=set(),
@@ -2833,9 +2833,9 @@ def test_score_native_move_keeps_goal_detach_when_staging_creates_more_route_pre
     )
     staging_detach = HookAction(
         source_track="存5北",
-        target_track="临4",
+        target_track="机南",
         vehicle_nos=["RETURN_GOAL"],
-        path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡5", "渡6", "渡7", "预修", "渡9", "临4"],
+        path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡5", "渡6", "渡7", "预修", "渡9", "机南"],
         action_type="DETACH",
     )
     goal_state = _apply_move(
@@ -2906,15 +2906,15 @@ def test_score_native_move_uses_route_pressure_after_progress_signals():
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
-            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机南", track_distance=90.1),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="A",
@@ -2927,7 +2927,7 @@ def test_score_native_move_uses_route_pressure_after_progress_signals():
                 ),
             ),
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=2,
                 vehicle_model="棚车",
                 vehicle_no="B",
@@ -2940,12 +2940,12 @@ def test_score_native_move_uses_route_pressure_after_progress_signals():
                 ),
             ),
         ],
-        loco_track_name="临4",
+        loco_track_name="机南",
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临4": [], "临2": [], "存5南": [], "存5北": []},
-        loco_track_name="临4",
+        track_sequences={"机南": [], "机北2": [], "存5南": [], "存5北": []},
+        loco_track_name="机南",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("A", "B"),
@@ -2954,17 +2954,17 @@ def test_score_native_move_uses_route_pressure_after_progress_signals():
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     larger_progress = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="存5南",
         vehicle_nos=["A", "B"],
-        path_tracks=["临4", "存5南"],
+        path_tracks=["机南", "存5南"],
         action_type="DETACH",
     )
     smaller_progress = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="存5南",
         vehicle_nos=["B"],
-        path_tracks=["临4", "存5南"],
+        path_tracks=["机南", "存5南"],
         action_type="DETACH",
     )
     larger_state = _apply_move(
@@ -3019,15 +3019,15 @@ def test_route_blockage_parking_pressure_detects_newly_occupied_intermediate_tra
     master = load_master_data(DATA_DIR)
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
-            NormalizedTrackInfo(track_name="临4", track_distance=90.1),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机南", track_distance=90.1),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="NORTH_GOAL",
@@ -3040,7 +3040,7 @@ def test_route_blockage_parking_pressure_detects_newly_occupied_intermediate_tra
                 ),
             ),
             NormalizedVehicle(
-                current_track="临4",
+                current_track="机南",
                 order=2,
                 vehicle_model="棚车",
                 vehicle_no="DEEP_GOAL",
@@ -3053,22 +3053,22 @@ def test_route_blockage_parking_pressure_detects_newly_occupied_intermediate_tra
                 ),
             ),
         ],
-        loco_track_name="临4",
+        loco_track_name="机南",
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临4": ["DEEP_GOAL"], "临2": [], "存5南": [], "存5北": []},
-        loco_track_name="临4",
+        track_sequences={"机南": ["DEEP_GOAL"], "机北2": [], "存5南": [], "存5北": []},
+        loco_track_name="机南",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("NORTH_GOAL",),
     )
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     corridor_goal_detach = HookAction(
-        source_track="临4",
+        source_track="机南",
         target_track="存5南",
         vehicle_nos=["NORTH_GOAL"],
-        path_tracks=["临4", "存5南"],
+        path_tracks=["机南", "存5南"],
         action_type="DETACH",
     )
     next_state = _apply_move(
@@ -3099,7 +3099,7 @@ def test_route_blockage_parking_pressure_detects_newly_blocked_source_access():
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
@@ -3125,8 +3125,8 @@ def test_route_blockage_parking_pressure_detects_newly_blocked_source_access():
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -3134,7 +3134,7 @@ def test_route_blockage_parking_pressure_detects_newly_blocked_source_access():
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"存5北": [], "存5南": ["SEEK"], "修4库内": [], "机库": []},
+        track_sequences={"存5北": [], "存5南": ["SEEK"], "修4": [], "机库": []},
         loco_track_name="存5北",
         loco_node="L2",
         weighed_vehicle_nos=set(),
@@ -3177,7 +3177,7 @@ def test_route_blockage_parking_pressure_penalizes_reparking_onto_still_blocked_
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
         ],
         vehicles=[
             NormalizedVehicle(
@@ -3215,8 +3215,8 @@ def test_route_blockage_parking_pressure_penalizes_reparking_onto_still_blocked_
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -3224,7 +3224,7 @@ def test_route_blockage_parking_pressure_penalizes_reparking_onto_still_blocked_
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"存5北": ["REMAINING_BLOCK"], "存5南": ["SEEK"], "修4库内": []},
+        track_sequences={"存5北": ["REMAINING_BLOCK"], "存5南": ["SEEK"], "修4": []},
         loco_track_name="存5北",
         loco_node="L2",
         weighed_vehicle_nos=set(),
@@ -3266,13 +3266,13 @@ def test_route_blockage_parking_pressure_penalizes_adding_to_active_blocking_sta
     normalized = NormalizedPlanInput(
         track_info=[
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
             NormalizedTrackInfo(track_name="存3", track_distance=258.5),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="EXISTING_BLOCKER",
@@ -3280,12 +3280,12 @@ def test_route_blockage_parking_pressure_penalizes_adding_to_active_blocking_sta
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="临1",
-                    allowed_target_tracks=["临1"],
+                    target_track="机北1",
+                    allowed_target_tracks=["机北1"],
                 ),
             ),
             NormalizedVehicle(
-                current_track="临2",
+                current_track="机北2",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="NEEDS_STORE3",
@@ -3311,13 +3311,13 @@ def test_route_blockage_parking_pressure_penalizes_adding_to_active_blocking_sta
                 ),
             ),
         ],
-        loco_track_name="临1",
+        loco_track_name="机北1",
         yard_mode="NORMAL",
     )
     state = ReplayState(
         track_sequences={
-            "临1": ["EXISTING_BLOCKER"],
-            "临2": ["NEEDS_STORE3"],
+            "机北1": ["EXISTING_BLOCKER"],
+            "机北2": ["NEEDS_STORE3"],
             "存3": [],
             "机库": [],
         },
@@ -3330,9 +3330,9 @@ def test_route_blockage_parking_pressure_penalizes_adding_to_active_blocking_sta
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
     park_on_active_blocker = HookAction(
         source_track="机库",
-        target_track="临1",
+        target_track="机北1",
         vehicle_nos=["NEW_STAGING"],
-        path_tracks=["机库", "渡4", "临2", "临1"],
+        path_tracks=["机库", "渡4", "机北2", "机北1"],
         action_type="DETACH",
     )
     next_state = _apply_move(
@@ -3364,7 +3364,7 @@ def test_score_native_move_does_not_force_primary_staging_without_new_route_bloc
         track_info=[
             NormalizedTrackInfo(track_name="存5北", track_distance=367.0),
             NormalizedTrackInfo(track_name="存5南", track_distance=156.0),
-            NormalizedTrackInfo(track_name="修4库内", track_distance=151.7),
+            NormalizedTrackInfo(track_name="修4", track_distance=151.7),
             NormalizedTrackInfo(track_name="存2", track_distance=239.2),
             NormalizedTrackInfo(track_name="存4南", track_distance=154.5),
         ],
@@ -3404,8 +3404,8 @@ def test_score_native_move_does_not_force_primary_staging_without_new_route_bloc
                 vehicle_length=14.3,
                 goal=GoalSpec(
                     target_mode="TRACK",
-                    target_track="修4库内",
-                    allowed_target_tracks=["修4库内"],
+                    target_track="修4",
+                    allowed_target_tracks=["修4"],
                 ),
             ),
         ],
@@ -3416,7 +3416,7 @@ def test_score_native_move_does_not_force_primary_staging_without_new_route_bloc
         track_sequences={
             "存5北": ["REMAINING_BLOCK"],
             "存5南": ["SEEK"],
-            "修4库内": [],
+            "修4": [],
             "存2": [],
             "存4南": [],
         },
@@ -3488,24 +3488,24 @@ def test_candidate_selection_pool_avoids_recent_state_repeats_before_inverse_fal
     from fzed_shunting.solver.types import HookAction
 
     repeat_non_inverse = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["A"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="DETACH",
     )
     inverse_non_repeat = HookAction(
-        source_track="临2",
-        target_track="临1",
+        source_track="机北2",
+        target_track="机北1",
         vehicle_nos=["B"],
-        path_tracks=["临2", "临1"],
+        path_tracks=["机北2", "机北1"],
         action_type="DETACH",
     )
     clean = HookAction(
-        source_track="临1",
-        target_track="临3",
+        source_track="机北1",
+        target_track="洗油北",
         vehicle_nos=["C"],
-        path_tracks=["临1", "临3"],
+        path_tracks=["机北1", "洗油北"],
         action_type="DETACH",
     )
 
@@ -3523,17 +3523,17 @@ def test_candidate_selection_pool_keeps_route_pressure_release_before_clean_regr
     from fzed_shunting.solver.types import HookAction
 
     pressure_release = HookAction(
-        source_track="临3",
-        target_track="临3",
+        source_track="洗油北",
+        target_track="洗油北",
         vehicle_nos=["A", "B"],
-        path_tracks=["临3"],
+        path_tracks=["洗油北"],
         action_type="ATTACH",
     )
     clean_regression = HookAction(
-        source_track="临3",
-        target_track="临2",
+        source_track="洗油北",
+        target_track="机北2",
         vehicle_nos=["C"],
-        path_tracks=["临3", "临2"],
+        path_tracks=["洗油北", "机北2"],
         action_type="DETACH",
     )
 
@@ -3563,14 +3563,14 @@ def test_score_native_move_penalizes_staging_to_staging_detach_without_progress(
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
             NormalizedTrackInfo(track_name="存2", track_distance=239.2),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="STAGED",
@@ -3583,12 +3583,12 @@ def test_score_native_move_penalizes_staging_to_staging_detach_without_progress(
                 ),
             )
         ],
-        loco_track_name="临1",
+        loco_track_name="机北1",
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临1": [], "临2": [], "存2": []},
-        loco_track_name="临1",
+        track_sequences={"机北1": [], "机北2": [], "存2": []},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("STAGED",),
@@ -3597,17 +3597,17 @@ def test_score_native_move_penalizes_staging_to_staging_detach_without_progress(
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     lateral_staging = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["STAGED"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="DETACH",
     )
     goal_detach = HookAction(
-        source_track="临1",
+        source_track="机北1",
         target_track="存2",
         vehicle_nos=["STAGED"],
-        path_tracks=["临1", "渡3", "存2"],
+        path_tracks=["机北1", "渡3", "存2"],
         action_type="DETACH",
     )
     lateral_state = _apply_move(
@@ -3658,15 +3658,15 @@ def test_score_native_move_prefers_non_staging_lateral_detach_over_staging_chain
 
     normalized = NormalizedPlanInput(
         track_info=[
-            NormalizedTrackInfo(track_name="临1", track_distance=81.4),
-            NormalizedTrackInfo(track_name="临2", track_distance=55.7),
+            NormalizedTrackInfo(track_name="机北1", track_distance=81.4),
+            NormalizedTrackInfo(track_name="机北2", track_distance=55.7),
             NormalizedTrackInfo(track_name="调北", track_distance=105.8),
             NormalizedTrackInfo(track_name="存2", track_distance=239.2),
             NormalizedTrackInfo(track_name="机库", track_distance=71.6),
         ],
         vehicles=[
             NormalizedVehicle(
-                current_track="临1",
+                current_track="机北1",
                 order=1,
                 vehicle_model="棚车",
                 vehicle_no="STAGED",
@@ -3679,12 +3679,12 @@ def test_score_native_move_prefers_non_staging_lateral_detach_over_staging_chain
                 ),
             )
         ],
-        loco_track_name="临1",
+        loco_track_name="机北1",
         yard_mode="NORMAL",
     )
     state = ReplayState(
-        track_sequences={"临1": [], "临2": [], "调北": [], "存2": []},
-        loco_track_name="临1",
+        track_sequences={"机北1": [], "机北2": [], "调北": [], "存2": []},
+        loco_track_name="机北1",
         weighed_vehicle_nos=set(),
         spot_assignments={},
         loco_carry=("STAGED",),
@@ -3693,17 +3693,17 @@ def test_score_native_move_prefers_non_staging_lateral_detach_over_staging_chain
     heuristic = make_state_heuristic_real_hook(normalized)
     current_h = heuristic(state)
     staging_chain = HookAction(
-        source_track="临1",
-        target_track="临2",
+        source_track="机北1",
+        target_track="机北2",
         vehicle_nos=["STAGED"],
-        path_tracks=["临1", "临2"],
+        path_tracks=["机北1", "机北2"],
         action_type="DETACH",
     )
     non_staging_lateral = HookAction(
-        source_track="临1",
+        source_track="机北1",
         target_track="调北",
         vehicle_nos=["STAGED"],
-        path_tracks=["临1", "临2", "渡4", "调北"],
+        path_tracks=["机北1", "机北2", "渡4", "调北"],
         action_type="DETACH",
     )
     staging_state = _apply_move(
@@ -3823,7 +3823,7 @@ def test_score_native_move_prioritizes_work_position_progress_over_area_random()
                 {"trackName": "机库", "trackDistance": 80},
                 {"trackName": "存5北", "trackDistance": 120},
                 {"trackName": "调棚", "trackDistance": 120},
-                {"trackName": "修1库内", "trackDistance": 120},
+                {"trackName": "修1", "trackDistance": 120},
             ],
             "vehicleInfo": [
                 {
@@ -3857,9 +3857,9 @@ def test_score_native_move_prioritizes_work_position_progress_over_area_random()
     goal_tracks_needed = _collect_goal_tracks(normalized)
     area_move = HookAction(
         source_track="存5北",
-        target_track="修1库内",
+        target_track="修1",
         vehicle_nos=["AREA_DONE"],
-        path_tracks=["存5北", "修1库内"],
+        path_tracks=["存5北", "修1"],
         action_type="DETACH",
     )
     work_position_move = HookAction(
@@ -3875,7 +3875,7 @@ def test_score_native_move_prioritizes_work_position_progress_over_area_random()
             track_sequences={
                 "存5北": [],
                 "调棚": [],
-                "修1库内": [],
+                "修1": [],
                 "机库": [],
             },
             loco_track_name="存5北",

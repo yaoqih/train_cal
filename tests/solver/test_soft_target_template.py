@@ -27,17 +27,17 @@ def test_soft_target_template_prefers_low_pressure_random_depot_track():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 30.0},
-            {"trackName": "修2库内", "trackDistance": 60.0},
-            {"trackName": "修3库内", "trackDistance": 60.0},
-            {"trackName": "修4库内", "trackDistance": 60.0},
+            {"trackName": "修1", "trackDistance": 30.0},
+            {"trackName": "修2", "trackDistance": 60.0},
+            {"trackName": "修3", "trackDistance": 60.0},
+            {"trackName": "修4", "trackDistance": 60.0},
             {"trackName": "存5北", "trackDistance": 367.0},
         ],
         "vehicleInfo": [
             _vehicle("R", "存5北", "大库", order=1, length=14.3),
-            _vehicle("OCC1", "修1库内", "修1库内", order=1, length=14.3),
-            _vehicle("OCC2", "修1库内", "修1库内", order=2, length=14.3),
-            _vehicle("OCC3", "修1库内", "修1库内", order=3, length=14.3),
+            _vehicle("OCC1", "修1", "修1", order=1, length=14.3),
+            _vehicle("OCC2", "修1", "修1", order=2, length=14.3),
+            _vehicle("OCC3", "修1", "修1", order=3, length=14.3),
         ],
         "locoTrackName": "机库",
     }
@@ -50,8 +50,8 @@ def test_soft_target_template_prefers_low_pressure_random_depot_track():
         for candidate in template.vehicle_templates["R"].candidate_tracks
     ]
 
-    assert candidate_tracks.index("修2库内") < candidate_tracks.index("修1库内")
-    assert template.vehicle_templates["R"].preferred_track == "修2库内"
+    assert candidate_tracks.index("修2") < candidate_tracks.index("修1")
+    assert template.vehicle_templates["R"].preferred_track == "修2"
 
 
 def test_soft_target_template_reports_cun4bei_close_door_demand():

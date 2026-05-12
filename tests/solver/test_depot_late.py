@@ -34,13 +34,13 @@ def _attach(source: str, vehicles: list[str] | None = None) -> HookAction:
 
 class TestIsDepotHook:
     def test_target_in_depot_is_true(self) -> None:
-        assert is_depot_hook(_hook("存5北", "修3库内")) is True
+        assert is_depot_hook(_hook("存5北", "修3")) is True
 
     def test_source_in_depot_is_true(self) -> None:
-        assert is_depot_hook(_hook("修1库内", "存4北")) is True
+        assert is_depot_hook(_hook("修1", "存4北")) is True
 
     def test_both_in_depot_is_true(self) -> None:
-        assert is_depot_hook(_hook("修1库内", "修2库内")) is True
+        assert is_depot_hook(_hook("修1", "修2")) is True
 
     def test_non_depot_is_false(self) -> None:
         assert is_depot_hook(_hook("存1", "调北")) is False
@@ -51,11 +51,11 @@ class TestIsDepotHook:
 
     def test_depot_wai_to_depot_nei_is_true(self) -> None:
         # Crossing into 修N库内 does count.
-        assert is_depot_hook(_hook("修1库外", "修1库内")) is True
+        assert is_depot_hook(_hook("修1库外", "修1")) is True
 
     def test_constant_exposes_all_four_tracks(self) -> None:
         assert DEPOT_INNER_TRACKS == frozenset(
-            {"修1库内", "修2库内", "修3库内", "修4库内"}
+            {"修1", "修2", "修3", "修4"}
         )
 
 
@@ -74,7 +74,7 @@ class TestDepotMetrics:
         plan = [
             _hook("存1", "调北"),
             _hook("调北", "预修"),
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
         ]
         assert depot_earliness(plan) == 0
         assert depot_index_sum(plan) == 3
@@ -82,7 +82,7 @@ class TestDepotMetrics:
     def test_earliness_single_depot_hook_first(self) -> None:
         # N=3, depot at index 1 -> earliness = (3-1) = 2.
         plan = [
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
             _hook("存1", "调北"),
             _hook("调北", "预修"),
         ]
@@ -93,9 +93,9 @@ class TestDepotMetrics:
         # N=4, depot at indices 1 and 3.
         # earliness = (4-1) + (4-3) = 4; index_sum = 1 + 3 = 4.
         plan = [
-            _hook("修1库内", "修1库外"),
+            _hook("修1", "修1库外"),
             _hook("存1", "调北"),
-            _hook("修2库内", "存4北"),
+            _hook("修2", "存4北"),
             _hook("调北", "预修"),
         ]
         assert depot_earliness(plan) == 4
@@ -103,11 +103,11 @@ class TestDepotMetrics:
 
     def test_earliness_and_index_sum_relation(self) -> None:
         plan = [
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
             _hook("存1", "调北"),
-            _hook("修2库内", "存4北"),
+            _hook("修2", "存4北"),
             _hook("调北", "预修"),
-            _hook("修3库内", "存4北"),
+            _hook("修3", "存4北"),
         ]
         n = len(plan)
         k = sum(1 for h in plan if is_depot_hook(h))
@@ -115,13 +115,13 @@ class TestDepotMetrics:
 
     def test_depot_late_quality_keeps_primary_metrics_before_earliness(self) -> None:
         shorter_early_depot = [
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
             _hook("存1", "调北"),
         ]
         longer_late_depot = [
             _hook("存1", "调北"),
             _hook("调北", "预修"),
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
         ]
         assert _plan_quality(shorter_early_depot, None, depot_late=True) < _plan_quality(
             longer_late_depot,
@@ -137,17 +137,17 @@ class TestDepotMetrics:
                 path_tracks=["存1", "调北"],
                 action_type="DETACH",
             ),
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
         ]
         higher_route_cost_but_later_depot = [
             HookAction(
                 source_track="存1",
                 target_track="调北",
                 vehicle_nos=["V1"],
-                path_tracks=["存1", "临1", "临2", "调北"],
+                path_tracks=["存1", "机北1", "机北2", "调北"],
                 action_type="DETACH",
             ),
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
         ]
         assert _plan_quality(lower_route_cost, None, depot_late=True) < _plan_quality(
             higher_route_cost_but_later_depot,
@@ -215,7 +215,7 @@ class TestIsEarlyDepotPhase:
     def test_true_when_non_depot_goal_unmet(self) -> None:
         plan_input = _plan_input([
             _vehicle("V1", "存5北", ["存4北"]),
-            _vehicle("V2", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         state = _state({"存5北": ["V1"], "存1": ["V2"]})
         assert _is_early_depot_phase(state, plan_input) is True
@@ -223,21 +223,21 @@ class TestIsEarlyDepotPhase:
     def test_false_when_all_non_depot_goals_met(self) -> None:
         plan_input = _plan_input([
             _vehicle("V1", "存5北", ["存4北"]),
-            _vehicle("V2", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         state = _state({"存4北": ["V1"], "存1": ["V2"]})
         assert _is_early_depot_phase(state, plan_input) is False
 
     def test_false_when_only_depot_goals_exist(self) -> None:
         plan_input = _plan_input([
-            _vehicle("V1", "存5北", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存5北", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         state = _state({"存5北": ["V1"]})
         assert _is_early_depot_phase(state, plan_input) is False
 
     def test_false_when_all_allowed_targets_are_depot(self) -> None:
         plan_input = _plan_input([
-            _vehicle("V1", "存1", ["修1库内", "修2库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存1", ["修1", "修2"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         state = _state({"存1": ["V1"]})
         assert _is_early_depot_phase(state, plan_input) is False
@@ -249,13 +249,13 @@ from fzed_shunting.solver.depot_late import reorder_depot_late
 class TestReorderDepotLate:
     def test_reorder_rejects_swap_that_would_detach_inner_carry_vehicle(self) -> None:
         plan_input = _plan_input([
-            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存2", ["存4北"]),
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
             _attach("存1", ["V1"]),
-            _hook("存1", "修1库内", ["V1"]),
+            _hook("存1", "修1", ["V1"]),
             _attach("存2", ["V2"]),
             _hook("存2", "存4北", ["V2"]),
         ]
@@ -265,7 +265,7 @@ class TestReorderDepotLate:
 
     def test_reorder_rejects_dependent_swap(self) -> None:
         plan_input = _plan_input([
-            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         initial = _state({"存1": ["V1"]})
         plan = [
@@ -273,7 +273,7 @@ class TestReorderDepotLate:
             _hook("存1", "修1库外", ["V1"]),
             _attach("修1库外", ["V1"]),
             _hook("存1", "修1库外", ["V1"]),
-            _hook("修1库外", "修1库内", ["V1"]),
+            _hook("修1库外", "修1", ["V1"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
         assert reordered == plan  # unchanged
@@ -286,14 +286,14 @@ class TestReorderDepotLate:
     def test_reorder_is_noop_when_all_depot_already_late(self) -> None:
         plan_input = _plan_input([
             _vehicle("V1", "存1", ["存4北"]),
-            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存2", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
             _attach("存1", ["V1"]),
             _hook("存1", "存4北", ["V1"]),
             _attach("存2", ["V2"]),
-            _hook("存2", "修1库内", ["V2"]),
+            _hook("存2", "修1", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
         assert reordered == plan
@@ -301,18 +301,18 @@ class TestReorderDepotLate:
     def test_reorder_handles_two_random_depot_vehicles(self) -> None:
         """Do not accept a depot-late swap that would detach a non-tail car.
 
-        Swapping the non-depot ATTACH(V3) ahead of DETACH(V1->修1库内) would
+        Swapping the non-depot ATTACH(V3) ahead of DETACH(V1->修1) would
         leave carry=(V1,V3) and then try to detach V1 from the inner side.
         Tail-only detach correctly rejects that candidate before spot
         canonicalization matters.
         """
         plan_input = _plan_input([
             _vehicle(
-                "V1", "存1", ["修1库内"],
+                "V1", "存1", ["修1"],
                 target_mode="AREA", area_code="大库:RANDOM",
             ),
             _vehicle(
-                "V2", "存2", ["修1库内"],
+                "V2", "存2", ["修1"],
                 target_mode="AREA", area_code="大库:RANDOM",
             ),
             _vehicle("V3", "存3", ["存4北"]),
@@ -320,11 +320,11 @@ class TestReorderDepotLate:
         initial = _state({"存1": ["V1"], "存2": ["V2"], "存3": ["V3"]})
         plan = [
             _attach("存1", ["V1"]),
-            _hook("存1", "修1库内", ["V1"]),
+            _hook("存1", "修1", ["V1"]),
             _attach("存3", ["V3"]),
             _hook("存3", "存4北", ["V3"]),
             _attach("存2", ["V2"]),
-            _hook("存2", "修1库内", ["V2"]),
+            _hook("存2", "修1", ["V2"]),
         ]
         reordered = reorder_depot_late(plan, initial, plan_input)
 
@@ -342,13 +342,13 @@ class TestReorderDepotLate:
         dropped. This test documents the known limitation.
         """
         plan_input = _plan_input([
-            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存1", ["存4北"]),  # B moves V2 whose source is 存1 — depends on A removing V1 first
             _vehicle("V3", "存2", ["调北"]),  # independent
         ])
         initial = _state({"存1": ["V1", "V2"], "存2": ["V3"]})
         plan = [
-            _hook("存1", "修1库内", ["V1"]),         # A: depot, prereq for B
+            _hook("存1", "修1", ["V1"]),         # A: depot, prereq for B
             _hook("存1", "存4北", ["V2"]),           # B: non-depot, depends on A (source needs V1 gone)
             _hook("存2", "调北", ["V3"]),            # C: non-depot, independent
         ]
@@ -359,13 +359,13 @@ class TestReorderDepotLate:
     def test_reorder_topological_rejects_simple_tail_invalid_swap(self) -> None:
         """The simple adjacent swap is illegal once DETACH is tail-only."""
         plan_input = _plan_input([
-            _vehicle("V1", "存1", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V1", "存1", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
             _vehicle("V2", "存2", ["存4北"]),
         ])
         initial = _state({"存1": ["V1"], "存2": ["V2"]})
         plan = [
             _attach("存1", ["V1"]),
-            _hook("存1", "修1库内", ["V1"]),
+            _hook("存1", "修1", ["V1"]),
             _attach("存2", ["V2"]),
             _hook("存2", "存4北", ["V2"]),
         ]
@@ -472,25 +472,25 @@ from fzed_shunting.solver.lns import _is_better_plan, _plan_quality
 class TestLnsPlanQualityDepotAware:
     def test_flag_off_ignores_earliness(self) -> None:
         # Same hook count, same branch/length → equivalent when flag off.
-        plan_early_depot = [_hook("修1库内", "存4北"), _hook("存1", "调北")]
-        plan_late_depot = [_hook("存1", "调北"), _hook("修1库内", "存4北")]
+        plan_early_depot = [_hook("修1", "存4北"), _hook("存1", "调北")]
+        plan_late_depot = [_hook("存1", "调北"), _hook("修1", "存4北")]
         q_early = _plan_quality(plan_early_depot, route_oracle=None, depot_late=False)
         q_late = _plan_quality(plan_late_depot, route_oracle=None, depot_late=False)
         assert q_early == q_late
 
     def test_flag_on_prefers_later_depot(self) -> None:
-        plan_early_depot = [_hook("修1库内", "存4北"), _hook("存1", "调北")]
-        plan_late_depot = [_hook("存1", "调北"), _hook("修1库内", "存4北")]
+        plan_early_depot = [_hook("修1", "存4北"), _hook("存1", "调北")]
+        plan_late_depot = [_hook("存1", "调北"), _hook("修1", "存4北")]
         assert _is_better_plan(plan_late_depot, plan_early_depot, route_oracle=None, depot_late=True) is True
         assert _is_better_plan(plan_early_depot, plan_late_depot, route_oracle=None, depot_late=True) is False
 
     def test_flag_on_still_minimises_hook_count(self) -> None:
         # Shorter plan wins even if it has an earlier depot hook.
-        plan_short_early_depot = [_hook("修1库内", "存4北")]
+        plan_short_early_depot = [_hook("修1", "存4北")]
         plan_long_late_depot = [
             _hook("存1", "调北"),
             _hook("调北", "预修"),
-            _hook("修1库内", "存4北"),
+            _hook("修1", "存4北"),
         ]
         assert _is_better_plan(
             plan_short_early_depot, plan_long_late_depot, route_oracle=None, depot_late=True
@@ -521,7 +521,7 @@ class TestAstarSolverDepotLateFlag:
     def test_flag_toggle_preserves_hook_count(self) -> None:
         vehicles = [
             _vehicle("V1", "存1", ["存4北"]),
-            _vehicle("V2", "存2", ["修1库内"], target_mode="AREA", area_code="大库:RANDOM"),
+            _vehicle("V2", "存2", ["修1"], target_mode="AREA", area_code="大库:RANDOM"),
         ]
         plan_input = _plan_input(vehicles)
         initial = build_initial_state(plan_input)

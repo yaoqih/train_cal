@@ -35,10 +35,10 @@ def test_goal_effective_allowed_tracks_reuses_fallback_decision_for_same_state(m
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": vehicles,
         "locoTrackName": "机库",
@@ -183,10 +183,10 @@ def test_random_depot_can_use_fallback_when_preferred_route_is_blocked():
     payload = {
         "trackInfo": [
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
             {"trackName": "修1库外", "trackDistance": 49.3},
             {"trackName": "修2库外", "trackDistance": 49.3},
             {"trackName": "修3库外", "trackDistance": 49.3},
@@ -244,7 +244,7 @@ def test_random_depot_can_use_fallback_when_preferred_route_is_blocked():
         state=state,
         plan_input=normalized,
         route_oracle=RouteOracle(master),
-    ) == ["修1库内", "修2库内", "修3库内", "修4库内"]
+    ) == ["修1", "修2", "修3", "修4"]
 
 
 def test_random_depot_can_use_fallback_when_group_demand_exceeds_preferred_spots():
@@ -266,90 +266,90 @@ def test_random_depot_can_use_fallback_when_group_demand_exceeds_preferred_spots
     vehicles.extend(
         [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_1",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "101",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_2",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "102",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "3",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_3",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "103",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "4",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_4",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "104",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_5",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "201",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_6",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "202",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "3",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_7",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "203",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修2库内",
+                "trackName": "修2",
                 "order": "4",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC_8",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "isSpotting": "204",
                 "vehicleAttributes": "",
             },
@@ -358,10 +358,10 @@ def test_random_depot_can_use_fallback_when_group_demand_exceeds_preferred_spots
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": vehicles,
         "locoTrackName": "机库",
@@ -375,7 +375,7 @@ def test_random_depot_can_use_fallback_when_group_demand_exceeds_preferred_spots
         vehicle,
         state=state,
         plan_input=normalized,
-    ) == ["修1库内", "修2库内", "修3库内", "修4库内"]
+    ) == ["修1", "修2", "修3", "修4"]
 
 
 def test_end_snapshot_fallback_track_is_complete_even_when_preferred_has_capacity():
@@ -427,13 +427,13 @@ def test_random_depot_fallback_track_is_complete_even_when_preferred_can_rebalan
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "PREF_OCC",
@@ -444,7 +444,7 @@ def test_random_depot_fallback_track_is_complete_even_when_preferred_can_rebalan
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修4库内",
+                "trackName": "修4",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "FALLBACK_OK",
@@ -464,7 +464,7 @@ def test_random_depot_fallback_track_is_complete_even_when_preferred_can_rebalan
     assert not goal_can_use_fallback_now(vehicle, state=state, plan_input=normalized)
     assert goal_is_satisfied(
         vehicle,
-        track_name="修4库内",
+        track_name="修4",
         state=state,
         plan_input=normalized,
     )

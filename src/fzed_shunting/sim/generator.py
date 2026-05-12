@@ -16,13 +16,13 @@ PROFILE_CONFIGS = {
         "default_tags": ["micro"],
     },
     "medium": {
-        "start_tracks": ["存5北", "存5南", "存1", "存2", "存3", "机北", "调北", "洗北"],
+        "start_tracks": ["存5北", "存5南", "存1", "存2", "存3", "机北3", "调北", "洗北"],
         "targets": ["机库", "存4北", "调棚", "洗南", "修1库外", "修2库外", "修3库外", "修4库外", "大库"],
         "direct_targets": ["机库", "存4北", "修1库外", "修2库外", "修3库外", "修4库外"],
         "default_tags": ["medium", "mixed_goals"],
     },
     "large": {
-        "start_tracks": ["存5北", "存5南", "存1", "存2", "存3", "机北", "调北", "洗北", "修1库外", "修2库外"],
+        "start_tracks": ["存5北", "存5南", "存1", "存2", "存3", "机北3", "调北", "洗北", "修1库外", "修2库外"],
         "targets": ["机库", "存4北", "调棚", "洗南", "修1库外", "修2库外", "修3库外", "修4库外", "大库"],
         "direct_targets": ["机库", "存4北", "修1库外", "修2库外", "修3库外", "修4库外"],
         "default_tags": ["large", "mixed_goals", "congested"],
@@ -82,7 +82,7 @@ def generate_scenario(
         _inject_front_blocker(vehicles, seed=seed)
         if len(vehicles) > vehicle_count:
             del vehicles[vehicle_count:]
-        used_track_infos.add("临1")
+        used_track_infos.add("机北1")
 
     return _build_scenario(
         master=master,
@@ -154,8 +154,8 @@ def generate_typical_suite(master: MasterData) -> dict:
             "payload": {
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
-                    {"trackName": "临1", "trackDistance": master.tracks["临1"].effective_length_m},
-                    {"trackName": "临3", "trackDistance": master.tracks["临3"].effective_length_m},
+                    {"trackName": "机北1", "trackDistance": master.tracks["机北1"].effective_length_m},
+                    {"trackName": "洗油北", "trackDistance": master.tracks["洗油北"].effective_length_m},
                     {"trackName": "机库", "trackDistance": master.tracks["机库"].effective_length_m},
                 ],
                 "vehicleInfo": [
@@ -193,8 +193,8 @@ def generate_typical_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "存5南", "trackDistance": master.tracks["存5南"].effective_length_m},
-                    {"trackName": "临1", "trackDistance": master.tracks["临1"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "机北1", "trackDistance": master.tracks["机北1"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                 ],
                 "vehicleInfo": [
                     {
@@ -322,10 +322,10 @@ def generate_typical_suite(master: MasterData) -> dict:
             "payload": {
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
-                    {"trackName": "修2库内", "trackDistance": master.tracks["修2库内"].effective_length_m},
-                    {"trackName": "修3库内", "trackDistance": master.tracks["修3库内"].effective_length_m},
-                    {"trackName": "修4库内", "trackDistance": master.tracks["修4库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
+                    {"trackName": "修2", "trackDistance": master.tracks["修2"].effective_length_m},
+                    {"trackName": "修3", "trackDistance": master.tracks["修3"].effective_length_m},
+                    {"trackName": "修4", "trackDistance": master.tracks["修4"].effective_length_m},
                 ],
                 "vehicleInfo": [
                     {
@@ -493,7 +493,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "调棚", "trackDistance": master.tracks["调棚"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -628,7 +628,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "调棚", "trackDistance": master.tracks["调棚"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -693,7 +693,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "洗南", "trackDistance": master.tracks["洗南"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -791,7 +791,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "油", "trackDistance": master.tracks["油"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -844,7 +844,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
                     {"trackName": "抛", "trackDistance": master.tracks["抛"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -1124,7 +1124,7 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
             "payload": {
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
                     {"trackName": "轮", "trackDistance": master.tracks["轮"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
@@ -1289,10 +1289,10 @@ def generate_typical_workflow_suite(master: MasterData) -> dict:
             "payload": {
                 "trackInfo": [
                     {"trackName": "存5北", "trackDistance": master.tracks["存5北"].effective_length_m},
-                    {"trackName": "修1库内", "trackDistance": master.tracks["修1库内"].effective_length_m},
-                    {"trackName": "修2库内", "trackDistance": master.tracks["修2库内"].effective_length_m},
-                    {"trackName": "修3库内", "trackDistance": master.tracks["修3库内"].effective_length_m},
-                    {"trackName": "修4库内", "trackDistance": master.tracks["修4库内"].effective_length_m},
+                    {"trackName": "修1", "trackDistance": master.tracks["修1"].effective_length_m},
+                    {"trackName": "修2", "trackDistance": master.tracks["修2"].effective_length_m},
+                    {"trackName": "修3", "trackDistance": master.tracks["修3"].effective_length_m},
+                    {"trackName": "修4", "trackDistance": master.tracks["修4"].effective_length_m},
                     {"trackName": "存4北", "trackDistance": master.tracks["存4北"].effective_length_m},
                 ],
                 "initialVehicleInfo": [
@@ -1365,7 +1365,7 @@ def _generate_adversarial_scenario(
             "vehicleAttributes": "",
         },
     ]
-    used_track_infos = {"存5北", "机库", "临1"}
+    used_track_infos = {"存5北", "机库", "机北1"}
     if vehicle_count >= 4:
         vehicles.extend(
             [
@@ -1393,9 +1393,9 @@ def _generate_adversarial_scenario(
                 },
             ]
         )
-        used_track_infos.update({"存5南", "存2", "修1库内"})
+        used_track_infos.update({"存5南", "存2", "修1"})
     next_idx = len(vehicles)
-    extra_tracks = ["存1", "存3", "机北", "调北"]
+    extra_tracks = ["存1", "存3", "机北3", "调北"]
     extra_targets = ["存4北", "机库", "修1库外", "修2库外"]
     while len(vehicles) < vehicle_count:
         track = extra_tracks[(len(vehicles) - next_idx) % len(extra_tracks)]
@@ -1444,7 +1444,7 @@ def _build_scenario(
     return {
         "trackInfo": track_info,
         "vehicleInfo": vehicles,
-        "locoTrackName": rng.choice(["机库", "机北"]),
+        "locoTrackName": rng.choice(["机库", "机北3"]),
         "scenarioMeta": {
             "profile": profile,
             "seed": seed,
@@ -1489,11 +1489,11 @@ def _required_track_infos_for_vehicle(vehicle: dict) -> set[str]:
     spotting = vehicle.get("isSpotting", "")
     if target == "大库":
         if spotting == "迎检" or spotting == "":
-            track_infos.update({"修1库内", "修2库内", "修3库内", "修4库内"})
+            track_infos.update({"修1", "修2", "修3", "修4"})
         elif spotting.isdigit() and len(spotting) == 3:
             track_infos.add(_spot_to_track(spotting))
         else:
-            track_infos.update({"修1库内", "修2库内", "修3库内", "修4库内"})
+            track_infos.update({"修1", "修2", "修3", "修4"})
     elif target == "大库外":
         track_infos.update({"修1库外", "修2库外", "修3库外", "修4库外"})
     else:
@@ -1505,10 +1505,10 @@ def _required_track_infos_for_vehicle(vehicle: dict) -> set[str]:
 
 def _spot_to_track(spot_code: str) -> str:
     return {
-        "1": "修1库内",
-        "2": "修2库内",
-        "3": "修3库内",
-        "4": "修4库内",
+        "1": "修1",
+        "2": "修2",
+        "3": "修3",
+        "4": "修4",
     }[spot_code[0]]
 
 

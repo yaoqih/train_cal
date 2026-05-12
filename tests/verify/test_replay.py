@@ -83,7 +83,7 @@ def test_replay_multi_vehicle_attach_and_detach_keep_physical_sequence_order():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -131,9 +131,9 @@ def test_replay_multi_vehicle_attach_and_detach_keep_physical_sequence_order():
                     "hookNo": 2,
                     "actionType": "DETACH",
                     "sourceTrack": "存5北",
-                    "targetTrack": "修2库内",
+                    "targetTrack": "修2",
                     "vehicleNos": ["SOUTH", "MIDDLE"],
-                    "pathTracks": ["存5北", "修2库内"],
+                    "pathTracks": ["存5北", "修2"],
                 }
             ],
             plan_input=normalized,
@@ -146,16 +146,16 @@ def test_replay_multi_vehicle_attach_and_detach_keep_physical_sequence_order():
                 "hookNo": 2,
                 "actionType": "DETACH",
                 "sourceTrack": "存5北",
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "vehicleNos": ["MIDDLE", "SOUTH"],
-                "pathTracks": ["存5北", "修2库内"],
+                "pathTracks": ["存5北", "修2"],
             }
         ],
         plan_input=normalized,
     ).final_state
 
     assert after_detach.loco_carry == ("NORTH",)
-    assert after_detach.track_sequences["修2库内"] == ["MIDDLE", "SOUTH"]
+    assert after_detach.track_sequences["修2"] == ["MIDDLE", "SOUTH"]
 
 
 def test_replay_native_attach_and_detach_move_front_block():
@@ -202,11 +202,11 @@ def test_replay_attach_releases_source_spot_assignment():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "C_ATTACH",
@@ -230,16 +230,16 @@ def test_replay_attach_releases_source_spot_assignment():
             {
                 "hookNo": 1,
                 "actionType": "ATTACH",
-                "sourceTrack": "修1库内",
-                "targetTrack": "修1库内",
+                "sourceTrack": "修1",
+                "targetTrack": "修1",
                 "vehicleNos": ["C_ATTACH"],
-                "pathTracks": ["修1库内"],
+                "pathTracks": ["修1"],
             }
         ],
         plan_input=normalized,
     )
 
-    assert result.final_state.track_sequences["修1库内"] == []
+    assert result.final_state.track_sequences["修1"] == []
     assert result.final_state.loco_carry == ("C_ATTACH",)
     assert result.final_state.spot_assignments == {}
 
@@ -249,7 +249,7 @@ def test_replay_detach_removes_tail_block_from_loco_carry_and_prepends_track():
     payload = {
         "trackInfo": [
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -269,7 +269,7 @@ def test_replay_detach_removes_tail_block_from_loco_carry_and_prepends_track():
     }
     normalized = normalize_plan_input(payload, master)
     initial = ReplayState(
-        track_sequences={"修2库内": ["OLD_NORTH", "OLD_SOUTH"]},
+        track_sequences={"修2": ["OLD_NORTH", "OLD_SOUTH"]},
         loco_track_name="调棚",
         weighed_vehicle_nos=set(),
         spot_assignments={},
@@ -283,16 +283,16 @@ def test_replay_detach_removes_tail_block_from_loco_carry_and_prepends_track():
                 "hookNo": 1,
                 "actionType": "DETACH",
                 "sourceTrack": "调棚",
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "vehicleNos": ["TAIL1", "TAIL2"],
-                "pathTracks": ["调棚", "修2库内"],
+                "pathTracks": ["调棚", "修2"],
             }
         ],
         plan_input=normalized,
     )
 
     assert result.final_state.loco_carry == ("HEAD1", "HEAD2")
-    assert result.final_state.track_sequences["修2库内"] == [
+    assert result.final_state.track_sequences["修2"] == [
         "TAIL1",
         "TAIL2",
         "OLD_NORTH",
@@ -306,7 +306,7 @@ def test_plan_verifier_rejects_detach_from_loco_carry_head():
         "trackInfo": [
             {"trackName": "机库", "trackDistance": 71.6},
             {"trackName": "调棚", "trackDistance": 174.3},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -381,9 +381,9 @@ def test_plan_verifier_rejects_detach_from_loco_carry_head():
                 "hookNo": 3,
                 "actionType": "DETACH",
                 "sourceTrack": "调棚",
-                "targetTrack": "修2库内",
+                "targetTrack": "修2",
                 "vehicleNos": ["HEAD1", "HEAD2"],
-                "pathTracks": ["调棚", "修2库内"],
+                "pathTracks": ["调棚", "修2"],
             },
         ],
     )
@@ -397,7 +397,7 @@ def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -421,14 +421,14 @@ def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
         initial,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修1库内",
+            target_track="修1",
             vehicle_nos=["C2"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         ),
         plan_input=normalized,
     )
 
-    assert result.final_state.track_sequences["修1库内"] == ["C2"]
+    assert result.final_state.track_sequences["修1"] == ["C2"]
     assert result.final_state.spot_assignments["C2"] == "101"
 
 
@@ -437,11 +437,11 @@ def test_replay_realigns_depot_spots_to_full_track_order_after_prepend():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "OLD1",
@@ -452,7 +452,7 @@ def test_replay_realigns_depot_spots_to_full_track_order_after_prepend():
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "OLD2",
@@ -470,7 +470,7 @@ def test_replay_realigns_depot_spots_to_full_track_order_after_prepend():
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "101",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -485,14 +485,14 @@ def test_replay_realigns_depot_spots_to_full_track_order_after_prepend():
         initial,
         _native_direct_plan(
             source_track="存5北",
-            target_track="修1库内",
+            target_track="修1",
             vehicle_nos=["NEW_SPOT"],
-            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1库内"],
+            detach_path_tracks=["存5北", "存5南", "渡8", "渡9", "渡10", "联7", "渡11", "修1库外", "修1"],
         ),
         plan_input=normalized,
     )
 
-    assert result.final_state.track_sequences["修1库内"] == ["NEW_SPOT", "OLD1", "OLD2"]
+    assert result.final_state.track_sequences["修1"] == ["NEW_SPOT", "OLD1", "OLD2"]
     assert result.final_state.spot_assignments == {
         "NEW_SPOT": "101",
         "OLD1": "102",
@@ -531,7 +531,7 @@ def test_replay_does_not_assign_dispatch_work_spot_when_moving_into_work_area():
             source_track="存5北",
             target_track="调棚",
             vehicle_nos=["C3"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "调北", "调棚"],
         ),
         plan_input=normalized,
     )
@@ -571,7 +571,7 @@ def test_replay_does_not_assign_dispatch_pre_repair_spot():
             source_track="存5北",
             target_track="调棚",
             vehicle_nos=["C4"],
-            detach_path_tracks=["存5北", "渡1", "渡2", "临1", "临2", "渡4", "调北", "调棚"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "调北", "调棚"],
         ),
         plan_input=normalized,
     )
@@ -585,7 +585,7 @@ def test_replay_rejects_detach_source_that_does_not_match_loco_track():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "临1", "trackDistance": 81.4},
+            {"trackName": "机北1", "trackDistance": 81.4},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
@@ -621,10 +621,10 @@ def test_replay_rejects_detach_source_that_does_not_match_loco_track():
                 {
                     "hookNo": 2,
                     "actionType": "DETACH",
-                    "sourceTrack": "临1",
+                    "sourceTrack": "机北1",
                     "targetTrack": "机库",
                     "vehicleNos": ["SRC1"],
-                    "pathTracks": ["临1", "临2", "渡4", "机库"],
+                    "pathTracks": ["机北1", "机北2", "渡4", "机库"],
                 },
             ],
             plan_input=normalized,

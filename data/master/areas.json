@@ -1,5 +1,5 @@
 [
   {"code":"轮:OPERATE","track_code":"轮","category":"AREA","spotting_required":true},
-  {"code":"大库:RANDOM","track_code":"修1库内","category":"MULTI_TRACK_AREA","spotting_required":false},
+  {"code":"大库:RANDOM","track_code":"修1","category":"MULTI_TRACK_AREA","spotting_required":false},
   {"code":"大库外:RANDOM","track_code":"修1库外","category":"MULTI_TRACK_AREA","spotting_required":false}
 ]

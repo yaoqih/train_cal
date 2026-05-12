@@ -1,10 +1,10 @@
 [
   {
     "code": "大门L1",
-    "total_length_m": 190,
+    "total_length_m": 68,
     "status": "已确认",
-    "description": "大门至L1",
-    "left_node": "大门",
+    "description": "5号门至L1",
+    "left_node": "5号门",
     "right_node": "L1"
   },
   {

@@ -58,8 +58,8 @@ def test_capacity_release_plan_does_not_force_random_area_vehicles_into_fixed_tr
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
             {"trackName": "存5北", "trackDistance": 367.0},
         ],
         "vehicleInfo": [
@@ -72,5 +72,5 @@ def test_capacity_release_plan_does_not_force_random_area_vehicles_into_fixed_tr
 
     plan = compute_capacity_release_plan(normalized, state)
 
-    assert plan.facts_by_track["修1库内"].fixed_inbound_vehicle_count == 0
-    assert plan.facts_by_track["修2库内"].fixed_inbound_vehicle_count == 0
+    assert plan.facts_by_track["修1"].fixed_inbound_vehicle_count == 0
+    assert plan.facts_by_track["修2"].fixed_inbound_vehicle_count == 0

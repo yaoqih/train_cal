@@ -26,7 +26,7 @@ from fzed_shunting.verify.replay import ReplayState
 
 
 DEPOT_INNER_TRACKS: frozenset[str] = frozenset(
-    {"修1库内", "修2库内", "修3库内", "修4库内"}
+    {"修1", "修2", "修3", "修4"}
 )
 
 

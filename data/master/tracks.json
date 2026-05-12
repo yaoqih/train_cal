@@ -8,7 +8,7 @@
     "allows_final_destination": false,
     "description": "仅走行，不停放",
     "endpoint_nodes": [
-      "279",
+      "5号门",
       "L1"
     ],
     "connection_nodes": [
@@ -269,8 +269,8 @@
     "terminal_branch": null
   },
   {
-    "code": "临1",
-    "name": "临停1线",
+    "code": "机北1",
+    "name": "机走北1线",
     "track_type": "TEMPORARY",
     "effective_length_m": 81.4,
     "allow_parking": true,
@@ -287,8 +287,8 @@
     "terminal_branch": "L3-L5"
   },
   {
-    "code": "临2",
-    "name": "临停2线",
+    "code": "机北2",
+    "name": "机走北2线",
     "track_type": "TEMPORARY",
     "effective_length_m": 55.7,
     "allow_parking": true,
@@ -305,8 +305,8 @@
     "terminal_branch": "L5-L6"
   },
   {
-    "code": "临3",
-    "name": "临停3线",
+    "code": "洗油北",
+    "name": "洗罐油漆北",
     "track_type": "TEMPORARY",
     "effective_length_m": 62.9,
     "allow_parking": true,
@@ -323,8 +323,8 @@
     "terminal_branch": "L8-L9"
   },
   {
-    "code": "临4",
-    "name": "临停4线",
+    "code": "机南",
+    "name": "机走线南",
     "track_type": "TEMPORARY",
     "effective_length_m": 90.1,
     "allow_parking": true,
@@ -516,8 +516,8 @@
     "terminal_branch": "L7-调梁尽头"
   },
   {
-    "code": "机北",
-    "name": "机走线北",
+    "code": "机北3",
+    "name": "机走北3线",
     "track_type": "STORAGE",
     "effective_length_m": 69.1,
     "allow_parking": true,
@@ -536,7 +536,7 @@
     "code": "机棚",
     "name": "机走棚",
     "track_type": "WORK",
-    "effective_length_m": 105.8,
+    "effective_length_m": 106.8,
     "allow_parking": true,
     "allows_final_destination": true,
     "description": "补充预修，也可存车",
@@ -609,7 +609,7 @@
     "code": "抛",
     "name": "抛丸线",
     "track_type": "WORK",
-    "effective_length_m": 131.8,
+    "effective_length_m": 42.3,
     "allow_parking": true,
     "allows_final_destination": false,
     "description": "抛丸作业，也可存车",
@@ -626,7 +626,7 @@
     "code": "油",
     "name": "油漆线",
     "track_type": "WORK",
-    "effective_length_m": 124,
+    "effective_length_m": 109,
     "allow_parking": true,
     "allows_final_destination": false,
     "description": "油漆作业，停留边界受平过道限制",
@@ -643,7 +643,7 @@
     "code": "轮",
     "name": "卸轮线",
     "track_type": "WORK",
-    "effective_length_m": 118.2,
+    "effective_length_m": 47.3,
     "allow_parking": true,
     "allows_final_destination": false,
     "description": "运营能力，不作普通缓存线",
@@ -725,7 +725,7 @@
     "terminal_branch": null
   },
   {
-    "code": "修1库内",
+    "code": "修1",
     "name": "修1线大库内",
     "track_type": "WORK",
     "effective_length_m": 151.7,
@@ -742,7 +742,7 @@
     "terminal_branch": "L19-修1尽头"
   },
   {
-    "code": "修2库内",
+    "code": "修2",
     "name": "修2线大库内",
     "track_type": "WORK",
     "effective_length_m": 151.7,
@@ -759,7 +759,7 @@
     "terminal_branch": "L17-修2尽头"
   },
   {
-    "code": "修3库内",
+    "code": "修3",
     "name": "修3线大库内",
     "track_type": "WORK",
     "effective_length_m": 151.7,
@@ -776,7 +776,7 @@
     "terminal_branch": "L18-修3尽头"
   },
   {
-    "code": "修4库内",
+    "code": "修4",
     "name": "修4线大库内",
     "track_type": "WORK",
     "effective_length_m": 151.7,

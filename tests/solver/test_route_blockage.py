@@ -36,16 +36,16 @@ def _vehicle(vehicle_no: str, track: str, target: str, *, order: int = 1) -> dic
 def _corridor_payload() -> dict:
     return {
         "trackInfo": [
-            {"trackName": "临4", "trackDistance": 90.1},
+            {"trackName": "机南", "trackDistance": 90.1},
             {"trackName": "存5南", "trackDistance": 156.0},
             {"trackName": "存5北", "trackDistance": 367.0},
-            {"trackName": "临1", "trackDistance": 81.4},
-            {"trackName": "临2", "trackDistance": 62.9},
-            {"trackName": "临3", "trackDistance": 77.9},
+            {"trackName": "机北1", "trackDistance": 81.4},
+            {"trackName": "机北2", "trackDistance": 62.9},
+            {"trackName": "洗油北", "trackDistance": 77.9},
             {"trackName": "机库", "trackDistance": 71.6},
         ],
         "vehicleInfo": [
-            _vehicle("SEEK", "临4", "存5北"),
+            _vehicle("SEEK", "机南", "存5北"),
             _vehicle("BLOCK", "存5南", "存5南"),
         ],
         "locoTrackName": "机库",
@@ -65,7 +65,7 @@ def test_route_blockage_plan_reports_occupied_intermediate_goal_corridor():
     assert fact.blocking_vehicle_nos == ["BLOCK"]
     assert fact.blocked_vehicle_nos == ["SEEK"]
     assert fact.target_tracks == ["存5北"]
-    assert fact.source_tracks == ["临4"]
+    assert fact.source_tracks == ["机南"]
 
 
 def test_route_blockage_plan_preserves_blocking_track_physical_order():
@@ -73,7 +73,7 @@ def test_route_blockage_plan_preserves_blocking_track_physical_order():
     payload = {
         **_corridor_payload(),
         "vehicleInfo": [
-            _vehicle("SEEK", "临4", "存5北"),
+            _vehicle("SEEK", "机南", "存5北"),
             _vehicle("Z_FRONT", "存5南", "存5南", order=1),
             _vehicle("A_BACK", "存5南", "存5南", order=2),
         ],
@@ -97,13 +97,13 @@ def test_route_blockage_plan_reports_blocked_loco_access_to_unfinished_source():
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "存5南", "trackDistance": 156.0},
                 {"trackName": "存5北", "trackDistance": 367.0},
-                {"trackName": "修4库内", "trackDistance": 151.7},
-                {"trackName": "临1", "trackDistance": 81.4},
-                {"trackName": "临2", "trackDistance": 62.9},
+                {"trackName": "修4", "trackDistance": 151.7},
+                {"trackName": "机北1", "trackDistance": 81.4},
+                {"trackName": "机北2", "trackDistance": 62.9},
             ],
             "vehicleInfo": [
                 {
-                    **_vehicle("SEEK", "存5南", "修4库内"),
+                    **_vehicle("SEEK", "存5南", "修4"),
                     "isSpotting": "405",
                 },
                 _vehicle("BLOCK", "存5北", "存5北"),
@@ -120,7 +120,7 @@ def test_route_blockage_plan_reports_blocked_loco_access_to_unfinished_source():
     assert fact.blocking_vehicle_nos == ["BLOCK"]
     assert fact.blocked_vehicle_nos == ["SEEK"]
     assert fact.source_tracks == ["存5南"]
-    assert fact.target_tracks == ["修4库内"]
+    assert fact.target_tracks == ["修4"]
 
 
 def test_route_blockage_plan_pressure_drops_when_blocking_track_is_attached():
@@ -157,7 +157,7 @@ def test_route_blockage_plan_can_filter_to_staging_debt_sources():
         normalized,
         state,
         RouteOracle(master),
-        blocked_source_tracks={"临4"},
+        blocked_source_tracks={"机南"},
     )
     non_staging_plan = compute_route_blockage_plan(
         normalized,
@@ -189,14 +189,14 @@ def test_route_blockage_plan_reuses_oracle_cache_by_state_and_source_filter(monk
         normalized,
         state,
         route_oracle,
-        blocked_source_tracks={"临4"},
+        blocked_source_tracks={"机南"},
     )
     calls_after_first = calls
     second = compute_route_blockage_plan(
         normalized,
         state,
         route_oracle,
-        blocked_source_tracks=frozenset({"临4"}),
+        blocked_source_tracks=frozenset({"机南"}),
     )
     filtered = compute_route_blockage_plan(
         normalized,
@@ -241,7 +241,7 @@ def test_route_blockage_release_score_reports_fact_pressure_only():
         route_blockage_plan=route_blockage_plan,
     ) == 2
     assert route_blockage_release_score(
-        source_track="临4",
+        source_track="机南",
         vehicle_nos=["SEEK"],
         route_blockage_plan=route_blockage_plan,
     ) == 0
@@ -262,10 +262,10 @@ def test_native_scoring_does_not_use_route_blockage_as_default_bias():
         action_type="ATTACH",
     )
     attach_blocked_vehicle = HookAction(
-        source_track="临4",
-        target_track="临4",
+        source_track="机南",
+        target_track="机南",
         vehicle_nos=["SEEK"],
-        path_tracks=["临4"],
+        path_tracks=["机南"],
         action_type="ATTACH",
     )
     blocker_next = _apply_move(

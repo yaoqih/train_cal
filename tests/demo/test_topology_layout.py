@@ -64,10 +64,10 @@ def test_build_route_polyline_uses_track_centers_and_shared_nodes():
 
     route = build_route_polyline(
         layout,
-        ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"],
+        ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
     )
 
-    assert route.track_codes == ["存5北", "渡1", "渡2", "临1", "临2", "渡4", "机库"]
+    assert route.track_codes == ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"]
     assert route.total_length_px > 0
     assert route.points[0] == layout.track_geometries["存5北"].center
     assert route.points[1] == layout.node_points["L2"]
@@ -82,6 +82,6 @@ def test_schematic_layout_json_defines_mainline_areas_and_key_endpoints():
     assert payload["canvas"]["width"] > 0
     assert payload["canvas"]["height"] > 0
     assert isinstance(payload.get("areas", []), list)
-    assert [item["trackCode"] for item in payload["mainlineTracks"]][:4] == ["联6", "渡2", "临1", "临2"]
+    assert [item["trackCode"] for item in payload["mainlineTracks"]][:4] == ["联6", "渡2", "机北1", "机北2"]
     assert "机库" in payload["tracks"]
     assert "洗南" in payload["tracks"]

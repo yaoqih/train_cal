@@ -21,7 +21,7 @@ def test_normal_mode_rejects_06_07_depot_spot():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -48,8 +48,8 @@ def test_inspection_mode_allows_06_07_depot_spot():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -90,30 +90,30 @@ def test_track_mode_depot_vehicles_consume_initial_depot_spots():
     master = load_master_data(DATA_DIR)
     payload = {
         "trackInfo": [
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "TD1",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
                 "targetMode": "TRACK",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "2",
                 "vehicleModel": "棚车",
                 "vehicleNo": "TD2",
                 "repairProcess": "厂修",
                 "vehicleLength": 14.3,
                 "targetMode": "TRACK",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "isSpotting": "",
                 "vehicleAttributes": "",
             },
@@ -132,10 +132,10 @@ def test_random_depot_allocation_reserves_unsatisfied_exact_depot_spots():
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             {
@@ -157,7 +157,7 @@ def test_random_depot_allocation_reserves_unsatisfied_exact_depot_spots():
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "106",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -172,14 +172,14 @@ def test_random_depot_allocation_reserves_unsatisfied_exact_depot_spots():
 
     random_allocated = allocate_spots_for_block(
         vehicles=[vehicles["RANDOM_DEPOT"]],
-        target_track="修1库内",
+        target_track="修1",
         yard_mode=normalized.yard_mode,
         occupied_spot_assignments=occupied,
         reserved_spot_codes=reservations,
     )
     exact_allocated = allocate_spots_for_block(
         vehicles=[vehicles["SPOT106"]],
-        target_track="修1库内",
+        target_track="修1",
         yard_mode=normalized.yard_mode,
         occupied_spot_assignments=occupied,
         reserved_spot_codes=reservations,
@@ -194,15 +194,15 @@ def test_initial_spot_assignments_preserve_real_occupants_of_reserved_exact_spot
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             *[
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": str(index),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"OCC{index}",
@@ -215,7 +215,7 @@ def test_initial_spot_assignments_preserve_real_occupants_of_reserved_exact_spot
                 for index in range(1, 6)
             ],
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "6",
                 "vehicleModel": "棚车",
                 "vehicleNo": "REAL_106_OCCUPANT",
@@ -233,7 +233,7 @@ def test_initial_spot_assignments_preserve_real_occupants_of_reserved_exact_spot
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "106",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -253,15 +253,15 @@ def test_random_depot_vehicle_on_initial_reserved_exact_spot_is_still_satisfied(
     payload = {
         "trackInfo": [
             {"trackName": "存5北", "trackDistance": 367},
-            {"trackName": "修1库内", "trackDistance": 151.7},
-            {"trackName": "修2库内", "trackDistance": 151.7},
-            {"trackName": "修3库内", "trackDistance": 151.7},
-            {"trackName": "修4库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
         ],
         "vehicleInfo": [
             *[
                 {
-                    "trackName": "修1库内",
+                    "trackName": "修1",
                     "order": str(index),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"OCC{index}",
@@ -274,7 +274,7 @@ def test_random_depot_vehicle_on_initial_reserved_exact_spot_is_still_satisfied(
                 for index in range(1, 6)
             ],
             {
-                "trackName": "修1库内",
+                "trackName": "修1",
                 "order": "6",
                 "vehicleModel": "棚车",
                 "vehicleNo": "REAL_106_OCCUPANT",
@@ -292,7 +292,7 @@ def test_random_depot_vehicle_on_initial_reserved_exact_spot_is_still_satisfied(
                 "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetMode": "SPOT",
-                "targetTrack": "修1库内",
+                "targetTrack": "修1",
                 "targetSpotCode": "106",
                 "isSpotting": "迎检",
                 "vehicleAttributes": "",
@@ -310,7 +310,7 @@ def test_random_depot_vehicle_on_initial_reserved_exact_spot_is_still_satisfied(
     assert state.spot_assignments["REAL_106_OCCUPANT"] == "106"
     assert goal_is_satisfied(
         occupant,
-        track_name="修1库内",
+        track_name="修1",
         state=state,
         plan_input=normalized,
     )

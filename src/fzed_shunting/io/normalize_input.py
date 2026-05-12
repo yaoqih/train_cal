@@ -55,10 +55,10 @@ WORK_AREA_DEFAULTS = {
     "轮": "轮:OPERATE",
     "大库": "大库:RANDOM",
     "大库外": "大库外:RANDOM",
-    "修1库内": "大库:RANDOM",
-    "修2库内": "大库:RANDOM",
-    "修3库内": "大库:RANDOM",
-    "修4库内": "大库:RANDOM",
+    "修1": "大库:RANDOM",
+    "修2": "大库:RANDOM",
+    "修3": "大库:RANDOM",
+    "修4": "大库:RANDOM",
 }
 
 TRACK_MODE_ALLOWED = {
@@ -67,7 +67,7 @@ TRACK_MODE_ALLOWED = {
     "存3",
     "存5北",
     "存5南",
-    "机北",
+    "机北3",
     "调北",
     "洗北",
     "预修",
@@ -82,14 +82,14 @@ TRACK_MODE_ALLOWED = {
 
 AREA_ALLOWED_TRACKS = {
     "轮:OPERATE": ["轮"],
-    "大库:RANDOM": ["修1库内", "修2库内", "修3库内", "修4库内"],
+    "大库:RANDOM": ["修1", "修2", "修3", "修4"],
     "大库外:RANDOM": ["修1库外", "修2库外", "修3库外", "修4库外"],
     "接车:RANDOM": ["存5北", "存5南"],
     "存车:RANDOM": [
         "存1",
         "存2",
         "存3",
-        "机北",
+        "机北3",
         "调北",
         "洗北",
     ],
@@ -107,7 +107,7 @@ SNAPSHOT_AREA_CODE_BY_TRACK = {
     "存1": "存车:RANDOM",
     "存2": "存车:RANDOM",
     "存3": "存车:RANDOM",
-    "机北": "存车:RANDOM",
+    "机北3": "存车:RANDOM",
     "调北": "存车:RANDOM",
     "洗北": "存车:RANDOM",
     "修1库外": "大库外:RANDOM",
@@ -121,20 +121,20 @@ SNAPSHOT_AREA_CODE_BY_TRACK = {
     "油": "油:SNAPSHOT",
     "抛": "抛:SNAPSHOT",
     "轮": "轮:SNAPSHOT",
-    "修1库内": "大库:RANDOM",
-    "修2库内": "大库:RANDOM",
-    "修3库内": "大库:RANDOM",
-    "修4库内": "大库:RANDOM",
+    "修1": "大库:RANDOM",
+    "修2": "大库:RANDOM",
+    "修3": "大库:RANDOM",
+    "修4": "大库:RANDOM",
 }
 
-DEPOT_INNER_PREFERRED_TRACKS_SHORT = ["修1库内", "修2库内"]
-DEPOT_INNER_FALLBACK_TRACKS_SHORT = ["修3库内", "修4库内"]
-DEPOT_INNER_PREFERRED_TRACKS_LONG = ["修3库内", "修4库内"]
+DEPOT_INNER_PREFERRED_TRACKS_SHORT = ["修1", "修2"]
+DEPOT_INNER_FALLBACK_TRACKS_SHORT = ["修3", "修4"]
+DEPOT_INNER_PREFERRED_TRACKS_LONG = ["修3", "修4"]
 SHORT_REPAIR_TARGET_ALIASES = {
-    "修1": "修1库内",
-    "修2": "修2库内",
-    "修3": "修3库内",
-    "修4": "修4库内",
+    "修1": "修1",
+    "修2": "修2",
+    "修3": "修3",
+    "修4": "修4",
 }
 
 VALID_IS_SPOTTING_LITERALS = {"", "否", "是", "迎检"}
@@ -165,7 +165,7 @@ def normalize_plan_input(
     if allow_internal_loco_tracks:
         if loco_track_name not in master.tracks:
             raise InputValidationError(f"Unknown locoTrackName: {loco_track_name}")
-    elif loco_track_name not in {"机库", "机北"}:
+    elif loco_track_name not in {"机库", "机北3"}:
         raise InputValidationError(f"Unsupported locoTrackName: {loco_track_name}")
     inspection_enabled = any(
         (item.get("isSpotting") or "").strip() == "迎检"
@@ -349,7 +349,7 @@ def _normalize_goal(
         return (
             GoalSpec(
                 target_mode="AREA",
-                target_track="修1库内",
+                target_track="修1",
                 allowed_target_tracks=AREA_ALLOWED_TRACKS["大库:RANDOM"],
                 preferred_target_tracks=preferred_target_tracks,
                 fallback_target_tracks=fallback_target_tracks,
@@ -525,7 +525,7 @@ def _normalize_snapshot_goal(
         return (
             GoalSpec(
                 target_mode="SNAPSHOT",
-                target_track="修1库内",
+                target_track="修1",
                 allowed_target_tracks=AREA_ALLOWED_TRACKS["大库:RANDOM"],
                 preferred_target_tracks=preferred,
                 fallback_target_tracks=fallback,
@@ -598,7 +598,7 @@ def _canonical_target_track(target_track: str) -> str:
 
 def _area_track(area_code: str, fallback_track: str) -> str:
     if area_code == "大库:RANDOM":
-        return "修1库内"
+        return "修1"
     if area_code == "大库外:RANDOM":
         return "修1库外"
     if ":" in area_code:
@@ -656,7 +656,7 @@ def _spot_to_track(spot_code: str) -> str:
     first = spot_code[0]
     if first not in {"1", "2", "3", "4"}:
         raise InputValidationError(f"Unsupported spot prefix: {spot_code}")
-    return f"修{first}库内"
+    return f"修{first}"
 
 
 def _merge_yard_mode(current: str, incoming: str) -> str:

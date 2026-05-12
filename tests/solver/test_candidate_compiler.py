@@ -67,7 +67,7 @@ def test_replay_candidate_steps_rejects_unreachable_locomotive_between_steps():
             source_track="调棚",
             target_track="存3",
             vehicle_nos=["A"],
-            path_tracks=["调棚", "调北", "渡4", "临2", "临1", "渡2", "渡3", "存3"],
+            path_tracks=["调棚", "调北", "渡4", "机北2", "机北1", "渡2", "渡3", "存3"],
             action_type="DETACH",
         ),
         HookAction(

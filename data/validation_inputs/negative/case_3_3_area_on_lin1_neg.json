@@ -4,7 +4,7 @@
     "rule_id": "area_on_storage_line",
     "variant": "area_on_lin1",
     "baseline": "B1_clean",
-    "purpose": "isSpotting=是 落临停线 临1",
+    "purpose": "isSpotting=是 落临停线 机北1",
     "expected_error": {
       "category": "illegal_input",
       "rule_citation": "spec 3.3 compat rule 2",
@@ -13,23 +13,23 @@
   },
   "trackInfo": [
     {
-      "trackName": "临1",
+      "trackName": "机北1",
       "trackDistance": 81.4
     },
     {
-      "trackName": "临2",
+      "trackName": "机北2",
       "trackDistance": 55.7
     },
     {
-      "trackName": "临3",
+      "trackName": "洗油北",
       "trackDistance": 62.9
     },
     {
-      "trackName": "临4",
+      "trackName": "机南",
       "trackDistance": 90.1
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "trackDistance": 151.7
     },
     {
@@ -37,7 +37,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修2库内",
+      "trackName": "修2",
       "trackDistance": 151.7
     },
     {
@@ -45,7 +45,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修3库内",
+      "trackName": "修3",
       "trackDistance": 151.7
     },
     {
@@ -53,7 +53,7 @@
       "trackDistance": 49.3
     },
     {
-      "trackName": "修4库内",
+      "trackName": "修4",
       "trackDistance": 151.7
     },
     {
@@ -93,7 +93,7 @@
       "trackDistance": 131.8
     },
     {
-      "trackName": "机北",
+      "trackName": "机北3",
       "trackDistance": 69.1
     },
     {
@@ -219,7 +219,7 @@
       "vehicleAttributes": ""
     },
     {
-      "trackName": "修1库内",
+      "trackName": "修1",
       "order": "102",
       "vehicleModel": "C70",
       "vehicleNo": "1657616",
@@ -263,7 +263,7 @@
       "vehicleLength": 14.3,
       "repairProcess": "段修",
       "targetMode": "AREA",
-      "targetTrack": "临1",
+      "targetTrack": "机北1",
       "isSpotting": "是",
       "vehicleAttributes": ""
     }

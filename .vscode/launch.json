@@ -1,0 +1,102 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train_cal: CLI Solve Current Validation Case",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "fzed_shunting.cli",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "FZED_SOLVER_TELEMETRY_PATH": "${workspaceFolder}/artifacts/debug/solver_telemetry.jsonl"
+            },
+            "args": [
+                "solve",
+                "--input",
+                "${file}",
+                "--solver",
+                "beam",
+                "--beam-width",
+                "8",
+                "--timeout-seconds",
+                "60"
+            ]
+        },
+        {
+            "name": "train_cal: CLI Solve validation_20260324Z",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "fzed_shunting.cli",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "FZED_SOLVER_TELEMETRY_PATH": "${workspaceFolder}/artifacts/debug/solver_telemetry.jsonl"
+            },
+            "args": [
+                "solve",
+                "--input",
+                "${workspaceFolder}/artifacts/external_validation_inputs/validation_20260324Z.json",
+                "--solver",
+                "beam",
+                "--beam-width",
+                "8",
+                "--timeout-seconds",
+                "60"
+            ]
+        },
+        {
+            "name": "train_cal: External Validation Runner Single Case",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/run_external_validation_parallel.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "FZED_SOLVER_TELEMETRY_PATH": "${workspaceFolder}/artifacts/debug/solver_telemetry.jsonl"
+            },
+            "args": [
+                "--scenario",
+                "validation_20260324Z.json",
+                "--input-dir",
+                "${workspaceFolder}/artifacts/external_validation_inputs",
+                "--output-dir",
+                "${workspaceFolder}/artifacts/debug/parallel_single_case",
+                "--solver",
+                "beam",
+                "--beam-width",
+                "8",
+                "--timeout-seconds",
+                "60",
+                "--validation-mode",
+                "research"
+            ]
+        },
+        {
+            "name": "train_cal: Streamlit Demo Replay",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "args": [
+                "run",
+                "${workspaceFolder}/app.py",
+                "--server.headless",
+                "true",
+                "--server.port",
+                "8501"
+            ]
+        }
+    ]
+}

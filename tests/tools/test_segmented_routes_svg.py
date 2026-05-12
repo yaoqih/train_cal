@@ -406,10 +406,10 @@ def test_segmented_routes_cover_expected_multi_segment_branches():
     )
 
     machine_route = routes["Z1-L8"]
-    assert [segment.track_code for segment in machine_route.segments] == ["机北", "机棚"]
+    assert [segment.track_code for segment in machine_route.segments] == ["机北3", "机棚"]
 
     repair_route = routes["L19-修1尽头"]
-    assert [segment.track_code for segment in repair_route.segments] == ["修1库外", "修1库内"]
+    assert [segment.track_code for segment in repair_route.segments] == ["修1库外", "修1"]
 
     for branch in routes.values():
         for segment in branch.segments:
@@ -425,7 +425,7 @@ def test_render_segmented_routes_svg_contains_expected_labels_and_paths():
     assert 'class="segmented-track"' in svg
     assert ">存5北<" in svg
     assert ">机棚<" in svg
-    assert ">修1库内<" in svg
+    assert ">修1<" in svg
     assert "626.3m" in svg
 
 
@@ -436,7 +436,7 @@ def test_build_continuous_network_layout_keeps_anchor_tracks_on_expected_sides()
 
     assert layout.track_geometries["联6"].label_anchor.x > layout.track_geometries["存5北"].label_anchor.x
     assert layout.track_geometries["联6"].label_anchor.x > layout.track_geometries["机棚"].label_anchor.x
-    assert layout.track_geometries["修1库内"].label_anchor.x < layout.track_geometries["联7"].label_anchor.x
+    assert layout.track_geometries["修1"].label_anchor.x < layout.track_geometries["联7"].label_anchor.x
     assert layout.track_geometries["修4库外"].label_anchor.x < layout.track_geometries["联7"].label_anchor.x
 
 
@@ -445,7 +445,7 @@ def test_build_continuous_network_layout_respects_ordered_branch_node_sequences(
 
     layout = build_continuous_network_layout(DATA_DIR, master)
 
-    assert layout.node_positions["279"].x > layout.node_positions["L1"].x > layout.node_positions["L2"].x
+    assert layout.node_positions["5号门"].x > layout.node_positions["L1"].x > layout.node_positions["L2"].x
     assert layout.node_positions["L6"].x > layout.node_positions["Z1"].x > layout.node_positions["Z2"].x
     assert layout.node_positions["Z2"].x > layout.node_positions["Z3"].x
     assert layout.node_positions["L7"].x > layout.node_positions["调棚北口"].x > layout.node_positions["调棚尽头"].x
@@ -520,7 +520,7 @@ def test_build_continuous_network_layout_roughly_matches_reference_vertical_orde
 
     assert layout.track_geometries["存5北"].label_anchor.y < layout.track_geometries["存4北"].label_anchor.y
     assert layout.track_geometries["存4北"].label_anchor.y < layout.track_geometries["调北"].label_anchor.y
-    assert layout.track_geometries["机北"].label_anchor.y < layout.track_geometries["调北"].label_anchor.y
+    assert layout.track_geometries["机北3"].label_anchor.y < layout.track_geometries["调北"].label_anchor.y
     assert layout.track_geometries["修4库外"].label_anchor.y < layout.track_geometries["修3库外"].label_anchor.y
     assert layout.track_geometries["修3库外"].label_anchor.y < layout.track_geometries["修2库外"].label_anchor.y
     assert layout.track_geometries["修2库外"].label_anchor.y < layout.track_geometries["修1库外"].label_anchor.y
@@ -537,7 +537,7 @@ def test_build_continuous_network_layout_uses_compressed_length_sensitive_spans(
     assert _track_span_x(layout, "联6") > 0.0
     assert _track_span_x(layout, "存5北") > _track_span_x(layout, "存5南")
     assert _track_span_x(layout, "调棚") > _track_span_x(layout, "调北")
-    assert _track_span_x(layout, "修1库外") > _track_span_x(layout, "修1库内")
+    assert _track_span_x(layout, "修1库外") > _track_span_x(layout, "修1")
     assert _track_span_x(layout, "联6") < _track_span_x(layout, "存5北") < _track_span_x(layout, "联6") * 1.6
 
 
@@ -569,7 +569,7 @@ def test_render_segmented_routes_svg_uses_simple_orthogonal_branch_paths():
 
     assert 'class="segmented-track"' in svg
     assert " C " not in svg
-    assert layout.track_geometries["机北"].path_d.count(" L ") <= 3
+    assert layout.track_geometries["机北3"].path_d.count(" L ") <= 3
     assert layout.track_geometries["调北"].path_d.count(" L ") <= 3
 
 
@@ -590,9 +590,9 @@ def test_build_continuous_network_layout_separates_known_middle_hotspots():
 
     layout = build_continuous_network_layout(DATA_DIR, master)
 
-    assert _closest_parallel_gap(layout, "存2", "机北", min_shared_span=120.0) >= 14.0
+    assert _closest_parallel_gap(layout, "存2", "机北3", min_shared_span=120.0) >= 14.0
     assert _closest_parallel_gap(layout, "存1", "渡5", min_shared_span=60.0) >= 14.0
-    assert _closest_parallel_gap(layout, "预修", "临4", min_shared_span=80.0) is None
+    assert _closest_parallel_gap(layout, "预修", "机南", min_shared_span=80.0) is None
 
 
 def test_build_continuous_network_layout_aligns_machine_cluster_vertical_order():
@@ -602,11 +602,11 @@ def test_build_continuous_network_layout_aligns_machine_cluster_vertical_order()
 
     lane_ys = {
         track_code: _dominant_horizontal_y(layout, track_code)
-        for track_code in ("预修", "存1", "机北", "机棚", "调北", "调棚", "机库", "油", "洗北", "洗南")
+        for track_code in ("预修", "存1", "机北3", "机棚", "调北", "调棚", "机库", "油", "洗北", "洗南")
     }
 
-    assert lane_ys["预修"] < lane_ys["存1"] < lane_ys["机北"] == lane_ys["机棚"]
-    assert lane_ys["机北"] < lane_ys["调北"] == lane_ys["调棚"] < lane_ys["机库"]
+    assert lane_ys["预修"] < lane_ys["存1"] < lane_ys["机北3"] == lane_ys["机棚"]
+    assert lane_ys["机北3"] < lane_ys["调北"] == lane_ys["调棚"] < lane_ys["机库"]
     assert lane_ys["机库"] < lane_ys["油"] < lane_ys["洗北"] < lane_ys["洗南"]
 
 
@@ -617,7 +617,7 @@ def test_build_continuous_network_layout_uses_regular_machine_cluster_lane_steps
 
     upper = _dominant_horizontal_y(layout, "预修")
     storage = _dominant_horizontal_y(layout, "存1")
-    machine_north = _dominant_horizontal_y(layout, "机北")
+    machine_north = _dominant_horizontal_y(layout, "机北3")
     machine_shed = _dominant_horizontal_y(layout, "机棚")
     yard_north = _dominant_horizontal_y(layout, "调北")
     yard_shed = _dominant_horizontal_y(layout, "调棚")
@@ -638,7 +638,7 @@ def test_build_continuous_network_layout_uses_wider_machine_cluster_level_gaps()
 
     upper = _dominant_horizontal_y(layout, "预修")
     storage = _dominant_horizontal_y(layout, "存1")
-    machine = _dominant_horizontal_y(layout, "机北")
+    machine = _dominant_horizontal_y(layout, "机北3")
     yard = _dominant_horizontal_y(layout, "调北")
     machine_house = _dominant_horizontal_y(layout, "机库")
 
@@ -655,7 +655,7 @@ def test_build_continuous_network_layout_locks_machine_cluster_nodes_to_referenc
 
     upper = _dominant_horizontal_y(layout, "预修")
     storage = _dominant_horizontal_y(layout, "存1")
-    machine = _dominant_horizontal_y(layout, "机北")
+    machine = _dominant_horizontal_y(layout, "机北3")
     yard = _dominant_horizontal_y(layout, "调北")
 
     assert layout.node_positions["L13"].y == pytest.approx(upper, abs=1.0)
@@ -690,7 +690,7 @@ def test_build_continuous_network_layout_keeps_split_routes_on_one_fixed_lane():
 
     assert _dominant_horizontal_y(layout, "存5北") == pytest.approx(_dominant_horizontal_y(layout, "存5南"))
     assert _dominant_horizontal_y(layout, "存4北") == pytest.approx(_dominant_horizontal_y(layout, "存4南"))
-    assert _dominant_horizontal_y(layout, "机北") == pytest.approx(_dominant_horizontal_y(layout, "机棚"))
+    assert _dominant_horizontal_y(layout, "机北3") == pytest.approx(_dominant_horizontal_y(layout, "机棚"))
     assert _dominant_horizontal_y(layout, "调北") == pytest.approx(_dominant_horizontal_y(layout, "调棚"))
 
 
@@ -737,7 +737,7 @@ def test_build_continuous_network_layout_keeps_machine_cluster_text_clear_of_oth
 
     assert _count_group_overlaps(
         layout,
-        track_codes={"预修", "机棚", "机北", "调棚", "调北", "临4", "渡7", "渡6", "渡5", "临2", "机库", "渡4", "临3"},
+        track_codes={"预修", "机棚", "机北3", "调棚", "调北", "机南", "渡7", "渡6", "渡5", "机北2", "机库", "渡4", "洗油北"},
     ) == 0
 
 
@@ -757,11 +757,11 @@ def test_build_continuous_network_layout_keeps_crowded_middle_labels_clear_of_ne
 
     layout = build_continuous_network_layout(DATA_DIR, master)
 
-    assert _label_clearance_to_track(layout, label_track_code="临2", other_track_code="存1") >= 6.0
+    assert _label_clearance_to_track(layout, label_track_code="机北2", other_track_code="存1") >= 6.0
     assert _label_clearance_to_track(layout, label_track_code="渡6", other_track_code="存1") >= 6.0
     assert _label_clearance_to_track(layout, label_track_code="渡5", other_track_code="存1") >= 6.0
     assert _label_clearance_to_track(layout, label_track_code="油", other_track_code="洗北") >= 6.0
-    assert _label_clearance_to_track(layout, label_track_code="临3", other_track_code="调棚") >= 6.0
+    assert _label_clearance_to_track(layout, label_track_code="洗油北", other_track_code="调棚") >= 6.0
 
 
 def test_build_continuous_network_layout_polishes_right_middle_cluster_spacing():
@@ -769,9 +769,9 @@ def test_build_continuous_network_layout_polishes_right_middle_cluster_spacing()
 
     layout = build_continuous_network_layout(DATA_DIR, master)
 
-    assert _label_gap(layout, first_track_code="存1", second_track_code="临2") >= 40.0
+    assert _label_gap(layout, first_track_code="存1", second_track_code="机北2") >= 40.0
     assert _label_clearance_to_track(layout, label_track_code="渡5", other_track_code="渡4") >= 10.0
-    assert _label_clearance_to_track(layout, label_track_code="机北", other_track_code="渡7") >= 20.0
+    assert _label_clearance_to_track(layout, label_track_code="机北3", other_track_code="渡7") >= 20.0
 
 
 def test_build_continuous_network_layout_polishes_oil_and_wash_label_spacing():

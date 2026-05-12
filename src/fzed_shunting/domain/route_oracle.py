@@ -27,7 +27,7 @@ class TrackRouteMeta:
 
 
 BRANCH_ENDPOINTS: dict[str, tuple[str, str]] = {
-    "大门L1": ("大门", "L1"),
+    "大门L1": ("5号门", "L1"),
     "L1-L2": ("L1", "L2"),
     "L1-L3": ("L1", "L3"),
     "L3-L4": ("L3", "L4"),
@@ -67,7 +67,7 @@ BRANCH_ENDPOINTS: dict[str, tuple[str, str]] = {
 }
 
 TRACK_ENDPOINTS: dict[str, tuple[str, str]] = {
-    "联6": ("279", "L1"),
+    "联6": ("5号门", "L1"),
     "联7": ("L15", "L16"),
     "渡1": ("L1", "L2"),
     "渡2": ("L1", "L3"),
@@ -82,10 +82,10 @@ TRACK_ENDPOINTS: dict[str, tuple[str, str]] = {
     "渡11": ("L16", "L19"),
     "渡12": ("L16", "L17"),
     "渡13": ("L17", "L18"),
-    "临1": ("L3", "L5"),
-    "临2": ("L5", "L6"),
-    "临3": ("L8", "L9"),
-    "临4": ("L8", "L14"),
+    "机北1": ("L3", "L5"),
+    "机北2": ("L5", "L6"),
+    "洗油北": ("L8", "L9"),
+    "机南": ("L8", "L14"),
     "存1": ("L5", "Z2"),
     "存2": ("L4", "Z3"),
     "存3": ("L4", "Z4"),
@@ -96,7 +96,7 @@ TRACK_ENDPOINTS: dict[str, tuple[str, str]] = {
     "机库": ("L7", "机库尽头"),
     "调北": ("L7", "调棚北口"),
     "调棚": ("调棚北口", "调棚尽头"),
-    "机北": ("Z1", "机棚北口"),
+    "机北3": ("Z1", "机棚北口"),
     "机棚": ("机棚北口", "L8"),
     "预修": ("Z3", "L13"),
     "洗北": ("L9", "洗南北口"),
@@ -105,13 +105,13 @@ TRACK_ENDPOINTS: dict[str, tuple[str, str]] = {
     "油": ("L9", "油尽头"),
     "轮": ("L19", "轮尽头"),
     "修1库外": ("L19", "修1门"),
-    "修1库内": ("修1门", "修1尽头"),
+    "修1": ("修1门", "修1尽头"),
     "修2库外": ("L17", "修2门"),
-    "修2库内": ("修2门", "修2尽头"),
+    "修2": ("修2门", "修2尽头"),
     "修3库外": ("L18", "修3门"),
-    "修3库内": ("修3门", "修3尽头"),
+    "修3": ("修3门", "修3尽头"),
     "修4库外": ("L18", "修4门"),
-    "修4库内": ("修4门", "修4尽头"),
+    "修4": ("修4门", "修4尽头"),
 }
 
 
@@ -131,10 +131,10 @@ TRACK_ROUTE_META: dict[str, TrackRouteMeta] = {
     "渡11": TrackRouteMeta(("L16", "L19")),
     "渡12": TrackRouteMeta(("L16", "L17")),
     "渡13": TrackRouteMeta(("L17", "L18")),
-    "临1": TrackRouteMeta(("L3", "L5"), terminal_branch="L3-L5"),
-    "临2": TrackRouteMeta(("L5", "L6"), terminal_branch="L5-L6"),
-    "临3": TrackRouteMeta(("L8", "L9"), terminal_branch="L8-L9"),
-    "临4": TrackRouteMeta(("L8", "L14"), terminal_branch="L8-L11(L14)"),
+    "机北1": TrackRouteMeta(("L3", "L5"), terminal_branch="L3-L5"),
+    "机北2": TrackRouteMeta(("L5", "L6"), terminal_branch="L5-L6"),
+    "洗油北": TrackRouteMeta(("L8", "L9"), terminal_branch="L8-L9"),
+    "机南": TrackRouteMeta(("L8", "L14"), terminal_branch="L8-L11(L14)"),
     "存1": TrackRouteMeta(("L5", "Z2"), terminal_branch="L5-Z2"),
     "存2": TrackRouteMeta(("L4", "Z3"), terminal_branch="L4-Z3"),
     "存3": TrackRouteMeta(("L4", "Z4"), terminal_branch="L4-Z4"),
@@ -145,7 +145,7 @@ TRACK_ROUTE_META: dict[str, TrackRouteMeta] = {
     "机库": TrackRouteMeta(("L7",), terminal_branch="L7-机库尽头"),
     "调北": TrackRouteMeta(("L7",)),
     "调棚": TrackRouteMeta(("L7",), terminal_branch="L7-调梁尽头"),
-    "机北": TrackRouteMeta(("Z1",)),
+    "机北3": TrackRouteMeta(("Z1",)),
     "机棚": TrackRouteMeta(("Z1", "L8"), terminal_branch="Z1-L8"),
     "预修": TrackRouteMeta(("Z3", "L13"), terminal_branch="Z3-L13"),
     "洗北": TrackRouteMeta(("L9",)),
@@ -157,10 +157,10 @@ TRACK_ROUTE_META: dict[str, TrackRouteMeta] = {
     "修2库外": TrackRouteMeta(("L17",)),
     "修3库外": TrackRouteMeta(("L18",)),
     "修4库外": TrackRouteMeta(("L18",)),
-    "修1库内": TrackRouteMeta(("L19",), terminal_branch="L19-修1尽头"),
-    "修2库内": TrackRouteMeta(("L17",), terminal_branch="L17-修2尽头"),
-    "修3库内": TrackRouteMeta(("L18",), terminal_branch="L18-修3尽头"),
-    "修4库内": TrackRouteMeta(("L18",), terminal_branch="L18-修4尽头"),
+    "修1": TrackRouteMeta(("L19",), terminal_branch="L19-修1尽头"),
+    "修2": TrackRouteMeta(("L17",), terminal_branch="L17-修2尽头"),
+    "修3": TrackRouteMeta(("L18",), terminal_branch="L18-修3尽头"),
+    "修4": TrackRouteMeta(("L18",), terminal_branch="L18-修4尽头"),
 }
 
 

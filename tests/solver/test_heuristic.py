@@ -25,7 +25,7 @@ def _base_payload(vehicles: list[dict]) -> dict:
             {"trackName": "洗南", "trackDistance": 88.7},
             {"trackName": "存1", "trackDistance": 113},
             {"trackName": "修1库外", "trackDistance": 49.3},
-            {"trackName": "修1库内", "trackDistance": 151.7},
+            {"trackName": "修1", "trackDistance": 151.7},
         ],
         "vehicleInfo": vehicles,
         "locoTrackName": "机库",
@@ -645,7 +645,7 @@ def test_h_misplaced_counts_short_random_depot_vehicle_on_non_preferred_track_wh
     payload = _tight_capacity_payload(
         [
             {
-                "trackName": "修3库内",
+                "trackName": "修3",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "HPREF",
@@ -657,10 +657,10 @@ def test_h_misplaced_counts_short_random_depot_vehicle_on_non_preferred_track_wh
             },
         ],
         track_distances={
-            "修1库内": 151.7,
-            "修2库内": 151.7,
-            "修3库内": 151.7,
-            "修4库内": 151.7,
+            "修1": 151.7,
+            "修2": 151.7,
+            "修3": 151.7,
+            "修4": 151.7,
         },
     )
     normalized = normalize_plan_input(payload, master)
@@ -674,7 +674,7 @@ def test_real_hook_heuristic_counts_short_random_depot_vehicle_on_fallback_track
     payload = _tight_capacity_payload(
         [
             {
-                "trackName": "修4库内",
+                "trackName": "修4",
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "RH_PREF",
@@ -686,10 +686,10 @@ def test_real_hook_heuristic_counts_short_random_depot_vehicle_on_fallback_track
             },
         ],
         track_distances={
-            "修1库内": 151.7,
-            "修2库内": 151.7,
-            "修3库内": 151.7,
-            "修4库内": 151.7,
+            "修1": 151.7,
+            "修2": 151.7,
+            "修3": 151.7,
+            "修4": 151.7,
         },
     )
     normalized = normalize_plan_input(payload, master)

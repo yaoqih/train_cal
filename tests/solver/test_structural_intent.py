@@ -46,13 +46,13 @@ def test_structural_intent_unifies_order_route_capacity_and_commitment_facts():
                 {"trackName": "机库", "trackDistance": 71.6},
                 {"trackName": "存5北", "trackDistance": 367.0},
                 {"trackName": "存5南", "trackDistance": 156.0},
-                {"trackName": "临4", "trackDistance": 90.1},
+                {"trackName": "机南", "trackDistance": 90.1},
                 {"trackName": "洗南", "trackDistance": 88.7},
                 {"trackName": "存1", "trackDistance": 20.0},
                 {"trackName": "存4北", "trackDistance": 317.8},
             ],
             "vehicleInfo": [
-                _vehicle("ROUTE_SEEK", "临4", "存5北", order=1),
+                _vehicle("ROUTE_SEEK", "机南", "存5北", order=1),
                 _vehicle("ROUTE_BLOCK", "存5南", "存5南", order=1),
                 _vehicle("CAP_KEEP", "存1", "存1", order=1, length=15.0),
                 _vehicle("CAP_RELEASE", "存1", "存4北", order=2, length=12.0),
@@ -147,17 +147,17 @@ def test_structural_intent_marks_exact_spot_occupant_as_resource_debt():
         {
             "trackInfo": [
                 {"trackName": "机库", "trackDistance": 71.6},
-                {"trackName": "临1", "trackDistance": 81.4},
-                {"trackName": "修1库内", "trackDistance": 151.7},
-                {"trackName": "修2库内", "trackDistance": 151.7},
-                {"trackName": "修3库内", "trackDistance": 151.7},
-                {"trackName": "修4库内", "trackDistance": 151.7},
+                {"trackName": "机北1", "trackDistance": 81.4},
+                {"trackName": "修1", "trackDistance": 151.7},
+                {"trackName": "修2", "trackDistance": 151.7},
+                {"trackName": "修3", "trackDistance": 151.7},
+                {"trackName": "修4", "trackDistance": 151.7},
             ],
             "vehicleInfo": [
-                _vehicle("DEPOT106", "修1库内", "大库", order=1),
-                _vehicle("DEPOT107", "修1库内", "大库", order=2),
+                _vehicle("DEPOT106", "修1", "大库", order=1),
+                _vehicle("DEPOT107", "修1", "大库", order=2),
                 {
-                    **_vehicle("SPOT106", "临1", "修1库内", order=1, spotting="迎检"),
+                    **_vehicle("SPOT106", "机北1", "修1", order=1, spotting="迎检"),
                     "targetMode": "SPOT",
                     "targetSpotCode": "106",
                 },
@@ -166,7 +166,7 @@ def test_structural_intent_marks_exact_spot_occupant_as_resource_debt():
         }
     )
     state = ReplayState(
-        track_sequences={"修1库内": ["DEPOT106", "DEPOT107"], "临1": ["SPOT106"]},
+        track_sequences={"修1": ["DEPOT106", "DEPOT107"], "机北1": ["SPOT106"]},
         loco_track_name="机库",
         weighed_vehicle_nos=set(),
         spot_assignments={"DEPOT106": "106", "DEPOT107": "107"},
@@ -180,7 +180,7 @@ def test_structural_intent_marks_exact_spot_occupant_as_resource_debt():
 
     assert any(
         debt.kind == "EXACT_SPOT_RELEASE"
-        and debt.track_name == "修1库内"
+        and debt.track_name == "修1"
         and debt.vehicle_nos == ("DEPOT106",)
         and debt.blocked_vehicle_nos == ("SPOT106",)
         for debt in intent.resource_debts
