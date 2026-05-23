@@ -11,6 +11,7 @@ from fzed_shunting.io.normalize_input import normalize_plan_input
 from fzed_shunting.solver.constructive import (
     ConstructiveResult,
     _is_better_attempt,
+    _score_candidate,
     _score_native_move,
     solve_constructive,
 )
@@ -3553,6 +3554,145 @@ def test_candidate_selection_pool_keeps_route_pressure_release_before_clean_regr
     )
 
     assert _candidate_selection_pool([release_entry, clean_entry]) == [release_entry]
+
+
+def test_score_candidate_prefers_multi_step_net_progress_over_first_step_appeal():
+    from fzed_shunting.domain.route_oracle import RouteOracle
+    from fzed_shunting.solver.constructive import _collect_goal_tracks
+    from fzed_shunting.solver.heuristic import make_state_heuristic_real_hook
+    from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
+
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "存5北", "trackDistance": 367.0},
+            {"trackName": "存3", "trackDistance": 258.5},
+            {"trackName": "调棚", "trackDistance": 174.3},
+            {"trackName": "预修", "trackDistance": 208.5},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "A",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "TRACK",
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "B",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "TRACK",
+                "targetTrack": "存3",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "调棚",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "C",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "TRACK",
+                "targetTrack": "预修",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    state = build_initial_state(normalized)
+    heuristic = make_state_heuristic_real_hook(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    route_oracle = RouteOracle(master)
+    route_blockage_plan = compute_route_blockage_plan(normalized, state, route_oracle)
+
+    direct_attach = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["A", "B"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    direct_detach = HookAction(
+        source_track="存5北",
+        target_track="存3",
+        vehicle_nos=["A", "B"],
+        path_tracks=["存5北", "存3"],
+        action_type="DETACH",
+    )
+    staged_attach = HookAction(
+        source_track="存5北",
+        target_track="存5北",
+        vehicle_nos=["A", "B"],
+        path_tracks=["存5北"],
+        action_type="ATTACH",
+    )
+    staged_detach = HookAction(
+        source_track="存5北",
+        target_track="调棚",
+        vehicle_nos=["A", "B"],
+        path_tracks=["存5北", "调棚"],
+        action_type="DETACH",
+    )
+
+    direct_state_1 = _apply_move(state=state, move=direct_attach, plan_input=normalized, vehicle_by_no=vehicle_by_no)
+    direct_state_2 = _apply_move(state=direct_state_1, move=direct_detach, plan_input=normalized, vehicle_by_no=vehicle_by_no)
+    staged_state_1 = _apply_move(state=state, move=staged_attach, plan_input=normalized, vehicle_by_no=vehicle_by_no)
+    staged_state_2 = _apply_move(state=staged_state_1, move=staged_detach, plan_input=normalized, vehicle_by_no=vehicle_by_no)
+
+    current_h = heuristic(state)
+    direct_score, _ = _score_candidate(
+        candidate=SimpleNamespace(kind="structural", reason="test_direct", steps=(direct_attach, direct_detach)),
+        state=state,
+        final_state=direct_state_2,
+        transitions=[(state, direct_attach, direct_state_1), (direct_state_1, direct_detach, direct_state_2)],
+        plan_input=normalized,
+        state_heuristic=heuristic,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(direct_state_2),
+        current_progress=(current_h, 0, 0, 0),
+        next_progress=(heuristic(direct_state_2), 0, 0, 0),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+        route_blockage_plan=route_blockage_plan,
+        next_route_blockage_plan=compute_route_blockage_plan(normalized, direct_state_2, route_oracle),
+        route_oracle=route_oracle,
+        route_blockage_plan_for_state=lambda s: compute_route_blockage_plan(normalized, s, route_oracle),
+    )
+    staged_score, _ = _score_candidate(
+        candidate=SimpleNamespace(kind="structural", reason="test_staged", steps=(staged_attach, staged_detach)),
+        state=state,
+        final_state=staged_state_2,
+        transitions=[(state, staged_attach, staged_state_1), (staged_state_1, staged_detach, staged_state_2)],
+        plan_input=normalized,
+        state_heuristic=heuristic,
+        current_heuristic=current_h,
+        next_heuristic=heuristic(staged_state_2),
+        current_progress=(current_h, 0, 0, 0),
+        next_progress=(heuristic(staged_state_2), 0, 0, 0),
+        vehicle_by_no=vehicle_by_no,
+        goal_tracks_needed=_collect_goal_tracks(normalized),
+        satisfied_by_track={},
+        route_blockage_plan=route_blockage_plan,
+        next_route_blockage_plan=compute_route_blockage_plan(normalized, staged_state_2, route_oracle),
+        route_oracle=route_oracle,
+        route_blockage_plan_for_state=lambda s: compute_route_blockage_plan(normalized, s, route_oracle),
+    )
+
+    assert direct_score < staged_score
 
 
 def test_score_native_move_penalizes_staging_to_staging_detach_without_progress():

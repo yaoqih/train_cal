@@ -1318,6 +1318,8 @@ def _initialize_debug_stats(
             "moves_by_source": {},
             "moves_by_block_size": {},
             "candidate_steps_by_kind": {},
+            "structural_candidate_origin_counts": {},
+            "structural_candidate_overlap_examples": [],
             "top_expansions": [],
         }
     )
@@ -1360,6 +1362,13 @@ def _accumulate_move_debug_stats(
         debug_stats["candidate_steps_by_kind"],
         move_stats.get("candidate_steps_by_kind", {}),
     )
+    _merge_counter_dict(
+        debug_stats["structural_candidate_origin_counts"],
+        move_stats.get("structural_candidate_origin_counts", {}),
+    )
+    overlap_examples = move_stats.get("structural_candidate_overlap_examples", ())
+    if overlap_examples:
+        debug_stats["structural_candidate_overlap_examples"].extend(overlap_examples)
     top_expansions = debug_stats["top_expansions"]
     top_expansions.append(
         {

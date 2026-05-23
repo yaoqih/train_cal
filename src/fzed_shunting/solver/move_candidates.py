@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
@@ -53,6 +55,7 @@ class MoveCandidate:
     focus_tracks: tuple[str, ...] = ()
     structural_reserve: bool = False
     soft_penalty: int = 0
+    origin: str = ""
 
 
 def _structural_candidate(
@@ -61,6 +64,7 @@ def _structural_candidate(
     reason: str,
     focus_tracks: tuple[str, ...],
     structural_reserve: bool = True,
+    origin: str = "",
 ) -> MoveCandidate:
     return MoveCandidate(
         steps=tuple(steps),
@@ -69,7 +73,14 @@ def _structural_candidate(
         focus_tracks=focus_tracks,
         structural_reserve=structural_reserve,
         soft_penalty=0,
+        origin=origin or reason,
     )
+
+
+def _with_candidate_origin(candidate: MoveCandidate | None, origin: str) -> MoveCandidate | None:
+    if candidate is None:
+        return None
+    return replace(candidate, origin=origin)
 
 
 def _replay_noncarry_steps(
@@ -211,6 +222,12 @@ def generate_move_candidates(
         )
         debug_stats["structural_candidate_steps_total"] = sum(
             len(candidate.steps) for candidate in structural_candidates
+        )
+        debug_stats["structural_candidate_origin_counts"] = _candidate_origin_counts(
+            structural_candidates
+        )
+        debug_stats["structural_candidate_overlap_examples"] = _candidate_overlap_examples(
+            structural_candidates
         )
         debug_stats["total_moves"] = len(all_candidates)
         debug_stats["total_candidates"] = len(all_candidates)
@@ -524,9 +541,9 @@ def _generate_structural_candidates(
                     target_track=target_track,
                     pending_vehicle_nos=list(debt.pending_vehicle_nos),
                     blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-                )
+            )
             if candidate is not None:
-                candidates.append(candidate)
+                _append_generation_candidate(candidates, candidate)
             front_candidate = _build_work_position_window_candidate(
                 plan_input=plan_input,
                 state=state,
@@ -538,8 +555,11 @@ def _generate_structural_candidates(
                 blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
                 front_block_only=True,
             )
-            if front_candidate is not None:
-                candidates.append(front_candidate)
+            if (
+                front_candidate is not None
+                and not _candidate_has_same_steps(front_candidate, candidate)
+            ):
+                _append_generation_candidate(candidates, front_candidate)
             fill_candidate = _build_work_position_free_fill_candidate(
                 plan_input=plan_input,
                 state=state,
@@ -550,7 +570,7 @@ def _generate_structural_candidates(
                 pending_vehicle_nos=list(debt.pending_vehicle_nos),
             )
             if fill_candidate is not None:
-                candidates.append(fill_candidate)
+                _append_generation_candidate(candidates, fill_candidate)
         for debt in cluster.resource_debts:
             if debt.kind == "ROUTE_RELEASE":
                 route_candidate = _build_route_release_frontier_candidate(
@@ -563,7 +583,7 @@ def _generate_structural_candidates(
                     buffer_leases=intent.buffer_leases,
                 )
                 if route_candidate is not None:
-                    resource_candidates.append(route_candidate)
+                    _append_generation_candidate(resource_candidates, route_candidate)
             if debt.kind == "FRONT_CLEARANCE":
                 frontier_candidate = _build_goal_frontier_source_opening_candidate(
                     plan_input=plan_input,
@@ -573,7 +593,7 @@ def _generate_structural_candidates(
                     source_track=debt.track_name,
                 )
                 if frontier_candidate is not None:
-                    resource_candidates.append(frontier_candidate)
+                    _append_generation_candidate(resource_candidates, frontier_candidate)
                     continue
             candidate = _build_resource_release_candidate(
                 plan_input=plan_input,
@@ -585,7 +605,12 @@ def _generate_structural_candidates(
                 buffer_leases=intent.buffer_leases,
             )
             if candidate is not None:
-                resource_candidates.append(candidate)
+                _append_generation_candidate(
+                    resource_candidates,
+                    candidate,
+                    sibling_candidates=candidates,
+                )
+    resource_candidates = _budget_release_generation_candidates(resource_candidates)
     ranked_release_candidates = _rank_release_structural_candidates(resource_candidates)
     candidates.extend(ranked_release_candidates)
     if allow_chain_macros:
@@ -795,6 +820,7 @@ def _build_route_release_frontier_candidate(
         steps=steps,
         reason="route_release_frontier",
         focus_tracks=(blocking_track, source_track, target_track),
+        origin="route_release_frontier",
     )
 
 
@@ -841,6 +867,7 @@ def _build_blocker_direct_goal_candidate(
             steps=compiled.steps,
             reason="resource_release",
             focus_tracks=(source_track,),
+            origin="route_release_frontier_blocker_direct_goal",
         )
     return None
 
@@ -1482,6 +1509,126 @@ def _rank_release_structural_candidates(
     )
 
 
+def _budget_release_generation_candidates(
+    candidates: list[MoveCandidate],
+) -> list[MoveCandidate]:
+    passthrough: list[MoveCandidate] = []
+    direct_slots: dict[tuple[str, str], MoveCandidate] = {}
+    dispatch_slots: dict[tuple[str, tuple[str, ...]], MoveCandidate] = {}
+    staging_slots: dict[str, MoveCandidate] = {}
+    for candidate in candidates:
+        slot = _release_generation_slot(candidate)
+        if slot is None:
+            passthrough.append(candidate)
+            continue
+        slot_kind, slot_key = slot
+        if slot_kind == "direct":
+            existing = direct_slots.get(slot_key)
+            if existing is None or _prefer_release_budget_candidate(candidate, existing):
+                direct_slots[slot_key] = candidate
+            continue
+        if slot_kind == "dispatch":
+            existing = dispatch_slots.get(slot_key)
+            if existing is None or _prefer_release_budget_candidate(candidate, existing):
+                dispatch_slots[slot_key] = candidate
+            continue
+        existing = staging_slots.get(slot_key)
+        if existing is None or _prefer_release_budget_candidate(candidate, existing):
+            staging_slots[slot_key] = candidate
+    return [
+        *passthrough,
+        *direct_slots.values(),
+        *dispatch_slots.values(),
+        *staging_slots.values(),
+    ]
+
+
+def _release_generation_slot(
+    candidate: MoveCandidate,
+) -> tuple[str, Any] | None:
+    origin = candidate.origin or candidate.reason
+    if origin == "route_release_frontier":
+        return None
+    if origin not in {
+        "goal_frontier_source_opening",
+        "resource_release_direct_target",
+        "resource_release_stage_target",
+        "resource_release_dispatch",
+        "resource_release_protected_prefix",
+        "resource_release_carried_prefix",
+    }:
+        return None
+    source_track = _candidate_primary_source_track(candidate)
+    if source_track is None:
+        return None
+    target_tracks = _candidate_business_target_tracks(candidate, source_track=source_track)
+    if not target_tracks:
+        return None
+    if all(target_track in STAGING_TRACKS for target_track in target_tracks):
+        return ("staging", source_track)
+    if len(target_tracks) == 1:
+        return ("direct", (source_track, target_tracks[0]))
+    return ("dispatch", (source_track, target_tracks))
+
+
+def _prefer_release_budget_candidate(
+    candidate: MoveCandidate,
+    existing: MoveCandidate,
+) -> bool:
+    return _release_budget_candidate_key(candidate) < _release_budget_candidate_key(existing)
+
+
+def _release_budget_candidate_key(candidate: MoveCandidate) -> tuple[Any, ...]:
+    origin = candidate.origin or candidate.reason
+    moved_vehicle_count = sum(
+        len(step.vehicle_nos) for step in candidate.steps if step.action_type == "DETACH"
+    )
+    return (
+        _release_budget_origin_priority(origin),
+        -moved_vehicle_count,
+        len(candidate.steps),
+        0 if candidate.structural_reserve else 1,
+        tuple(candidate.focus_tracks),
+        origin,
+    )
+
+
+def _release_budget_origin_priority(origin: str) -> int:
+    return {
+        "resource_release_direct_target": 0,
+        "resource_release_protected_prefix": 1,
+        "goal_frontier_source_opening": 2,
+        "resource_release_dispatch": 3,
+        "resource_release_carried_prefix": 4,
+        "resource_release_stage_target": 5,
+    }.get(origin, 9)
+
+
+def _candidate_primary_source_track(candidate: MoveCandidate) -> str | None:
+    for step in candidate.steps:
+        if step.source_track:
+            return step.source_track
+    return None
+
+
+def _candidate_business_target_tracks(
+    candidate: MoveCandidate,
+    *,
+    source_track: str,
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    targets: list[str] = []
+    for step in candidate.steps:
+        if step.action_type != "DETACH":
+            continue
+        target_track = step.target_track
+        if not target_track or target_track == source_track or target_track in seen:
+            continue
+        seen.add(target_track)
+        targets.append(target_track)
+    return tuple(targets)
+
+
 def _build_goal_frontier_source_opening_candidate(
     *,
     plan_input: NormalizedPlanInput,
@@ -1595,7 +1742,7 @@ def _build_goal_frontier_source_opening_candidate(
         for vehicle_no in transfer_block
     ):
         return None
-    return candidate
+    return _with_candidate_origin(candidate, "goal_frontier_source_opening")
 
 
 def _build_resource_release_candidate(
@@ -1629,7 +1776,7 @@ def _build_resource_release_candidate(
         allow_carried_prefix=debt.kind != "ROUTE_RELEASE",
     )
     if candidate is not None:
-        return candidate
+        return _with_candidate_origin(candidate, "resource_release_dispatch")
     if debt.kind == "CAPACITY_RELEASE":
         candidate = _build_protected_prefix_resource_release_candidate(
             plan_input=plan_input,
@@ -1642,7 +1789,7 @@ def _build_resource_release_candidate(
             buffer_leases=buffer_leases,
         )
         if candidate is not None:
-            return candidate
+            return _with_candidate_origin(candidate, "resource_release_protected_prefix")
     target_tracks = _resource_release_target_tracks(
         plan_input=plan_input,
         state=state,
@@ -1690,6 +1837,11 @@ def _build_resource_release_candidate(
             reason="resource_release",
             focus_tracks=(source_track,),
             structural_reserve=True,
+            origin=(
+                "resource_release_direct_target"
+                if target_track not in STAGING_TRACKS
+                else "resource_release_stage_target"
+            ),
         )
     return None
 
@@ -1806,6 +1958,7 @@ def _build_protected_prefix_resource_release_candidate(
         reason="resource_release",
         focus_tracks=(source_track,),
         structural_reserve=True,
+        origin="resource_release_protected_prefix",
     )
 
 
@@ -2233,6 +2386,7 @@ def _build_group_dispatch_candidate(
         reason=reason,
         focus_tracks=focus_tracks,
         structural_reserve=True,
+        origin=reason,
     )
 
 
@@ -2378,6 +2532,7 @@ def _build_carried_prefix_dispatch_candidate(
         reason="resource_release",
         focus_tracks=(source_track,),
         structural_reserve=True,
+        origin="resource_release_carried_prefix",
     )
 
 
@@ -2723,6 +2878,11 @@ def _build_work_position_window_candidate(
         steps=steps,
         reason="work_position_window_repair",
         focus_tracks=(target_track,),
+        origin=(
+            "work_position_window_front_block"
+            if front_block_only
+            else "work_position_window_general"
+        ),
     )
 
 
@@ -3130,7 +3290,7 @@ def _build_protected_prefix_work_position_candidate(
         for vehicle_no in transfer_block
     ):
         return None
-    return candidate
+    return _with_candidate_origin(candidate, "work_position_source_opening_protected_prefix")
 
 
 def _build_staged_prefix_work_position_candidate(
@@ -3170,8 +3330,8 @@ def _build_staged_prefix_work_position_candidate(
         allow_split_prefix=False,
     )
     if candidate is not None:
-        return candidate
-    return _compile_staged_prefix_work_position_candidate(
+        return _with_candidate_origin(candidate, "work_position_source_opening_staged_prefix")
+    candidate = _compile_staged_prefix_work_position_candidate(
         plan_input=plan_input,
         state=state,
         route_oracle=route_oracle,
@@ -3182,6 +3342,7 @@ def _build_staged_prefix_work_position_candidate(
         transfer_block=transfer_block,
         allow_split_prefix=True,
     )
+    return _with_candidate_origin(candidate, "work_position_source_opening_staged_split_prefix")
 
 
 def _compile_staged_prefix_work_position_candidate(
@@ -3318,6 +3479,11 @@ def _compile_staged_prefix_work_position_candidate(
         reason="work_position_source_opening",
         focus_tracks=(target_track,),
         structural_reserve=True,
+        origin=(
+            "work_position_source_opening_staged_split_prefix"
+            if allow_split_prefix
+            else "work_position_source_opening_staged_prefix"
+        ),
     )
 
 
@@ -4444,6 +4610,113 @@ def _dedup_candidates(candidates: tuple[MoveCandidate, ...]) -> tuple[MoveCandid
         seen.add(key)
         result.append(candidate)
     return tuple(result)
+
+
+def _append_generation_candidate(
+    collection: list[MoveCandidate],
+    candidate: MoveCandidate,
+    *,
+    sibling_candidates: list[MoveCandidate] | None = None,
+) -> None:
+    existing_candidates = list(collection)
+    if sibling_candidates is not None:
+        existing_candidates.extend(sibling_candidates)
+    if _generation_candidate_is_shadowed(candidate, existing_candidates):
+        return
+    collection.append(candidate)
+
+
+def _generation_candidate_is_shadowed(
+    candidate: MoveCandidate,
+    existing_candidates: list[MoveCandidate],
+) -> bool:
+    for existing in existing_candidates:
+        if not _candidate_has_same_steps(candidate, existing):
+            continue
+        if _prefer_existing_generation_candidate(existing, candidate):
+            return True
+    return False
+
+
+def _prefer_existing_generation_candidate(
+    existing: MoveCandidate,
+    candidate: MoveCandidate,
+) -> bool:
+    existing_origin = existing.origin or existing.reason
+    candidate_origin = candidate.origin or candidate.reason
+    return (existing_origin, candidate_origin) in {
+        ("goal_frontier_source_opening", "resource_release_dispatch"),
+        ("work_position_free_fill", "resource_release_direct_target"),
+    }
+
+
+def _candidate_has_same_steps(
+    candidate: MoveCandidate,
+    other: MoveCandidate | None,
+) -> bool:
+    if other is None:
+        return False
+    return _candidate_step_signature(candidate) == _candidate_step_signature(other)
+
+
+def _candidate_step_signature(candidate: MoveCandidate) -> tuple:
+    return tuple(
+        (
+            step.action_type,
+            step.source_track,
+            step.target_track,
+            tuple(step.vehicle_nos),
+            tuple(step.path_tracks),
+        )
+        for step in candidate.steps
+    )
+
+
+def _candidate_origin_counts(candidates: tuple[MoveCandidate, ...]) -> dict[str, int]:
+    counter = Counter(
+        candidate.origin or candidate.reason or candidate.kind
+        for candidate in candidates
+    )
+    return dict(counter.most_common())
+
+
+def _candidate_overlap_examples(
+    candidates: tuple[MoveCandidate, ...],
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    by_signature: dict[tuple, list[MoveCandidate]] = {}
+    for candidate in candidates:
+        by_signature.setdefault(_candidate_step_signature(candidate), []).append(candidate)
+    overlaps: list[dict[str, Any]] = []
+    for signature, group in by_signature.items():
+        origins = sorted({candidate.origin or candidate.reason or candidate.kind for candidate in group})
+        reasons = sorted({candidate.reason or candidate.kind for candidate in group})
+        if len(origins) <= 1:
+            continue
+        overlaps.append(
+            {
+                "count": len(group),
+                "origins": origins,
+                "reasons": reasons,
+                "step_count": len(signature),
+                "focus_tracks": sorted(
+                    {
+                        track
+                        for candidate in group
+                        for track in candidate.focus_tracks
+                    }
+                ),
+            }
+        )
+    overlaps.sort(
+        key=lambda item: (
+            -item["count"],
+            -len(item["origins"]),
+            -item["step_count"],
+            tuple(item["origins"]),
+        )
+    )
+    return overlaps[:limit]
 
 
 def _candidate_steps_by_kind(candidates: tuple[MoveCandidate, ...]) -> dict[str, int]:

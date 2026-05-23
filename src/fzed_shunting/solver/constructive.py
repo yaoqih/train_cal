@@ -591,6 +591,19 @@ def _greedy_forward(
             stats["multi_step_candidate_decisions"] = (
                 stats.get("multi_step_candidate_decisions", 0) + 1
             )
+        decision_trace = stats.setdefault("decision_trace", [])
+        if len(decision_trace) < 64:
+            decision_trace.append(
+                {
+                    "plan_len": len(plan),
+                    "tier": chosen_tier,
+                    "kind": chosen_candidate.kind,
+                    "reason": chosen_candidate.reason,
+                    "focus_tracks": list(chosen_candidate.focus_tracks),
+                    "step_count": len(chosen_candidate.steps),
+                    "score": repr(chosen_score),
+                }
+            )
 
         previous_plan_len = len(plan)
         current_route_blockage_plan = route_blockage_plan
@@ -974,10 +987,22 @@ def _score_candidate(
     after_structure = compute_structural_metrics(plan_input, final_state)
     before_purity = compute_state_purity(plan_input, state)
     after_purity = compute_state_purity(plan_input, final_state)
+    route_blockage_before = (
+        route_blockage_plan.total_blockage_pressure
+        if route_blockage_plan is not None
+        else 0
+    )
+    route_blockage_after = (
+        next_route_blockage_plan.total_blockage_pressure
+        if next_route_blockage_plan is not None
+        else route_blockage_before
+    )
     structural_progress = (
         max(0, before_structure.target_sequence_defect_count - after_structure.target_sequence_defect_count) * 18
         + max(0, before_structure.work_position_unfinished_count - after_structure.work_position_unfinished_count) * 12
         + max(0, before_structure.capacity_overflow_track_count - after_structure.capacity_overflow_track_count) * 16
+        + max(0, route_blockage_before - route_blockage_after) * 14
+        + max(0, before_structure.front_blocker_count - after_structure.front_blocker_count) * 10
         + max(0, before_structure.goal_track_blocker_count - after_structure.goal_track_blocker_count) * 3
         + max(0, before_structure.unfinished_count - after_structure.unfinished_count)
     )
@@ -985,6 +1010,7 @@ def _score_candidate(
         0,
         after_structure.staging_debt_count - before_structure.staging_debt_count,
     )
+    structural_progress -= max(0, route_blockage_after - route_blockage_before) * 18
     best_tier = min(step_tiers)
     final_delta = tuple(after - before for before, after in zip(current_progress, next_progress))
     pinpoint_staging_penalty = _candidate_pinpoint_staging_penalty(
@@ -992,14 +1018,23 @@ def _score_candidate(
         plan_input=plan_input,
         vehicle_by_no=vehicle_by_no,
     )
+    churn_penalty = (
+        after_purity.staging_pollution_count - before_purity.staging_pollution_count,
+        after_structure.staging_debt_count - before_structure.staging_debt_count,
+        after_structure.front_blocker_count - before_structure.front_blocker_count,
+        after_structure.goal_track_blocker_count - before_structure.goal_track_blocker_count,
+        after_structure.capacity_overflow_track_count - before_structure.capacity_overflow_track_count,
+        route_blockage_after - route_blockage_before,
+    )
     score = (
         best_tier,
         1 if structural_progress <= 0 else 0,
         pinpoint_staging_penalty,
         -structural_progress,
+        churn_penalty,
+        final_delta,
         0 if candidate.kind == "structural" else 1,
         len(transitions),
-        final_delta,
         after_structure.target_sequence_defect_count,
         after_structure.work_position_unfinished_count,
         after_structure.front_blocker_count,
@@ -1018,10 +1053,11 @@ def _score_candidate(
             2,
             best_tier,
             pinpoint_staging_penalty,
-            len(transitions),
-            first_score,
+            churn_penalty,
             final_delta,
+            len(transitions),
             candidate.reason,
+            first_score,
         )
     return score, min(best_tier, 4 if structural_progress > 0 else 6)
 
