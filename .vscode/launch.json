@@ -16,7 +16,7 @@
             "args": [
                 "solve",
                 "--input",
-                "${file}",
+                "data/validation_inputs/online/validation_20260401W.json",
                 "--solver",
                 "beam",
                 "--beam-width",

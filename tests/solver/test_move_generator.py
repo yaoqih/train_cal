@@ -173,6 +173,229 @@ def test_candidate_search_sort_key_prefers_structural_then_stable_step_signature
     assert ordered == [structural, primitive_a, primitive_b]
 
 
+def test_candidate_search_sort_key_prefers_lower_soft_penalty_for_primitives():
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _candidate_search_sort_key
+
+    low_penalty = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["A1"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+        soft_penalty=0,
+    )
+    high_penalty = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["A2"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+        soft_penalty=10,
+    )
+
+    ordered = sorted([high_penalty, low_penalty], key=_candidate_search_sort_key)
+    assert ordered == [low_penalty, high_penalty]
+
+
+def test_candidate_search_sort_key_uses_debt_queue_hint_without_pruning_candidates():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _candidate_search_sort_key,
+    )
+    from fzed_shunting.solver.structural_intent import DebtCluster
+
+    structural = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="T1",
+                vehicle_nos=["A1"],
+                path_tracks=["S1", "T1"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("T1",),
+        structural_reserve=True,
+    )
+    primitive = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="T2",
+                vehicle_nos=["A2"],
+                path_tracks=["S2", "T2"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+    )
+    intent = SimpleNamespace(
+        debt_clusters_by_track={
+            "T1": DebtCluster(
+                track_name="T1",
+                order_debt=None,
+                resource_debts=(),
+                pressure=10.0,
+                buffer_roles=("ORDER_BUFFER",),
+            )
+        }
+    )
+
+    ordered = sorted(
+        [primitive, structural],
+        key=lambda candidate: _candidate_search_sort_key(
+            candidate,
+            debt_chain_summary=None,
+            intent=intent,
+        ),
+    )
+
+    assert ordered[0] is structural
+    assert ordered[1] is primitive
+
+
+def test_candidate_search_sort_key_keeps_primitive_fallback_even_when_structural_has_debt_hint():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _candidate_search_sort_key,
+    )
+    from fzed_shunting.solver.structural_intent import DebtCluster
+
+    structural = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="T1",
+                vehicle_nos=["A1"],
+                path_tracks=["S1", "T1"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_source_opening",
+        focus_tracks=("T1",),
+        structural_reserve=True,
+    )
+    primitive = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="T2",
+                vehicle_nos=["A2"],
+                path_tracks=["S2", "T2"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="primitive",
+        soft_penalty=0,
+    )
+    intent = SimpleNamespace(
+        debt_clusters_by_track={
+            "T1": DebtCluster(
+                track_name="T1",
+                order_debt=None,
+                resource_debts=(),
+                pressure=10.0,
+                buffer_roles=("ROUTE_RELEASE",),
+            )
+        }
+    )
+
+    ordered = sorted(
+        [primitive, structural],
+        key=lambda candidate: _candidate_search_sort_key(
+            candidate,
+            debt_chain_summary=None,
+            intent=intent,
+        ),
+    )
+
+    assert {candidate.kind for candidate in ordered} == {"primitive", "structural"}
+
+
+def test_candidate_search_sort_key_uses_debt_queue_only_as_structural_tie_break():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _candidate_search_sort_key
+    from fzed_shunting.solver.structural_intent import DebtCluster
+
+    earlier = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S1",
+                target_track="T1",
+                vehicle_nos=["A1"],
+                path_tracks=["S1", "T1"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("T1",),
+        structural_reserve=True,
+    )
+    later = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="S2",
+                target_track="T2",
+                vehicle_nos=["A2"],
+                path_tracks=["S2", "T2"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("T2",),
+        structural_reserve=True,
+    )
+    intent = SimpleNamespace(
+        debt_clusters_by_track={
+            "T1": DebtCluster(
+                track_name="T1",
+                order_debt=None,
+                resource_debts=(),
+                pressure=10.0,
+                buffer_roles=("ORDER_BUFFER",),
+            ),
+            "T2": DebtCluster(
+                track_name="T2",
+                order_debt=None,
+                resource_debts=(),
+                pressure=8.0,
+                buffer_roles=("SOURCE_REMAINDER",),
+            ),
+        }
+    )
+
+    ordered = sorted(
+        [later, earlier],
+        key=lambda candidate: _candidate_search_sort_key(
+            candidate,
+            debt_chain_summary=None,
+            intent=intent,
+        ),
+    )
+
+    assert ordered == [earlier, later]
+
+
 def test_structural_candidate_limit_does_not_let_one_track_crowd_out_others():
     from fzed_shunting.solver.move_candidates import (
         MoveCandidate,
@@ -215,7 +438,11 @@ def test_structural_candidate_limit_does_not_let_one_track_crowd_out_others():
 
 def test_structural_candidate_limit_preserves_chain_diversity_before_focus_diversity():
     from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
-    from fzed_shunting.solver.move_candidates import MoveCandidate, _select_structural_candidates
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _select_structural_candidates,
+        _structural_candidate_limit,
+    )
 
     def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
         return DebtChainTrackSummary(
@@ -289,6 +516,68 @@ def test_structural_candidate_limit_preserves_chain_diversity_before_focus_diver
     )
 
     assert {item.focus_tracks for item in selected} == {("调棚",), ("预修",)}
+    assert _structural_candidate_limit(chain_summary) == 6
+
+
+def test_structural_candidate_limit_expands_for_high_pressure_chain():
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import _structural_candidate_limit
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=3,
+        total_tracks=7,
+        max_chain_pressure=130.0,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("存5北", "调棚"),
+                total_pressure=80.0,
+                order_debt_track_count=1,
+                route_blockage_track_count=0,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(track_summary("调棚", 80.0), track_summary("存5北", 10.0)),
+            ),
+            DebtChainComponent(
+                anchor_track="预修",
+                track_names=("存1", "预修"),
+                total_pressure=30.0,
+                order_debt_track_count=0,
+                route_blockage_track_count=1,
+                capacity_release_track_count=0,
+                delayed_commitment_count=0,
+                track_summaries=(track_summary("预修", 30.0), track_summary("存1", 7.0)),
+            ),
+            DebtChainComponent(
+                anchor_track="洗南",
+                track_names=("洗南", "存5南"),
+                total_pressure=20.0,
+                order_debt_track_count=0,
+                route_blockage_track_count=1,
+                capacity_release_track_count=0,
+                delayed_commitment_count=0,
+                track_summaries=(track_summary("洗南", 20.0), track_summary("存5南", 5.0)),
+            ),
+        ),
+    )
+
+    assert _structural_candidate_limit(chain_summary) == 8
 
 
 def test_chain_macro_candidate_combines_two_structural_steps(monkeypatch):

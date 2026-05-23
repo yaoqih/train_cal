@@ -52,3 +52,34 @@ def test_debt_chain_analyzer_separates_independent_tracks():
     assert {chain.anchor_track for chain in summary.chains} == {"调棚", "存1"}
     assert any(chain.track_names == ("存1",) for chain in summary.chains)
     assert any(chain.track_names == ("存5北", "调棚") for chain in summary.chains)
+
+
+def test_debt_graph_view_aggregates_multi_track_pressure():
+    from fzed_shunting.solver.debt_graph import build_debt_graph
+
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "调棚", "trackDistance": 174.3},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "存1", "trackDistance": 113.0},
+            ],
+            "vehicleInfo": [
+                _vehicle("SPOT_A", "存5北", "调棚", order=1, spotting="是"),
+                _vehicle("CAP_A", "存1", "存1", order=1),
+                _vehicle("CAP_B", "存1", "存4北", order=2),
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+        allow_internal_loco_tracks=True,
+    )
+    state = build_initial_state(normalized)
+
+    graph = build_debt_graph(normalized, state, route_oracle=RouteOracle(master))
+
+    assert graph.chain_summary.chain_count == 2
+    assert graph.multi_track_component_count == 1
+    assert graph.max_multi_track_pressure > 0

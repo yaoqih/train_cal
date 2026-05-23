@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fzed_shunting.tools.convert_external_validation_inputs import convert_external_validation_inputs
 from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
     VALIDATION_DEFAULT_MAX_WORKERS,
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
@@ -674,7 +675,7 @@ def test_worker_timeout_keeps_single_attempt_budget_when_recovery_is_disabled():
         enable_worker_recovery=False,
     )
 
-    assert timeout_seconds == 85.0
+    assert timeout_seconds == 190.0
 
 
 def test_solve_one_treats_final_capacity_overflow_as_warning(tmp_path: Path):
@@ -1310,7 +1311,7 @@ def test_run_parallel_scenarios_gives_single_attempt_worker_timeout_solver_grace
         module.subprocess.Popen = original_popen
         module.os.killpg = original_killpg
 
-    assert ("communicate", 40.0) in calls
+    assert ("communicate", 130.0) in calls
 
 
 def test_run_parallel_scenarios_worker_timeout_uses_reserved_solver_budget(
@@ -2720,7 +2721,7 @@ def test_recover_no_solution_results_keeps_clean_success_over_shorter_churny_ret
     assert results[0] == initial_results[0]
 
 
-def test_recover_no_solution_results_does_not_retry_pathological_success_by_default(
+def test_recover_no_solution_results_retries_pathological_success_by_default(
     tmp_path: Path,
 ):
     scenario = tmp_path / "validation_a.json"
@@ -2775,8 +2776,9 @@ def test_recover_no_solution_results_does_not_retry_pathological_success_by_defa
     finally:
         module.run_parallel_scenarios = original_run_parallel_scenarios
 
-    assert calls == []
-    assert results[0] == initial_results[0]
+    assert calls == [8]
+    assert results[0]["hook_count"] == 102
+    assert results[0]["debug_stats"]["plan_shape_metrics"]["max_vehicle_touch_count"] == 24
 
 
 def test_recover_no_solution_results_retries_staging_churn_success_when_requested(
@@ -3522,6 +3524,75 @@ def test_main_leaves_initial_run_on_solver_default_near_goal_profile(tmp_path: P
         module.recover_no_solution_results = original_recover_no_solution_results
 
     assert captured == [None]
+
+
+def test_main_defaults_to_pathological_quality_recovery(tmp_path: Path):
+    scenario = tmp_path / "validation_single.json"
+    scenario.write_text("{}", encoding="utf-8")
+    captured: list[bool] = []
+
+    def fake_run_parallel_scenarios(**kwargs):  # noqa: ANN003
+        captured.append(kwargs["improve_pathological_success"])
+        return [{"scenario": "validation_single.json", "solved": True}]
+
+    def fake_recover_no_solution_results(**kwargs):  # noqa: ANN003
+        captured.append(kwargs["improve_pathological_success"])
+        return kwargs["initial_results"]
+
+    original_parse_args = module.parse_args
+    original_run_parallel_scenarios = module.run_parallel_scenarios
+    original_recover_no_solution_results = module.recover_no_solution_results
+    try:
+        module.parse_args = lambda: module.argparse.Namespace(
+            input_dir=Path("ignored"),
+            output_dir=tmp_path / "out",
+            master_dir=Path("data/master"),
+            solver="beam",
+            beam_width=8,
+            heuristic_weight=1.0,
+            max_workers=2,
+            timeout_seconds=60,
+            scenario=scenario,
+            retry_no_solution_beam_width=12,
+            validation_mode="full",
+            improve_pathological_success=VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+            near_goal_partial_resume_max_final_heuristic=None,
+            worker=False,
+        )
+        module.run_parallel_scenarios = fake_run_parallel_scenarios
+        module.recover_no_solution_results = fake_recover_no_solution_results
+        module.main()
+    finally:
+        module.parse_args = original_parse_args
+        module.run_parallel_scenarios = original_run_parallel_scenarios
+        module.recover_no_solution_results = original_recover_no_solution_results
+
+    assert captured == [True, True]
+
+
+def test_build_worker_command_disables_quality_recovery_when_requested():
+    command = module._build_worker_command(
+        master_dir=Path("data/master"),
+        scenario_path=Path("validation_a.json"),
+        solver="beam",
+        beam_width=8,
+        heuristic_weight=1.0,
+        improve_pathological_success=False,
+    )
+
+    assert "--disable-improve-pathological-success" in command
+    assert "--improve-pathological-success" not in command
+
+
+def test_worker_timeout_includes_quality_recovery_budget_when_enabled():
+    timeout_seconds = module._effective_worker_timeout_seconds(
+        timeout_seconds=60,
+        time_budget_ms=validation_time_budget_ms(60),
+        enable_worker_recovery=False,
+        improve_pathological_success=True,
+    )
+
+    assert timeout_seconds > 60
 
 
 def test_truth_20260227w_solves_under_validation_profile():

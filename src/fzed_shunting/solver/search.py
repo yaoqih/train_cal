@@ -27,6 +27,7 @@ from fzed_shunting.solver.move_generator import (
     _collect_interfering_goal_targets_by_source,
 )
 from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
+from fzed_shunting.solver.debt_graph import build_debt_graph
 from fzed_shunting.solver.move_candidates import MoveCandidate, generate_move_candidates
 from fzed_shunting.solver.purity import compute_state_purity
 from fzed_shunting.solver.structural_metrics import compute_structural_metrics
@@ -93,6 +94,7 @@ class CandidateScoring:
     route_release_focus_bonus: int
     route_release_focus_ttl: int
     carry_growth_penalty: int
+    soft_penalty: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ def _solve_search_result(
             priority=_priority(
                 cost=0,
                 heuristic=initial_heuristic,
+                soft_penalty=0,
                 solver_mode=solver_mode,
                 heuristic_weight=heuristic_weight,
                 neg_depot_index_sum=0,
@@ -333,6 +336,7 @@ def _solve_search_result(
                         priority=_priority(
                             cost=cost,
                             heuristic=heuristic,
+                            soft_penalty=candidate_scoring.soft_penalty,
                             blocker_bonus=blocker_bonus,
                             structural_progress_bonus=structural_progress_bonus,
                             exact_spot_priority=candidate_scoring.exact_spot_priority,
@@ -493,6 +497,7 @@ def _candidate_branch_progress_key(
     route_oracle: RouteOracle | None,
 ) -> tuple[int | float, ...]:
     structural = compute_structural_metrics(plan_input, state)
+    debt_graph = build_debt_graph(plan_input, state, route_oracle=route_oracle)
     route_pressure = (
         compute_route_blockage_plan(plan_input, state, route_oracle).total_blockage_pressure
         if route_oracle is not None
@@ -501,6 +506,8 @@ def _candidate_branch_progress_key(
     return (
         structural.target_sequence_defect_count,
         structural.work_position_unfinished_count,
+        debt_graph.max_multi_track_pressure,
+        debt_graph.multi_track_component_count,
         structural.front_blocker_count,
         structural.capacity_overflow_track_count,
         _capacity_debt_total(structural),
@@ -528,6 +535,7 @@ def _evaluate_candidate_steps(
     prior_focus_ttl: int,
 ) -> CandidateScoring:
     blocker_bonus = 0
+    soft_penalty = getattr(candidate, "soft_penalty", 0)
     exact_spot_priority = 0
     route_release_regression_penalty = 0
     staging_churn_penalty = 0
@@ -657,6 +665,7 @@ def _evaluate_candidate_steps(
         route_release_focus_bonus=focus_bonus,
         route_release_focus_ttl=focus_ttl,
         carry_growth_penalty=carry_growth_penalty,
+        soft_penalty=soft_penalty,
     )
 
 
@@ -665,6 +674,7 @@ def _priority(
     cost: int,
     heuristic: int,
     blocker_bonus: int = 0,
+    soft_penalty: int = 0,
     structural_progress_bonus: int = 0,
     exact_spot_priority: int = 0,
     route_release_regression_penalty: int = 0,
@@ -681,7 +691,7 @@ def _priority(
     progress_bonus = min(combined_bonus, max(cost + heuristic, 1) // 2)
     if solver_mode == "beam":
         score = cost + heuristic
-        adjusted_score = score + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
+        adjusted_score = score + soft_penalty + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             staging_churn_penalty,
@@ -701,10 +711,11 @@ def _priority(
             -blocker_bonus,
             -exact_spot_priority,
             heuristic,
+            soft_penalty,
         )
     if solver_mode in ("weighted", "real_hook"):
         score = cost + heuristic_weight * heuristic
-        adjusted_score = score + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
+        adjusted_score = score + soft_penalty + carry_fragmentation_penalty + carry_growth_penalty - progress_bonus
         return (
             route_release_regression_penalty,
             staging_churn_penalty,
@@ -722,6 +733,7 @@ def _priority(
             neg_depot_index_sum,
             -blocker_bonus,
             -exact_spot_priority,
+            soft_penalty,
         )
     return (
         route_release_regression_penalty,
@@ -737,6 +749,7 @@ def _priority(
         -blocker_bonus,
         -exact_spot_priority,
         -structural_progress_bonus,
+        soft_penalty,
     )
 
 

@@ -22,6 +22,7 @@ from fzed_shunting.solver.astar_solver import (
 from fzed_shunting.solver.complete_selection import complete_dict_is_better
 from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
+    VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
     VALIDATION_DEFAULT_MAX_WORKERS,
     VALIDATION_DEFAULT_SOLVER,
     VALIDATION_DEFAULT_TIMEOUT_SECONDS,
@@ -99,13 +100,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--improve-pathological-success",
+        dest="improve_pathological_success",
         action="store_true",
-        default=False,
+        default=VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
         help=(
-            "continue recovery for already solved plans with very high repeated "
-            "vehicle touches; useful for quality sweeps, disabled for default "
-            "feasibility validation"
+            "continue recovery for already solved but structurally churny plans; "
+            "enabled by default so batch validation matches single-scenario solve quality"
         ),
+    )
+    parser.add_argument(
+        "--disable-improve-pathological-success",
+        dest="improve_pathological_success",
+        action="store_false",
+        help="disable solved-plan quality recovery and keep first complete result",
     )
     parser.add_argument(
         "--near-goal-partial-resume-max-final-heuristic",
@@ -150,7 +157,7 @@ def solve_one(
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
-    improve_pathological_success: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
@@ -459,7 +466,7 @@ def _build_worker_command(
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
-    improve_pathological_success: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -491,8 +498,8 @@ def _build_worker_command(
         cmd.append("--primary-first-beam")
     if enable_worker_recovery:
         cmd.append("--enable-worker-recovery")
-    if improve_pathological_success:
-        cmd.append("--improve-pathological-success")
+    if not improve_pathological_success:
+        cmd.append("--disable-improve-pathological-success")
     return cmd
 
 
@@ -510,13 +517,14 @@ def _run_scenario_subprocess(
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
-    improve_pathological_success: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     effective_timeout_seconds = _effective_worker_timeout_seconds(
         timeout_seconds=timeout_seconds,
         time_budget_ms=time_budget_ms,
         enable_worker_recovery=enable_worker_recovery,
+        improve_pathological_success=improve_pathological_success,
     )
     cmd = _build_worker_command(
         master_dir=master_dir,
@@ -591,11 +599,12 @@ def _effective_worker_timeout_seconds(
     timeout_seconds: float,
     time_budget_ms: float | None,
     enable_worker_recovery: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
 ) -> float:
     if time_budget_ms is None:
         return float(timeout_seconds) + VALIDATION_SOLVER_GRACE_SECONDS
     worker_budget_ms = max(0.0, float(time_budget_ms))
-    if enable_worker_recovery:
+    if enable_worker_recovery or improve_pathological_success:
         retry_budget_ms = validation_retry_time_budget_ms(time_budget_ms)
         if retry_budget_ms is not None:
             worker_budget_ms += max(0.0, float(retry_budget_ms))
@@ -621,7 +630,7 @@ def run_parallel_scenarios(
     near_goal_partial_resume_max_final_heuristic: int | None = None,
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
-    improve_pathological_success: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -667,7 +676,7 @@ def recover_no_solution_results(
     enable_anytime_fallback: bool = True,
     enable_depot_late_scheduling: bool = True,
     enable_worker_recovery: bool = False,
-    improve_pathological_success: bool = False,
+    improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
     deadline_at: float | None = None,
 ) -> list[dict[str, Any]]:
     effective_retry_beam_width = _resolve_retry_no_solution_beam_width(
@@ -1379,7 +1388,11 @@ def _run_worker(args: argparse.Namespace) -> None:
         ),
         primary_first_beam=getattr(args, "primary_first_beam", False),
         enable_worker_recovery=getattr(args, "enable_worker_recovery", False),
-        improve_pathological_success=getattr(args, "improve_pathological_success", False),
+        improve_pathological_success=getattr(
+            args,
+            "improve_pathological_success",
+            VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+        ),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -1441,7 +1454,11 @@ def main() -> None:
         ),
         primary_first_beam=primary_first_beam,
         enable_worker_recovery=enable_worker_recovery,
-        improve_pathological_success=args.improve_pathological_success,
+        improve_pathological_success=getattr(
+            args,
+            "improve_pathological_success",
+            VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+        ),
     )
     results = recover_no_solution_results(
         master_dir=args.master_dir,
@@ -1457,7 +1474,11 @@ def main() -> None:
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
         enable_worker_recovery=enable_worker_recovery,
-        improve_pathological_success=args.improve_pathological_success,
+        improve_pathological_success=getattr(
+            args,
+            "improve_pathological_success",
+            VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+        ),
         deadline_at=deadline_at,
     )
     solved_cases = sum(1 for result in results if result.get("solved"))

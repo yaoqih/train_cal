@@ -13,6 +13,7 @@ from fzed_shunting.domain.work_positions import (
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
 from fzed_shunting.solver.debt_chain import DebtChainSummary, summarize_debt_chains
+from fzed_shunting.solver.debt_graph import DebtGraphView, build_debt_graph
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import STAGING_TRACKS
@@ -51,6 +52,7 @@ class MoveCandidate:
     reason: str = ""
     focus_tracks: tuple[str, ...] = ()
     structural_reserve: bool = False
+    soft_penalty: int = 0
 
 
 def _structural_candidate(
@@ -66,6 +68,7 @@ def _structural_candidate(
         reason=reason,
         focus_tracks=focus_tracks,
         structural_reserve=structural_reserve,
+        soft_penalty=0,
     )
 
 
@@ -110,11 +113,8 @@ def generate_move_candidates(
         state,
         route_oracle=route_oracle,
     )
-    debt_chain_summary = summarize_debt_chains(
-        plan_input,
-        state,
-        intent=intent,
-    )
+    debt_graph = build_debt_graph(plan_input, state, route_oracle=route_oracle, intent=intent)
+    debt_chain_summary = debt_graph.chain_summary
     protected_rejected_count = 0
     protected_allowed_by_debt_count = 0
     mixed_resource_primitive_rejected_count = 0
@@ -160,7 +160,7 @@ def generate_move_candidates(
         master=master,
         route_oracle=route_oracle,
         intent=intent,
-        debt_chain_summary=debt_chain_summary,
+        debt_graph=debt_graph,
     )
     candidate_pool = (*structural_candidates, *candidates)
     trimmed_candidates = sorted(
@@ -178,7 +178,11 @@ def generate_move_candidates(
             )
             is not None
         ),
-        key=_candidate_search_sort_key,
+        key=lambda candidate: _candidate_search_sort_key(
+            candidate,
+            debt_chain_summary=debt_chain_summary,
+            intent=intent,
+        ),
     )
     all_candidates = _dedup_candidates(tuple(trimmed_candidates))
     if debug_stats is not None:
@@ -198,6 +202,12 @@ def generate_move_candidates(
         debug_stats["structural_debt_chain_count"] = debt_chain_summary.chain_count
         debug_stats["structural_debt_chain_max_pressure"] = (
             debt_chain_summary.max_chain_pressure
+        )
+        debug_stats["structural_debt_graph_multi_track_component_count"] = (
+            debt_graph.multi_track_component_count
+        )
+        debug_stats["structural_debt_graph_max_multi_track_pressure"] = (
+            debt_graph.max_multi_track_pressure
         )
         debug_stats["structural_candidate_steps_total"] = sum(
             len(candidate.steps) for candidate in structural_candidates
@@ -269,10 +279,43 @@ def _trim_candidate_before_delayed_commitment(
                 reason=candidate.reason,
                 focus_tracks=candidate.focus_tracks,
                 structural_reserve=candidate.structural_reserve,
+                soft_penalty=candidate.soft_penalty,
             )
         kept_steps.append(step)
         pending_attach = None
     return candidate
+
+
+def _primitive_move_soft_penalty(
+    move: HookAction,
+    *,
+    intent: StructuralIntent,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> int:
+    penalty = 0
+    if _move_breaks_protected_commitment(move, intent=intent) and not _move_is_required_by_resource_debt(move, intent=intent):
+        penalty += 18
+    if _move_mixes_resource_debt_groups(
+        move,
+        intent=intent,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    ):
+        penalty += 14
+    if _move_is_unowned_staging_churn(
+        move,
+        intent=intent,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    ):
+        penalty += 12
+    if _move_attaches_unowned_delayed_staging_buffer(move, intent=intent):
+        penalty += 12
+    return penalty
 
 
 def _move_breaks_protected_commitment(
@@ -434,15 +477,19 @@ def _generate_structural_candidates(
     master: MasterData | None,
     route_oracle: RouteOracle | None,
     intent: StructuralIntent,
+    debt_graph: DebtGraphView | None = None,
     debt_chain_summary: DebtChainSummary | None = None,
     allow_chain_macros: bool = True,
 ) -> tuple[MoveCandidate, ...]:
-    if debt_chain_summary is None:
-        debt_chain_summary = summarize_debt_chains(
+    if debt_graph is None:
+        debt_graph = build_debt_graph(
             plan_input,
             state,
+            route_oracle=route_oracle,
             intent=intent,
+            chain_summary=debt_chain_summary,
         )
+    debt_chain_summary = debt_graph.chain_summary
     if master is None or route_oracle is None:
         return ()
     vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
@@ -558,6 +605,7 @@ def _generate_structural_candidates(
         )
     return _select_structural_candidates(
         candidates,
+        limit=_structural_candidate_limit(debt_graph),
         debt_chain_summary=debt_chain_summary,
     )
 
@@ -1061,6 +1109,26 @@ def _select_structural_candidates(
     return tuple(selected)
 
 
+def _structural_candidate_limit(debt_graph: DebtGraphView | DebtChainSummary | None) -> int:
+    if debt_graph is None:
+        return 6
+    if isinstance(debt_graph, DebtChainSummary):
+        chain_summary = debt_graph
+        max_multi_track_pressure = 0.0
+        multi_track_component_count = sum(1 for chain in chain_summary.chains if len(chain.track_names) > 1)
+    else:
+        chain_summary = debt_graph.chain_summary
+        max_multi_track_pressure = debt_graph.max_multi_track_pressure
+        multi_track_component_count = debt_graph.multi_track_component_count
+    if chain_summary.chain_count <= 1:
+        return 4
+    if max_multi_track_pressure >= 120.0 or chain_summary.total_tracks >= 6:
+        return 8
+    if max_multi_track_pressure >= 60.0 or chain_summary.chain_count >= 3 or multi_track_component_count >= 3:
+        return 7
+    return 6
+
+
 def _structural_chain_slot(candidate: MoveCandidate, *, anchor_track: str) -> str:
     if candidate.reason.startswith("work_position_") or candidate.reason.startswith("chain_macro_"):
         return "sequence"
@@ -1152,7 +1220,11 @@ def _generate_chain_macro_candidates(
     if master is None or route_oracle is None:
         return ()
     macro_candidates: list[MoveCandidate] = []
-    for chain in debt_chain_summary.chains[:2]:
+    ranked_chains = sorted(
+        debt_chain_summary.chains,
+        key=lambda chain: (-chain.total_pressure, -len(chain.track_names), chain.anchor_track),
+    )
+    for chain in ranked_chains[:3]:
         chain_base_candidates = [
             candidate
             for candidate in base_candidates
@@ -4381,7 +4453,12 @@ def _candidate_steps_by_kind(candidates: tuple[MoveCandidate, ...]) -> dict[str,
     return dict(sorted(counts.items()))
 
 
-def _candidate_search_sort_key(candidate: MoveCandidate) -> tuple:
+def _candidate_search_sort_key(
+    candidate: MoveCandidate,
+    *,
+    debt_chain_summary: DebtChainSummary | None = None,
+    intent: StructuralIntent | None = None,
+) -> tuple:
     kind_priority = 0 if candidate.kind == "structural" else 1
     if candidate.reason.startswith("work_position_"):
         reason_priority = 0
@@ -4389,6 +4466,11 @@ def _candidate_search_sort_key(candidate: MoveCandidate) -> tuple:
         reason_priority = 1
     else:
         reason_priority = 2
+    task_queue_priority = _candidate_task_queue_priority(
+        candidate,
+        debt_chain_summary=debt_chain_summary,
+        intent=intent,
+    )
     step_signature = tuple(
         (
             step.action_type,
@@ -4402,9 +4484,59 @@ def _candidate_search_sort_key(candidate: MoveCandidate) -> tuple:
     return (
         kind_priority,
         reason_priority,
+        candidate.soft_penalty,
         len(candidate.steps),
         tuple(candidate.focus_tracks),
         0 if candidate.structural_reserve else 1,
+        task_queue_priority,
         candidate.reason,
         step_signature,
     )
+
+
+def _candidate_task_queue_priority(
+    candidate: MoveCandidate,
+    *,
+    debt_chain_summary: DebtChainSummary | None,
+    intent: StructuralIntent | None,
+) -> tuple:
+    if candidate.kind != "structural":
+        return (1, 0, 0, 0, 0, ())
+    chain_index, anchor_track = (
+        _candidate_chain_metadata(candidate, debt_chain_summary)
+        if debt_chain_summary is not None
+        else (0, "")
+    )
+    role_priority = _candidate_cache_role_priority(candidate, intent=intent)
+    return (
+        0,
+        chain_index,
+        role_priority,
+        0 if anchor_track in candidate.focus_tracks else 1,
+        0 if candidate.reason.startswith("work_position_") else 1,
+        tuple(candidate.focus_tracks),
+    )
+
+
+def _candidate_cache_role_priority(
+    candidate: MoveCandidate,
+    *,
+    intent: StructuralIntent | None,
+) -> int:
+    if intent is None or not candidate.focus_tracks:
+        return 4
+    roles: set[str] = set()
+    for track_name in candidate.focus_tracks:
+        cluster = intent.debt_clusters_by_track.get(track_name)
+        if cluster is None:
+            continue
+        roles.update(cluster.buffer_roles)
+    if "ORDER_BUFFER" in roles:
+        return 0
+    if "ROUTE_RELEASE" in roles:
+        return 1
+    if "CAPACITY_RELEASE" in roles:
+        return 2
+    if "SOURCE_REMAINDER" in roles:
+        return 3
+    return 4

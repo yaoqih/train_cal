@@ -312,10 +312,6 @@ A* 使用的可接受启发值（h）取以下四项中的**最大值**（确保
 
 当目标股道容量过载时，估算必须先驱逐再召回的"往返钩次"数量（加到 `h_pairs` 上，因两者不重叠）。
 
-### 7.6 real-hook 模式的缩放
-
-在 real-hook（ATTACH+DETACH 分开计算）模式中，所有基础下界 ×2（因原先每次"PUT"相当于 1 次 ATTACH + 1 次 DETACH），再加上 `h_carry_detach`（已携带车辆的最少 DETACH 次数）。
-
 ---
 
 ## 8. 候选动作生成（`solver/move_candidates.py` / `move_generator.py`）
@@ -332,13 +328,113 @@ A* 使用的可接受启发值（h）取以下四项中的**最大值**（确保
 
 在检测到特定结构性压力时，`generate_move_candidates` 会基于 `structural_intent` 生成**多步复合候选**：
 
-| 候选类型（`reason`）| 触发条件 | 典型动作序列 |
+| 候选类型（`reason`）| 触发时机 | 做什么 |
 |---|---|---|
-| `route_release_*` | 存在路径阻塞 | 清除阻塞股道的车辆 |
-| `goal_frontier_*` | 目标股道有前置工作 | 先移走阻塞者再放入目标车 |
-| `work_position_*` | 作业工位未完成 | 按工位规则调整车序 |
-| `chain_macro_*` | 债务链跨多条股道 | 一次性完成多步清理 |
-| `resource_release` | 某条股道容量超载 | 先疏散再重新分配 |
+| `route_release_frontier` | 某条股道上的车（`blocking_track`）堵住了别人的行驶路径 | 清除阻塞者 → 顺势把被堵的车推进一程 → 视情况恢复阻塞者 |
+| `goal_frontier_source_opening` | 一条股道上已满足目标的车（`prefix`）压着还没满足的车 | 把前端已满足的 prefix 暂移 → 把被压的车送到目标 → prefix 放回 |
+| `work_position_source_opening` | 作业工位目标股道的北端入口被无关车辆堵住 | 按 `blocking_prefix_vehicle_nos` 清走堵口的车，再把等待的车送进去 |
+| `work_position_window` | 作业工位目标股道上 `pending_vehicle_nos` 排列顺序不对 | 按工位顺序要求逐步或批量送入等待车辆 |
+| `work_position_free_fill` | 作业工位目标股道有空位，无需清障 | 直接批量送入 `pending_vehicle_nos` |
+| `resource_release` / `capacity_release` | 股道超载、路径被堵、已满足车辆占着前端、或精确位被占 | 移走占位车辆（送到其目标或临时股道） |
+| `chain_macro_<anchor>` | 多条股道形成连锁问题（≥3 条，`total_pressure ≥ 25`） | 以种子候选为起点，串联后续各段，一次性处理整条链 |
+
+#### 8.2.1 整体生成流水线（`generate_move_candidates`）
+
+```
+1. generate_real_hook_moves()
+      列出当前所有合法的单步 ATTACH / DETACH
+   ↓
+2. 原始候选过滤（4 道过滤器）
+   ├─ _move_breaks_protected_commitment
+   │    不拆散已满足的连续车辆段（CommittedBlock）或已就位的作业窗口
+   ├─ _move_mixes_resource_debt_groups
+   │    不把目标不同的车辆混进同一次 ATTACH
+   ├─ _move_is_unowned_staging_churn
+   │    不把"延迟承诺"车辆在临时股道之间乱搬
+   └─ _move_attaches_unowned_delayed_staging_buffer
+        不取出专门为延迟承诺车辆预留的缓冲存车
+   ⚠ 例外：若动作被 _move_is_required_by_resource_debt 识别为
+     清障必须（涉及 ResourceDebt 的 vehicle_nos），可绕过第一道过滤
+   ↓
+3. build_structural_intent() + summarize_debt_chains()
+      分析当前局面，整理各股道的问题及严重度
+   ↓
+4. _generate_structural_candidates()
+   ├─ 按 DebtCluster 压力降序遍历每条问题股道：
+   │   ├─ OrderDebt → _build_work_position_source_opening_candidate
+   │   │               _build_work_position_window_candidate（含 front_block_only 变体）
+   │   │               _build_work_position_free_fill_candidate
+   │   └─ ResourceDebt → _build_route_release_frontier_candidate
+   │                      _build_goal_frontier_source_opening_candidate（FRONT_CLEARANCE）
+   │                      _build_resource_release_candidate（其余类型）
+   ├─ _generate_chain_macro_candidates()  → chain_macro_* 候选
+   └─ _select_structural_candidates()     → 最多保留 6 个
+   ↓
+5. _trim_candidate_before_delayed_commitment()
+      截掉候选中"时机还不到"的放车步骤
+      （目标车辆在 DelayedCommitment 列表中，工位窗口尚未就绪）
+   ↓
+6. _dedup_candidates()  去重
+   ↓
+   结构候选（排前）+ 过滤后原始候选（排后），整体按 _candidate_search_sort_key 排序
+```
+
+#### 8.2.2 各类型构建逻辑详解
+
+**`route_release_frontier`（路径解堵 + 顺手推进，`_build_route_release_frontier_candidate`）**
+
+分三阶段拼出一串步骤：
+1. **清除阻塞者**：优先调用 `_build_blocker_direct_goal_candidate` 把 `blocking_track` 北端的堵路车直接送到目标；若目标不可达，则由 `_build_resource_release_dispatch_candidate` 选一个临时股道过渡；
+2. **循环推进前沿**（最多 3 次）：每轮调用 `_route_release_frontier_block` 找出被堵车辆中排在各来源股道北端的那批，直接送向目标，直到找不到新的前沿为止；
+3. **恢复阻塞者**（可选）：若阻塞者的目标恰好是 `blocking_track`，由 `_restore_committed_blocker_steps` 生成把它从临时股道送回的步骤。
+
+`focus_tracks = (blocking_track, source_track, target_track)`，在 Beam Search 多样性分组中三者合为同一个路径释放焦点。
+
+**`goal_frontier_source_opening`（已满足车辆让路，`_build_goal_frontier_source_opening_candidate`）**
+
+触发：某股道序列呈"已满足前缀 `prefix` + 未满足后续"格局。
+
+构建步骤：
+1. 找到 `prefix` 末尾之后第一辆未满足车（`transfer_block`）及其唯一目标股道；
+2. 调用 `_build_source_prefix_split_detach_candidate`：暂移 `prefix` → 送出 `transfer_block` → `prefix` 归位；
+3. 验证：执行后 `prefix` 仍满足目标，`transfer_block` 已在目标股道上满足——两个条件都成立才接受。
+
+**`work_position_*`（作业工位系列，3 个子类型）**
+
+由 `OrderDebt`（`order_debts_by_track`）驱动：
+
+| 子函数 | reason | 适用情形 | 核心做法 |
+|---|---|---|---|
+| `_build_work_position_source_opening_candidate` | `work_position_source_opening` | 目标股道北端需先清 N 辆 | 按 `blocking_prefix_vehicle_nos` 疏散阻塞车，再整批送入 `pending_vehicle_nos` |
+| `_build_work_position_window_candidate` | `work_position_window` | 需按顺序依次送入 | 逐步或批量完成工位窗口排序；`front_block_only=True` 变体仅处理最靠北的一辆 |
+| `_build_work_position_free_fill_candidate` | `work_position_free_fill` | 目标股道有空位且无冲突 | 直接批量送入，无需清障 |
+
+**`resource_release` / `capacity_release`（`_build_resource_release_candidate`）**
+
+统一处理 4 种 `ResourceDebt`：
+- `ROUTE_RELEASE`：支持 `allow_partial=True`，可只移走堵路前缀的一部分；
+- `CAPACITY_RELEASE`：先直接调度，失败后再用 `_build_protected_prefix_resource_release_candidate`（保护已满足前缀再移后面的）；
+- `FRONT_CLEARANCE`：优先走 `_build_goal_frontier_source_opening_candidate` 路径，失败才降级为通用 resource_release；
+- `EXACT_SPOT_RELEASE`：直接移走占了别人精确坑位的车（`pressure` 权重最高，×5）。
+
+**`chain_macro_<anchor>`（`_generate_chain_macro_candidates`）**
+
+触发条件：债务链涉及 ≥3 条股道且 `total_pressure ≥ 25.0`，最多处理压力最大的前 2 条链。
+
+构建步骤：
+1. 从 `base_candidates` 里选出最优的"种子候选"（`_best_chain_seed_candidate`）；
+2. 以种子的终态为起点，继续追加链上其他股道的步骤（最多 3 段，`pressure ≥ 120` 时取 4 段）；
+3. 整体经 `replay_candidate_steps` 验证通过且不以 `loco_carry` 结束，才打包；
+4. `reason = f"chain_macro_{anchor_track}"`，`focus_tracks` 覆盖链上所有涉及股道。
+
+#### 8.2.3 结构候选筛选（`_select_structural_candidates`，limit=6）
+
+候选超过 6 个时，分三轮筛选：
+
+1. **按债务链槽位分配**：每条链分 3 个槽（`sequence` / `anchor_release` / `non_anchor_release`），`chain_macro_*` 进 `sequence` 槽，覆盖锚点股道的进 `anchor_release`，其余进 `non_anchor_release`；每槽只保留优先级最高的候选；
+2. **按 `focus_tracks` 去重**：相同的 `focus_tracks` 组合只保留一个；
+3. **按 `(reason, focus_tracks)` 去重**：进一步去重；
+4. 若仍不足 6 个，按既有顺序补满。
 
 ### 8.3 MoveCandidate 数据结构
 
@@ -458,34 +554,334 @@ class MoveCandidate:
 
 ### 11.1 算法概述
 
-构造法是最底层的保底求解器，**一定能返回一个（可能不完整的）方案**。
+构造法是最底层的保底求解器。它的目标不是先证明最优，而是先尽量**稳定地把局面往可解方向推**，并在预算内给后续 A* 一个较好的起点。
+
+它有两个很重要的定位：
+- **保底层**：哪怕后面的精确搜索预算不够，构造法也应尽量给出一份完整方案；实在做不完，也至少返回一份合法的部分方案。
+- **统一合法性层**：它不是“手写业务捷径脚本”，而是和搜索层共用同一套候选生成、路径校验、容量校验、作业工位校验与重放验证逻辑。
+
+可以把它理解成一句话：
+
+> 构造法 = “每一步都挑当前最像正解的合法动作”，如果这样一路走下去卡住了，就回到最近几个关键岔路口，换第二名、第三名动作再试。
 
 核心算法：贪心前向搜索（greedy forward）+ **W3-N 有界回溯**：
-- 每步评分所有候选，取最优者；
-- 若启发值在 `stuck_threshold` 轮内无改善，则视为"卡住"；
-- 回溯到最近的决策点，尝试次优方案；
+- 每轮先看当前状态是不是已经完工；
+- 若未完工，枚举当前所有合法候选；
+- 对候选逐个评分，选分数最低的那个执行；
+- 如果连续很多轮都没有真正进展，就认定当前贪心路线走偏了；
+- 回到最近的某个决策点，改选次优候选，再往前跑；
 - 最多回溯 `max_backtracks`（默认 5）次；
-- 返回所有尝试中最好的结果。
+- 所有尝试里，优先保留“已完成且钩数更少”的；若都没完成，则保留“离目标更近”的那条。
 
-### 11.2 动作分层（Tier）
+### 11.2 先建立一个直觉：它到底在“构造”什么
 
-每个候选动作按意图分为 7 个优先层：
+它构造的不是单个动作，而是一条**逐步成形的 Hook Plan**。
 
-| Tier | 含义 |
+每一轮循环，构造法只做三件事：
+1. 看当前局面里，哪些动作现在合法。
+2. 判断这些动作里，哪个最值得先做。
+3. 执行这个动作，把状态更新后进入下一轮。
+
+所以它不是“先全局规划，再逐步执行”，而是：
+
+```text
+当前状态
+  -> 找候选
+  -> 给候选打分
+  -> 选最优
+  -> 执行
+  -> 得到新状态
+  -> 重复
+```
+
+这也是为什么它叫“构造法基线”：
+- 它不试图一开始就看穿全局；
+- 它靠一连串局部正确、业务合理的选择，把整份方案一点点构造出来。
+
+### 11.3 一轮 greedy forward 具体怎么跑
+
+单次前向尝试的主循环，按代码真实顺序大致是这样：
+
+```text
+while 还没到目标:
+    1. 检查时间预算是否耗尽
+    2. 计算当前结构指标（unfinished / blocker / capacity / sequence defect ...）
+    3. 决定本轮只看原始动作，还是启用结构候选
+    4. 生成所有合法候选
+    5. 对每个候选做重放校验并评分
+    6. 过滤明显不好的候选（例如最近刚做过的逆动作、重复状态）
+    7. 选当前最优候选
+    8. 执行候选中的每一步 HookAction
+    9. 更新“最近动作”“最近状态”“空载安全检查点”“是否卡住”等信息
+```
+
+这里最关键的是第 3、4、5 步。
+
+#### 11.3.1 什么时候只看 primitive，什么时候启用 structural candidate
+
+构造法并不是每轮都强行用复杂宏动作。
+
+它会先判断当前局面有没有明显的“结构性压力”：
+- 作业工位顺序错了；
+- 某些车已经在目标股道，但把没完成的车压在里面；
+- 某条路径长期被前端车辆堵住；
+- 临时股道上的“中转债务”开始堆积；
+- 延迟承诺（delayed commitment）已经出现。
+
+如果这些压力不明显，它就只看最基本的原子动作：
+- 从某股道北端 ATTACH 一段车；
+- 或把当前携带的尾段 DETACH 到某条合法股道。
+
+如果压力明显，它就会调用 `generate_move_candidates(...)`，把“结构候选”也纳入比较，例如：
+- 先挪开堵口车，再顺手把里面真正该出去的车送走；
+- 先拆前缀，再把被压住的目标车送进去，再把前缀复位；
+- 一次把某个工位窗口整理到位。
+
+通俗理解：
+- **primitive** 像“只走一步”；
+- **structural candidate** 像“已经看出这是一整套连动作，干脆成组执行”。
+
+#### 11.3.2 候选不是“想出来就算”，必须先重放验证
+
+这点很重要。
+
+构造法不会因为一个候选“看起来很聪明”就直接采用。每个候选都要先经过 `replay_candidate_steps(...)`：
+- 候选里的每一步都重新在当前状态上模拟执行；
+- 中间任何一步不合法，整个候选直接丢弃；
+- 只有完整重放通过的候选，才有资格参加评分。
+
+所以构造法本质上不是“拍脑袋规则系统”，而是：
+
+> 先提出动作，再用统一的状态转移与业务规则去验它。
+
+这保证了它和 A* 层看到的是同一个“合法动作世界”。
+
+### 11.4 它到底怎么判断“哪个候选更好”
+
+这里最容易让人误解。构造法不是只看一个启发值 `h`，而是看一个**多层排序键**。
+
+也就是说，它并不是简单地问：
+
+> “哪个动作让 h 最小？”
+
+而是更像在问：
+
+> “在业务上更该优先做的动作里，哪个又更能让局面变好？”
+
+代码里大体有两层评分思想。
+
+#### 11.4.1 第一层：先分 Tier，决定“动作意图”优先级
+
+单步动作的优先层不是按学术最优性定义的，而是按业务直觉定义的。
+
+当前代码的核心分层可以通俗理解为：
+
+| Tier | 直觉含义 |
 |---|---|
-| 0 | DETACH 到首选目标（且满足偏好条件） |
-| 1 | DETACH 到有效目标 |
-| 2 | 暴露关键车辆 / 路径释放延续 / 清除精确位阻塞 / ATTACH 改进启发值 |
-| 3 | 清除目标股道阻塞（blocker clear） |
-| 4 | DETACH 改进启发值 |
-| 5 | 放到临时股道（staging detach） |
-| 6 | 其他（兜底） |
+| 0 | 已经可以把车直接放到更优的最终位置，尤其还能减少首选违规 |
+| 1 | 已经可以把车直接放到有效目标 |
+| 2 | 这是明显的建设性动作：解路径堵塞、暴露关键车、延续解堵链、清精确位、支持关门车推进、或 ATTACH 后能让整体进度变好 |
+| 3 | 主要是在清障，虽然还没直接完成目标，但能把局面打开 |
+| 4 | DETACH 后能带来进展，但价值弱于前几层 |
+| 5 | 暂存/中转类动作，必要时才做 |
+| 6 | 其他兜底动作 |
 
-如果一个动作会"驱逐已满足目标的车辆"，其 Tier +100（极度避免）。
+这里的关键不是记住编号，而是理解排序哲学：
+- **先做真正完成目标的动作**；
+- **做不了最终动作时，优先做能打开局面的动作**；
+- **再不行才做中转和铺垫**；
+- **明显会把局面搞脏的动作放到最后**。
 
-### 11.3 逆动作保护（Inverse Guard）
+另外，很多本来看起来“还不错”的动作，会被额外降级到 Tier 5，例如：
+- 把车又停回正在形成路径阻塞的股道；
+- 刚清掉精确位问题，又把它堵回去；
+- 把关门车推进所依赖的“推手车”提前用掉；
+- 去重新抓刚放到临时股道、但其实还没到该回收时机的车。
+
+也就是说，构造法不是只奖励“眼前进展”，还会主动避开**看似推进、实则埋雷**的动作。
+
+#### 11.4.2 第二层：同层内再看结构进展、污染、路径长度等细节
+
+如果两个候选 Tier 一样，就继续比较更细的指标，例如：
+- 执行后未完成车辆是否更少；
+- 作业工位顺序缺陷是否减少；
+- 容量超载股道是否减少；
+- 是否减少了目标股道前端阻塞；
+- 是否增加了 staging 污染；
+- 是否让 preferred/fallback 违例变多；
+- 一次动作是否过长、是否把车埋得更深。
+
+文档里可以把这个理解成：
+
+> Tier 决定“方向对不对”，细粒度评分决定“同样方向下谁更干净、更省事”。
+
+#### 11.4.3 它优化的不是一个数，而是一个“进展向量”
+
+构造法内部长期跟踪的不是单个 `h`，而是一个进展键：
+
+```python
+(
+    heuristic,
+    preferred_violation_count,
+    staging_pollution_count,
+    unfinished_count + target_sequence_defect_count,
+)
+```
+
+这表示它判断“局面是否更好”时，会同时看：
+- 离目标还有多远；
+- 是否在破坏首选目标；
+- 是否把临时股道越用越脏；
+- 是否真的在减少未完成任务，而不是只是换个地方堆着。
+
+这比单纯盯着“还有几辆车没到位”要稳得多。
+
+### 11.5 为什么有时会“走几步看起来没变好”
+
+很多调车局面必须先清障，才能出现真正的目标动作。
+
+例如：
+- A 车应该进修1库内 3 号位；
+- 但修1前面压着一段已经满足别的目标的车；
+- 这时先把那段车临时挪走，表面看“目标车数量没减少”；
+- 甚至启发值短时间内都不下降；
+- 但这是必须的建设性准备。
+
+因此代码把“无直接下降但属于 purposeful clearing 的动作”和“纯粹横跳的动作”分开看待：
+- 对前者，允许连续更久都不降启发值；
+- 对后者，较快认定为 stale。
+
+这就是 `purposeful_stale` 和 `stale_rounds` 分离的原因。
+
+它反映的是一个很重要的业务事实：
+
+> “清障链条中的几步铺垫”不能和“无意义来回折腾”混为一谈。
+
+### 11.6 它怎么判断“这条贪心路线走偏了”
+
+构造法不是一旦某一步没变好就回溯，而是看一段连续过程。
+
+主要有三种停止当前尝试的原因：
+- **没有合法候选**：当前状态已经无路可走；
+- **时间/步数预算耗尽**：这一轮尝试不能再继续；
+- **长期无进展**：说明可能陷入局部最优或搬运循环。
+
+尤其是“长期无进展”，代码分两类：
+- `stale_rounds`：偏回归/横移动作连续太多；
+- `purposeful_stale`：虽然是在清障，但太久都没有兑现成真实收益。
+
+一旦认定卡住，就返回当前最好结果。但这里还有一个很关键的设计：**空载安全检查点**。
+
+### 11.7 为什么只在“空载时”记安全检查点
+
+构造法运行中会持续记住最近一个“调机未携带车辆”的状态。
+
+原因很实际：
+- 如果卡住时调机还挂着一串车，直接把这份部分方案交给后续阶段，后续处理会更难；
+- 空载状态更“干净”，更适合让后续 A*、partial resume、tail rescue 接手；
+- 业务上也更像一个自然的钩次边界。
+
+因此，如果当前尝试在“带车状态”下卡住，构造法不会把这段半截 carry 强行作为部分结果输出，而是：
+- 回退到最近一个空载检查点；
+- 把那之前的计划作为 partial plan 返回。
+
+这就是文档前面提到“部分续跑会从构造法中间空载检查点继续”的根本原因。
+
+### 11.8 W3-N 有界回溯到底怎么工作
+
+回溯不是把整条历史全部推翻重来，而是“在最近的若干关键选择点中，换一条分支再试”。
+
+具体过程可以理解为：
+
+1. 先完整跑一遍纯贪心。
+2. 如果成功，直接结束。
+3. 如果失败，从最近 `REWIND_WINDOW`（默认 30）个决策点里，倒着找一个还有备选动作没试过的位置。
+4. 把那个位置的选择从“第 1 名”改成“第 2 名”或“第 3 名”。
+5. 该位置之后的所有选择全部重新按贪心生成。
+6. 重复最多 `max_backtracks` 次。
+
+这里的“W3-N”可以粗暴理解成：
+- **W**：只在最近的一个窗口里优先找回溯点，不做全局爆炸式回退；
+- **3**：每个决策点最多尝试前 3 个备选；
+- **N**：可重复多个回合，但有上限。
+
+这个设计解决的是典型问题：
+
+> 某个局面里，第一名候选看起来局部最优，但它会把关键通道占掉；第二名才是全局上更顺的。
+
+纯贪心常死在这里，而有界回溯可以用很小代价修正这类误判。
+
+### 11.9 一个通俗例子：为什么“构造法基线”有时先挪开，再送目标车
+
+假设某条股道从北到南是：
+
+```text
+[X, Y, Z]
+```
+
+其中：
+- `X` 已经满足自己的目标；
+- `Y` 也暂时不该动；
+- `Z` 才是真正急着要去修1工位的车；
+- 但规则决定只能从北端取车。
+
+那构造法不可能直接拿到 `Z`。它只能在候选里比较：
+- 把 `X`、`Y` 暂时挪走；
+- 还是去别处做别的事；
+- 或者做某种复合结构候选：`前缀让路 -> 送出 Z -> 前缀复位`。
+
+这时若结构候选可行，它往往会赢，因为它在评分上同时满足：
+- 这是一个建设性清障动作；
+- 清完以后 `Z` 可以马上进入有效目标；
+- 被暂移的前缀还能恢复；
+- 整体结构缺陷、未完成数或 blocker 压力会下降。
+
+所以从阅读视角看，构造法并不是“乱挪车”，而是在做一种非常典型的调车动作：
+
+> 先开门，再送核心车，再尽量恢复现场。
+
+### 11.10 读日志或看结果时，怎么判断构造法当前在干什么
+
+如果你在调试时看到构造法输出了一长串动作，可以先用下面这套思路判断它的阶段：
+
+1. **如果频繁出现直接 DETACH 到目标股道/工位**：
+   说明它在“兑现成果”。
+2. **如果连续在搬前缀、临时清障，但目标车随后被送出**：
+   说明它在走“结构性清障链”。
+3. **如果大量动作集中在 staging 轨道之间来回**：
+   说明它可能已经接近局部循环，要看是否即将 stale 或触发回溯。
+4. **如果 partial plan 停在空载位置**：
+   说明它主动把结果截在了更适合后续续跑的检查点。
+
+### 11.11 这一层的价值和边界
+
+构造法很强，但它不是万能的。
+
+它擅长：
+- 快速把大部分“明显该怎么拆”的局面拆开；
+- 给 A* 提供接近终点的暖启动；
+- 在复杂业务约束下提供稳定保底。
+
+它的天然边界是：
+- 仍然以局部评分为主，不保证全局最优；
+- 对“先吃亏、后大赚”的深层策略看得不如搜索层远；
+- 当多个清障方向都看起来差不多时，仍可能选错分支，需要靠回溯修正。
+
+所以整体架构才会是：
+- **先用构造法把局面做顺**；
+- **再用 A* / anytime / LNS 去补最优性和长尾问题**。
+
+### 11.12 逆动作保护（Inverse Guard）
 
 记录最近 12 步动作。如果一个候选动作与最近某步相反（把刚送走的一半以上车辆送回来），且有其他非逆向候选，则优先选非逆向。
+
+这条规则的意义非常朴素：
+- 调车里允许“必要回收”；
+- 但不允许 solver 在两个股道之间来回打摆子。
+
+因此它不是绝对禁止逆动作，而是：
+- **有别的合理动作时，优先不走回头路**；
+- **真没别的路时，逆动作仍可作为兜底**。
 
 ---
 
@@ -527,12 +923,82 @@ summarize_plan_shape(plan) -> dict:
 
 ## 13. 结构意图（`solver/structural_intent.py`）
 
-`build_structural_intent` 分析当前状态的宏观目标，返回 `StructuralIntent`：
+`build_structural_intent` 分析当前状态的宏观目标，返回 `StructuralIntent`。
 
-- **`order_debts_by_track`**：每条目标股道的排列债务（哪些车需要调序）；
-- **`delayed_commitments`**：因为前置工作尚未完成而被推迟的目标承诺；
-- **`buffer_leases`**：需要临时借用缓冲股道的计划；
-- **`debt_clusters`**：互相关联的债务集群，用于生成"链式宏候选"。
+### 13.1 `StructuralIntent` 包含哪些信息
+
+`StructuralIntent` 包含 7 类字段，供 `_generate_structural_candidates` 生成候选时使用：
+
+**`committed_blocks_by_track`（各股道的稳定车辆段）**
+
+记录每条股道上已经"稳稳就位、不该被动"的连续车辆段（`CommittedBlock`）。来源有两种：
+- 北端连续满足目标的车辆（`goal_satisfied_contiguous_block`）；
+- SPOTTING 工位上已全部满足的作业窗口段（`stable_work_position_window`）。
+
+用于原始候选过滤：若某个 ATTACH 动作会拆散这样的段，就被 `_move_breaks_protected_commitment` 过滤掉（除非该动作是清障必需的）。
+
+**`order_debts_by_track`（作业工位排列欠账）**
+
+每条作业工位目标股道上有哪些排列问题（`OrderDebt`）：
+- `defect_count`：当前排列缺陷数；
+- `pending_vehicle_nos`：还没进去、等待入位的车辆；
+- `blocking_prefix_vehicle_nos`：目标股道北端需要先移走的挡路车——通过 `_insertion_clear_count` 模拟插入来估算最少要清几辆；
+- `kind_counts`：`SPOTTING` / `EXACT_NORTH_RANK` / `EXACT_WORK_SLOT` 各有几辆在等。
+
+**`resource_debts`（4 种资源占用问题）**
+
+| `kind` | 触发条件 | `vehicle_nos` 含义 | 压力权重 |
+|---|---|---|---|
+| `ROUTE_RELEASE` | 股道上的车辆堵住了别人的行驶路径 | 挡路的车 | ×3 |
+| `CAPACITY_RELEASE` | 股道超载 | 前端需要移走的车 | ×1.5 |
+| `FRONT_CLEARANCE` | 已满足目标的车堵在未满足车辆前面 | 前端已满足的车 | ×2 |
+| `EXACT_SPOT_RELEASE` | 某辆车的目标精确位被另一辆车占着 | 占位的那辆车 | ×5 |
+
+**`debt_clusters_by_track`（按股道汇总的综合严重度）**
+
+把同一条股道上的 `OrderDebt` 和 `ResourceDebt` 合并成一个 `DebtCluster`，计算综合压力分：
+
+```
+pressure = defect_count×10 + len(pending)×1 + len(blocking_prefix)×2  # 排列欠账
+         + 各 ResourceDebt 的 pressure × 对应权重                      # 资源占用
+```
+
+`debt_clusters_by_track` 按 `(-pressure, track_name)` 排序，`_generate_structural_candidates` 优先处理压力最高的股道。
+
+**`staging_buffers`（临时股道可用情况）**
+
+临1～4、存4南各自的 `free_length`（剩余空闲米数）、`occupied_vehicle_count` 以及 4 种角色分值（空股道额外 +2）。候选生成时，`_best_staging_track` 用这里的数据挑选最合适的临时停放目标。
+
+**`delayed_commitments`（暂时放不进去的车辆）**
+
+某辆车虽然有目标股道，但现在还不能送过去（`DelayedCommitment`），有两种原因：
+- `work_position_window_not_ready`：放进去后工位窗口无法满足；
+- `would_precede_unfinished_work_position_window`：会排在尚未完成的 SPOTTING 窗口前面。
+
+被标记的车辆会在 `_trim_candidate_before_delayed_commitment` 阶段把涉及它们的放车步骤截掉，除非候选类型本身是 `work_position_*`（由工位系列专门处理）。
+
+**`buffer_leases`（为等候车辆预留的临时停放计划）**
+
+对每组 `DelayedCommitment` 车辆，记录其来源股道、目标股道、所需米数（`required_length`）及借用角色 `ORDER_BUFFER`，供候选生成时优先选用合适的缓冲股道。
+
+### 13.2 `build_structural_intent` 调用链
+
+```
+build_structural_intent(plan_input, state, route_oracle)
+│
+├── compute_structural_metrics()        各股道基础指标（未完成数、排列缺陷数等）
+├── compute_route_blockage_plan()       路径阻塞事实（哪条股道挡了哪些车的路）
+├── compute_capacity_release_plan()     容量超载事实（各超载股道需释放多少米）
+│
+├── _committed_blocks_by_track()        → CommittedBlock（连续满足段 + 稳定工位窗口）
+├── _delayed_commitments()              → DelayedCommitment（工位窗口未就绪 / 排序冲突）
+├── _order_debts_by_track()             → OrderDebt（各目标股道的排列欠账）
+│     └─ _insertion_clear_count()         模拟插入：最少要清几辆前缀才能让等待车顺利入位
+├── _resource_debts()                   → ResourceDebt（ROUTE / CAPACITY / FRONT / SPOT 四种）
+├── build_debt_clusters_by_track()      → DebtCluster（按压力聚合，降序排列）
+├── _staging_buffers()                  → StagingBuffer（各临时股道的空闲状态快照）
+└── _buffer_leases()                    → BufferLease（为延迟承诺车辆预留临时停放计划）
+```
 
 ---
 
