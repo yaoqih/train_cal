@@ -232,6 +232,8 @@ def _random_depot_spot_candidates(
             return []
     elif vehicle.vehicle_length >= 17.6 and target_track not in LONG_DEPOT_TRACKS:
         return []
+    if vehicle.repair_process == "厂修":
+        return list(reversed(available_spots))
     return available_spots
 
 

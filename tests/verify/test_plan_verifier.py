@@ -442,6 +442,56 @@ def test_plan_verifier_rejects_close_door_front_position_non_cun4bei_when_gt10()
     assert any("close-door" in error.lower() for error in report.errors)
 
 
+def test_plan_verifier_rejects_close_door_first_when_hook_contains_heavy_vehicle():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 200},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CD1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "关门车",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "H1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "机库",
+                "isSpotting": "",
+                "vehicleAttributes": "重车",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+
+    report = verify_plan(
+        master,
+        normalized,
+        _native_direct_plan(
+            source_track="存5北",
+            target_track="机库",
+            vehicle_nos=["CD1", "H1"],
+            detach_path_tracks=["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
+        ),
+    )
+
+    assert report.is_valid is False
+    assert any("关门车" in error and "重车" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_hook_exceeding_empty_vehicle_limit():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -661,7 +711,7 @@ def test_plan_verifier_rejects_heavy_equivalent_and_l1_overflow_together():
 
     assert report.is_valid is False
     assert any("折算" in error for error in report.errors)
-    assert any("190m" in error or "190" in error for error in report.errors)
+    assert any("193m" in error or "193" in error for error in report.errors)
 
 
 def test_plan_verifier_rejects_loaded_loco_access_length_overflow_before_second_attach():
@@ -733,7 +783,7 @@ def test_plan_verifier_rejects_loaded_loco_access_length_overflow_before_second_
 
     assert report.is_valid is False
     assert any("Locomotive access before ATTACH" in error for error in report.errors)
-    assert any("190m" in error or "190" in error for error in report.errors)
+    assert any("193m" in error or "193" in error for error in report.errors)
 
 
 def test_plan_verifier_rejects_detach_prefix_when_full_carry_exceeds_route_length():
@@ -791,7 +841,7 @@ def test_plan_verifier_rejects_detach_prefix_when_full_carry_exceeds_route_lengt
     report = verify_plan(master, normalized, plan)
 
     assert report.is_valid is False
-    assert any("190m" in error or "190" in error for error in report.errors)
+    assert any("193m" in error or "193" in error for error in report.errors)
 
 
 def test_plan_verifier_rejects_more_than_one_weigh_vehicle_per_hook():

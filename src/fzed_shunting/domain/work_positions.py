@@ -151,10 +151,13 @@ def preview_work_positions_after_prepend(
     existing_vehicle_nos: list[str],
     vehicle_by_no: dict[str, Any],
 ) -> WorkPositionPreview:
-    if not is_work_position_track(target_track):
-        return WorkPositionPreview(valid=True)
-
     new_seq = list(incoming_vehicle_nos) + list(existing_vehicle_nos)
+    if not _track_requires_order_preview(
+        target_track=target_track,
+        vehicle_nos=new_seq,
+        vehicle_by_no=vehicle_by_no,
+    ):
+        return WorkPositionPreview(valid=True)
     evaluations: dict[str, WorkPositionEvaluation] = {}
     hard_violations: list[str] = []
     seen: set[str] = set()
@@ -184,6 +187,27 @@ def preview_work_positions_after_prepend(
         hard_violations=hard_violations,
         evaluations=evaluations,
     )
+
+
+def _track_requires_order_preview(
+    *,
+    target_track: str,
+    vehicle_nos: list[str],
+    vehicle_by_no: dict[str, Any],
+) -> bool:
+    if is_work_position_track(target_track):
+        return True
+    for vehicle_no in vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            continue
+        goal = getattr(vehicle, "goal", None)
+        if goal is None or goal.work_position_kind is None:
+            continue
+        if target_track not in getattr(goal, "allowed_target_tracks", ()):
+            continue
+        return True
+    return False
 
 
 def build_work_position_assignments(

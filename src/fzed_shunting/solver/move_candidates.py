@@ -10,12 +10,17 @@ from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.work_positions import (
     WORK_POSITION_TRACKS,
+    is_work_position_track,
     preview_work_positions_after_prepend,
 )
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.candidate_compiler import replay_candidate_steps
 from fzed_shunting.solver.debt_chain import DebtChainSummary, summarize_debt_chains
 from fzed_shunting.solver.debt_graph import DebtGraphView, build_debt_graph
+from fzed_shunting.solver.exact_spot import (
+    exact_spot_clearance_bonus,
+    exact_spot_seeker_exposure_bonus,
+)
 from fzed_shunting.solver.goal_logic import goal_effective_allowed_tracks, goal_is_satisfied
 from fzed_shunting.solver.move_generator import generate_real_hook_moves
 from fzed_shunting.solver.purity import STAGING_TRACKS
@@ -31,6 +36,7 @@ from fzed_shunting.solver.structural_intent import (
     build_debt_clusters_by_track,
     build_structural_intent,
 )
+from fzed_shunting.solver.structural_metrics import compute_structural_metrics
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.verify.replay import ReplayState
 
@@ -46,6 +52,25 @@ STRUCTURAL_PRIORITY_REASON_GROUPS = {
     "capacity_release": 1,
 }
 
+INTENT_PRIORITY = {
+    "ADVANCE_WORK_SLOT": 0,
+    "ADVANCE_ORDER": 1,
+    "DELIVER": 2,
+    "OPEN_GOAL_ACCESS": 3,
+    "OPEN_SOURCE_ACCESS": 4,
+    "RELIEVE_CAPACITY": 5,
+    "BREAK_CHAIN": 6,
+    "BORROW_BUFFER": 7,
+    "RESTORE": 8,
+}
+
+PROBLEM_TO_INTENT_TYPE = {
+    "DIRECT_GOAL_WINDOW": "OPEN_GOAL_ACCESS",
+    "BLOCKER_RELEASE": "OPEN_SOURCE_ACCESS",
+    "SEQUENCE_ADVANCE": "ADVANCE_ORDER",
+    "CAPACITY_RELEASE": "RELIEVE_CAPACITY",
+}
+
 
 @dataclass(frozen=True)
 class MoveCandidate:
@@ -53,9 +78,51 @@ class MoveCandidate:
     kind: str = "primitive"
     reason: str = ""
     focus_tracks: tuple[str, ...] = ()
+    intent_type: str = ""
+    intent_anchor: str = ""
+    intent_target: str = ""
+    staging_mode: str = "NONE"
+    problem_type: str = ""
+    problem_track: str = ""
+    problem_stage: str = ""
     structural_reserve: bool = False
     soft_penalty: int = 0
     origin: str = ""
+
+
+@dataclass(frozen=True)
+class ProblemDescriptor:
+    problem_type: str
+    track_name: str
+    pressure: float
+    anchor_track: str = ""
+    resource_kind: str = ""
+    goal_track: str = ""
+    blocked_track: str = ""
+    progress_value: float = 0.0
+    legal_risk: float = 0.0
+    needs_staging_only: bool = False
+    source_family: str = ""
+
+
+@dataclass(frozen=True)
+class GatedProblemSet:
+    primary_problem: ProblemDescriptor | None
+    secondary_problem: ProblemDescriptor | None = None
+
+
+@dataclass(frozen=True)
+class IntentRequest:
+    intent_type: str
+    anchor_track: str
+    priority: float
+    business_target: str = ""
+    source_problem_type: str = ""
+    source_problem_track: str = ""
+    source_problem_stage: str = ""
+
+
+StructuralProblem = ProblemDescriptor
 
 
 def _structural_candidate(
@@ -63,6 +130,9 @@ def _structural_candidate(
     steps: tuple[HookAction, ...] | list[HookAction],
     reason: str,
     focus_tracks: tuple[str, ...],
+    problem_type: str = "",
+    problem_track: str = "",
+    problem_stage: str = "",
     structural_reserve: bool = True,
     origin: str = "",
 ) -> MoveCandidate:
@@ -71,6 +141,11 @@ def _structural_candidate(
         kind="structural",
         reason=reason,
         focus_tracks=focus_tracks,
+        intent_type=problem_type_to_intent_type(problem_type),
+        intent_anchor=problem_track,
+        problem_type=problem_type,
+        problem_track=problem_track,
+        problem_stage=problem_stage,
         structural_reserve=structural_reserve,
         soft_penalty=0,
         origin=origin or reason,
@@ -110,6 +185,8 @@ def generate_move_candidates(
     master: MasterData | None = None,
     route_oracle: RouteOracle | None = None,
     debug_stats: dict[str, Any] | None = None,
+    active_problem_type: str = "",
+    active_problem_track: str = "",
 ) -> list[MoveCandidate]:
     primitive_debug: dict[str, Any] | None = {} if debug_stats is not None else None
     primitive_moves = generate_real_hook_moves(
@@ -126,6 +203,22 @@ def generate_move_candidates(
     )
     debt_graph = build_debt_graph(plan_input, state, route_oracle=route_oracle, intent=intent)
     debt_chain_summary = debt_graph.chain_summary
+    diagnosed_problems = diagnose_problems(
+        intent=intent,
+        plan_input=plan_input,
+        state=state,
+        debt_chain_summary=debt_chain_summary,
+    )
+    gated_problem_set = gate_problem_candidates(
+        diagnosed_problems,
+        active_problem_type=active_problem_type,
+        active_problem_track=active_problem_track,
+    )
+    intent_requests = enumerate_intent_requests(
+        diagnosed_problems,
+        active_problem_type=active_problem_type,
+        active_problem_track=active_problem_track,
+    )
     protected_rejected_count = 0
     protected_allowed_by_debt_count = 0
     mixed_resource_primitive_rejected_count = 0
@@ -161,10 +254,6 @@ def generate_move_candidates(
                 protected_rejected_count += 1
             continue
         filtered_primitive_moves.append(move)
-    candidates = tuple(
-        MoveCandidate(steps=(move,), kind="primitive")
-        for move in filtered_primitive_moves
-    )
     structural_candidates = _generate_structural_candidates(
         plan_input=plan_input,
         state=state,
@@ -172,8 +261,19 @@ def generate_move_candidates(
         route_oracle=route_oracle,
         intent=intent,
         debt_graph=debt_graph,
+        debt_chain_summary=debt_chain_summary,
+        diagnosed_problems=diagnosed_problems,
+        intent_requests=intent_requests,
     )
-    candidate_pool = (*structural_candidates, *candidates)
+    primitive_candidates = _build_problem_primitive_candidates(
+        filtered_primitive_moves,
+        intent_requests=intent_requests,
+        gated_problem_set=gated_problem_set,
+        state=state,
+        plan_input=plan_input,
+        route_oracle=route_oracle,
+    )
+    candidate_pool = structural_candidates + primitive_candidates
     trimmed_candidates = sorted(
         (
             trimmed
@@ -199,7 +299,9 @@ def generate_move_candidates(
     if debug_stats is not None:
         debug_stats.clear()
         debug_stats.update(primitive_debug or {})
+        primary_problems = diagnosed_problems
         debug_stats["primitive_move_count"] = len(primitive_moves)
+        debug_stats["gated_primitive_move_count"] = len(primitive_candidates)
         debug_stats["protected_primitive_rejected_count"] = protected_rejected_count
         debug_stats["protected_primitive_allowed_by_debt_count"] = protected_allowed_by_debt_count
         debug_stats["mixed_resource_primitive_rejected_count"] = (
@@ -220,14 +322,101 @@ def generate_move_candidates(
         debug_stats["structural_debt_graph_max_multi_track_pressure"] = (
             debt_graph.max_multi_track_pressure
         )
+        debug_stats["structural_primary_problems"] = [
+            {
+                "problem_type": problem.problem_type,
+                "track_name": problem.track_name,
+                "pressure": problem.pressure,
+                "anchor_track": problem.anchor_track,
+                "resource_kind": problem.resource_kind,
+                "goal_track": problem.goal_track,
+                "blocked_track": problem.blocked_track,
+                "progress_value": problem.progress_value,
+                "legal_risk": problem.legal_risk,
+                "needs_staging_only": problem.needs_staging_only,
+            }
+            for problem in primary_problems
+        ]
+        debug_stats["structural_primary_problem_signature"] = [
+            f"{problem.problem_type}:{problem.track_name}:{problem.resource_kind or '-'}"
+            for problem in primary_problems
+        ]
+        debug_stats["gated_problem_set"] = {
+            "primary": (
+                f"{gated_problem_set.primary_problem.problem_type}:"
+                f"{gated_problem_set.primary_problem.track_name}:"
+                f"{gated_problem_set.primary_problem.resource_kind or '-'}"
+                if gated_problem_set.primary_problem is not None
+                else None
+            ),
+            "secondary": (
+                f"{gated_problem_set.secondary_problem.problem_type}:"
+                f"{gated_problem_set.secondary_problem.track_name}:"
+                f"{gated_problem_set.secondary_problem.resource_kind or '-'}"
+                if gated_problem_set.secondary_problem is not None
+                else None
+            ),
+        }
+        debug_stats["gated_problem_state"] = {
+            "primary_problem_type": (
+                gated_problem_set.primary_problem.problem_type
+                if gated_problem_set.primary_problem is not None
+                else ""
+            ),
+            "primary_problem_track": (
+                gated_problem_set.primary_problem.track_name
+                if gated_problem_set.primary_problem is not None
+                else ""
+            ),
+            "secondary_problem_type": (
+                gated_problem_set.secondary_problem.problem_type
+                if gated_problem_set.secondary_problem is not None
+                else ""
+            ),
+            "secondary_problem_track": (
+                gated_problem_set.secondary_problem.track_name
+                if gated_problem_set.secondary_problem is not None
+                else ""
+            ),
+        }
         debug_stats["structural_candidate_steps_total"] = sum(
             len(candidate.steps) for candidate in structural_candidates
         )
         debug_stats["structural_candidate_origin_counts"] = _candidate_origin_counts(
             structural_candidates
         )
+        debug_stats["structural_candidate_intent_counts"] = _candidate_intent_counts(
+            structural_candidates
+        )
+        debug_stats["intent_requests"] = [
+            {
+                "intent_type": request.intent_type,
+                "anchor_track": request.anchor_track,
+                "business_target": request.business_target,
+                "priority": request.priority,
+                "source_problem_type": request.source_problem_type,
+            }
+            for request in intent_requests
+        ]
+        debug_stats["structural_candidates_by_problem"] = _structural_candidates_by_problem(
+            structural_candidates,
+            primary_problems=primary_problems,
+        )
+        debug_stats["task_bundles"] = []
         debug_stats["structural_candidate_overlap_examples"] = _candidate_overlap_examples(
             structural_candidates
+        )
+        debug_stats["structural_candidate_competition_examples"] = (
+            _structural_candidate_competition_examples(structural_candidates)
+        )
+        debug_stats["structural_candidate_competition_group_count"] = (
+            _structural_candidate_competition_group_count(structural_candidates)
+        )
+        debug_stats["structural_candidate_competition_origin_counts"] = (
+            _structural_candidate_competition_origin_counts(structural_candidates)
+        )
+        debug_stats["structural_candidate_competition_intent_counts"] = (
+            _structural_candidate_competition_intent_counts(structural_candidates)
         )
         debug_stats["total_moves"] = len(all_candidates)
         debug_stats["total_candidates"] = len(all_candidates)
@@ -235,6 +424,7 @@ def generate_move_candidates(
             len(candidate.steps) for candidate in all_candidates
         )
         debug_stats["candidate_steps_by_kind"] = _candidate_steps_by_kind(all_candidates)
+        debug_stats["candidate_intent_counts"] = _candidate_intent_counts(all_candidates)
     return list(all_candidates)
 
 
@@ -245,6 +435,13 @@ def _trim_candidate_before_delayed_commitment(
     intent: StructuralIntent,
 ) -> MoveCandidate | None:
     if not intent.delayed_commitments:
+        return candidate
+    if candidate.origin == "route_release_frontier":
+        return candidate
+    if _work_position_free_fill_advances_delayed_order_prefix(
+        candidate,
+        intent=intent,
+    ):
         return candidate
     delayed_targets = {
         (delayed.vehicle_no, delayed.target_track)
@@ -301,6 +498,41 @@ def _trim_candidate_before_delayed_commitment(
         kept_steps.append(step)
         pending_attach = None
     return candidate
+
+
+def _work_position_free_fill_advances_delayed_order_prefix(
+    candidate: MoveCandidate,
+    *,
+    intent: StructuralIntent,
+) -> bool:
+    if candidate.reason != "work_position_free_fill":
+        return False
+    delayed_targets = {
+        (delayed.vehicle_no, delayed.target_track)
+        for delayed in intent.delayed_commitments
+    }
+    detach_steps = [step for step in candidate.steps if step.action_type == "DETACH"]
+    if not detach_steps:
+        return False
+    target_tracks = {step.target_track for step in detach_steps}
+    if len(target_tracks) != 1:
+        return False
+    target_track = next(iter(target_tracks))
+    order_debt = intent.order_debts_by_track.get(target_track)
+    if order_debt is None or not order_debt.pending_vehicle_nos:
+        return False
+    moved_vehicle_nos = [
+        vehicle_no
+        for step in detach_steps
+        for vehicle_no in step.vehicle_nos
+    ]
+    if not moved_vehicle_nos:
+        return False
+    if len(moved_vehicle_nos) <= 1:
+        return False
+    if any((vehicle_no, target_track) not in delayed_targets for vehicle_no in moved_vehicle_nos):
+        return False
+    return tuple(moved_vehicle_nos) == order_debt.pending_vehicle_nos[: len(moved_vehicle_nos)]
 
 
 def _primitive_move_soft_penalty(
@@ -497,6 +729,8 @@ def _generate_structural_candidates(
     debt_graph: DebtGraphView | None = None,
     debt_chain_summary: DebtChainSummary | None = None,
     allow_chain_macros: bool = True,
+    diagnosed_problems: tuple[ProblemDescriptor, ...] | None = None,
+    intent_requests: tuple[IntentRequest, ...] | None = None,
 ) -> tuple[MoveCandidate, ...]:
     if debt_graph is None:
         debt_graph = build_debt_graph(
@@ -515,104 +749,46 @@ def _generate_structural_candidates(
         (delayed.vehicle_no, delayed.target_track)
         for delayed in intent.delayed_commitments
     }
+    if diagnosed_problems is None:
+        diagnosed_problems = diagnose_problems(
+            intent=intent,
+            plan_input=plan_input,
+            state=state,
+            debt_chain_summary=debt_chain_summary,
+        )
+    if intent_requests is None:
+        intent_requests = enumerate_intent_requests(diagnosed_problems)
     candidates: list[MoveCandidate] = []
-    resource_candidates: list[MoveCandidate] = []
-    for cluster in _ordered_debt_clusters(intent):
-        target_track = cluster.track_name
-        debt = cluster.order_debt
-        if debt is not None:
-            candidate = _build_work_position_source_opening_candidate(
+    clusters_by_track = {
+        cluster.track_name: cluster for cluster in _ordered_debt_clusters(intent)
+    }
+    for request in intent_requests:
+        cluster = clusters_by_track.get(request.anchor_track)
+        if cluster is None:
+            continue
+        problem = _problem_for_intent_request(
+            request,
+            diagnosed_problems=diagnosed_problems,
+            cluster=cluster,
+        )
+        if problem is None:
+            continue
+        candidates.extend(
+            candidate
+            for candidate in build_candidates_for_intent_request(
+                request=request,
+                problem=problem,
                 plan_input=plan_input,
                 state=state,
                 route_oracle=route_oracle,
                 vehicle_by_no=vehicle_by_no,
                 track_by_vehicle=track_by_vehicle,
-                target_track=target_track,
-                pending_vehicle_nos=list(debt.pending_vehicle_nos),
-                blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-            )
-            if candidate is None:
-                candidate = _build_work_position_window_candidate(
-                    plan_input=plan_input,
-                    state=state,
-                    route_oracle=route_oracle,
-                    vehicle_by_no=vehicle_by_no,
-                    track_by_vehicle=track_by_vehicle,
-                    target_track=target_track,
-                    pending_vehicle_nos=list(debt.pending_vehicle_nos),
-                    blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-            )
-            if candidate is not None:
-                _append_generation_candidate(candidates, candidate)
-            front_candidate = _build_work_position_window_candidate(
-                plan_input=plan_input,
-                state=state,
-                route_oracle=route_oracle,
-                vehicle_by_no=vehicle_by_no,
-                track_by_vehicle=track_by_vehicle,
-                target_track=target_track,
-                pending_vehicle_nos=list(debt.pending_vehicle_nos),
-                blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
-                front_block_only=True,
-            )
-            if (
-                front_candidate is not None
-                and not _candidate_has_same_steps(front_candidate, candidate)
-            ):
-                _append_generation_candidate(candidates, front_candidate)
-            fill_candidate = _build_work_position_free_fill_candidate(
-                plan_input=plan_input,
-                state=state,
-                route_oracle=route_oracle,
-                vehicle_by_no=vehicle_by_no,
-                track_by_vehicle=track_by_vehicle,
-                target_track=target_track,
-                pending_vehicle_nos=list(debt.pending_vehicle_nos),
-            )
-            if fill_candidate is not None:
-                _append_generation_candidate(candidates, fill_candidate)
-        for debt in cluster.resource_debts:
-            if debt.kind == "ROUTE_RELEASE":
-                route_candidate = _build_route_release_frontier_candidate(
-                    plan_input=plan_input,
-                    state=state,
-                    route_oracle=route_oracle,
-                    vehicle_by_no=vehicle_by_no,
-                    debt=debt,
-                    delayed_target_pairs=delayed_target_pairs,
-                    buffer_leases=intent.buffer_leases,
-                )
-                if route_candidate is not None:
-                    _append_generation_candidate(resource_candidates, route_candidate)
-            if debt.kind == "FRONT_CLEARANCE":
-                frontier_candidate = _build_goal_frontier_source_opening_candidate(
-                    plan_input=plan_input,
-                    state=state,
-                    route_oracle=route_oracle,
-                    vehicle_by_no=vehicle_by_no,
-                    source_track=debt.track_name,
-                )
-                if frontier_candidate is not None:
-                    _append_generation_candidate(resource_candidates, frontier_candidate)
-                    continue
-            candidate = _build_resource_release_candidate(
-                plan_input=plan_input,
-                state=state,
-                route_oracle=route_oracle,
-                vehicle_by_no=vehicle_by_no,
-                debt=debt,
+                cluster=cluster,
+                intent=intent,
                 delayed_target_pairs=delayed_target_pairs,
-                buffer_leases=intent.buffer_leases,
             )
-            if candidate is not None:
-                _append_generation_candidate(
-                    resource_candidates,
-                    candidate,
-                    sibling_candidates=candidates,
-                )
-    resource_candidates = _budget_release_generation_candidates(resource_candidates)
-    ranked_release_candidates = _rank_release_structural_candidates(resource_candidates)
-    candidates.extend(ranked_release_candidates)
+            if _request_accepts_candidate(request, candidate)
+        )
     if allow_chain_macros:
         candidates.extend(
             _generate_chain_macro_candidates(
@@ -622,15 +798,27 @@ def _generate_structural_candidates(
                 route_oracle=route_oracle,
                 intent=intent,
                 debt_chain_summary=debt_chain_summary,
-                base_candidates=tuple((*candidates, *ranked_release_candidates)),
+                base_candidates=tuple(candidates),
                 vehicle_by_no=vehicle_by_no,
                 track_by_vehicle=track_by_vehicle,
                 delayed_target_pairs=delayed_target_pairs,
+                allowed_tracks={
+                    request.anchor_track
+                    for request in intent_requests
+                    if request.anchor_track
+                },
             )
         )
+    candidates = _select_intent_request_candidates(candidates, intent_requests=intent_requests)
+    ranked_candidates = _rank_release_structural_candidates(
+        _budget_release_generation_candidates(candidates)
+    )
     return _select_structural_candidates(
-        candidates,
-        limit=_structural_candidate_limit(debt_graph),
+        ranked_candidates,
+        limit=_structural_candidate_limit_for_intent_requests(
+            debt_graph,
+            intent_requests=intent_requests,
+        ),
         debt_chain_summary=debt_chain_summary,
     )
 
@@ -651,6 +839,1182 @@ def _ordered_debt_clusters(intent: StructuralIntent):
             ),
         )
     )
+
+
+def diagnose_problems(
+    *,
+    intent: StructuralIntent,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    debt_chain_summary: DebtChainSummary,
+) -> tuple[ProblemDescriptor, ...]:
+    problems: list[ProblemDescriptor] = []
+    clusters = _ordered_debt_clusters(intent)
+    for cluster in clusters:
+        cluster_pressure = float(getattr(cluster, "pressure", 0.0))
+        progress_value = _cluster_progress_value(
+            plan_input=plan_input,
+            state=state,
+            track_name=cluster.track_name,
+        )
+        legal_risk = _cluster_legal_risk(
+            plan_input=plan_input,
+            state=state,
+            track_name=cluster.track_name,
+        )
+        if cluster.order_debt is not None:
+            problems.append(
+                ProblemDescriptor(
+                    problem_type="SEQUENCE_ADVANCE",
+                    track_name=cluster.track_name,
+                    pressure=cluster_pressure + 18.0 + progress_value,
+                    goal_track=cluster.track_name,
+                    progress_value=progress_value,
+                    legal_risk=legal_risk,
+                    source_family="order_debt",
+                )
+            )
+        for debt in cluster.resource_debts:
+            debt_pressure = float(getattr(debt, "pressure", 0.0))
+            if debt.kind == "ROUTE_RELEASE":
+                problems.append(
+                    ProblemDescriptor(
+                        problem_type="DIRECT_GOAL_WINDOW",
+                        track_name=cluster.track_name,
+                        pressure=cluster_pressure + debt_pressure * 2.5 + progress_value,
+                        resource_kind=debt.kind,
+                        blocked_track=debt.track_name,
+                        progress_value=progress_value,
+                        legal_risk=legal_risk,
+                        source_family="route_release",
+                    )
+                )
+            elif debt.kind == "FRONT_CLEARANCE":
+                problems.append(
+                    ProblemDescriptor(
+                        problem_type="BLOCKER_RELEASE",
+                        track_name=cluster.track_name,
+                        pressure=cluster_pressure + debt_pressure + progress_value,
+                        resource_kind=debt.kind,
+                        blocked_track=debt.track_name,
+                        progress_value=progress_value,
+                        legal_risk=legal_risk,
+                        source_family="front_clearance",
+                    )
+                )
+            elif debt.kind == "CAPACITY_RELEASE":
+                problems.append(
+                    ProblemDescriptor(
+                        problem_type="CAPACITY_RELEASE",
+                        track_name=cluster.track_name,
+                        pressure=cluster_pressure + debt_pressure,
+                        resource_kind=debt.kind,
+                        blocked_track=debt.track_name,
+                        legal_risk=legal_risk,
+                        source_family="capacity_release",
+                    )
+                )
+    ranked = sorted(
+        problems,
+        key=lambda problem: (
+            0 if not problem.needs_staging_only else 1,
+            -problem.pressure,
+            {
+                "DIRECT_GOAL_WINDOW": 0,
+                "BLOCKER_RELEASE": 1,
+                "SEQUENCE_ADVANCE": 2,
+                "CAPACITY_RELEASE": 3,
+                "STAGING_NEED": 4,
+            }.get(problem.problem_type, 9),
+            problem.legal_risk,
+            problem.track_name,
+        ),
+    )
+    slot_order = (
+        "DIRECT_GOAL_WINDOW",
+        "BLOCKER_RELEASE",
+        "SEQUENCE_ADVANCE",
+        "CAPACITY_RELEASE",
+        "STAGING_NEED",
+    )
+    selected: list[ProblemDescriptor] = []
+    selected_keys: set[tuple[str, str, str]] = set()
+    for slot in slot_order:
+        for problem in ranked:
+            if problem.problem_type != slot:
+                continue
+            key = (problem.problem_type, problem.track_name, problem.anchor_track)
+            if key in selected_keys:
+                continue
+            selected.append(problem)
+            selected_keys.add(key)
+            break
+        if len(selected) >= 2:
+            break
+    if not selected:
+        return tuple(ranked[:1])
+    sequence_problem = next(
+        (problem for problem in ranked if problem.problem_type == "SEQUENCE_ADVANCE"),
+        None,
+    )
+    if sequence_problem is not None and all(
+        not (
+            problem.problem_type == "SEQUENCE_ADVANCE"
+            and problem.track_name == sequence_problem.track_name
+        )
+        for problem in selected
+    ):
+        selected.append(sequence_problem)
+    return tuple(selected[:2])
+
+
+def gate_problem_candidates(
+    problems: tuple[ProblemDescriptor, ...],
+    *,
+    active_problem_type: str = "",
+    active_problem_track: str = "",
+) -> GatedProblemSet:
+    if not problems:
+        return GatedProblemSet(primary_problem=None, secondary_problem=None)
+    primary = problems[0]
+    if active_problem_type and active_problem_track:
+        continued = next(
+            (
+                problem
+                for problem in problems
+                if problem.problem_type == active_problem_type
+                and problem.track_name == active_problem_track
+            ),
+            None,
+        )
+        if continued is not None:
+            primary = continued
+    secondary = None
+    for candidate in problems[1:]:
+        if candidate.problem_type == primary.problem_type and candidate.track_name == primary.track_name:
+            continue
+        secondary = candidate
+        break
+    if secondary is not None and secondary.problem_type == "STAGING_FALLBACK":
+        secondary = None
+    return GatedProblemSet(primary_problem=primary, secondary_problem=secondary)
+
+
+def problem_type_to_intent_type(problem_type: str) -> str:
+    return PROBLEM_TO_INTENT_TYPE.get(problem_type, "")
+
+
+def enumerate_intent_requests(
+    problems: tuple[ProblemDescriptor, ...],
+    *,
+    active_problem_type: str = "",
+    active_problem_track: str = "",
+) -> tuple[IntentRequest, ...]:
+    if not problems:
+        return ()
+    requests: list[IntentRequest] = []
+    seen: set[tuple[str, str, str]] = set()
+    for problem in problems:
+        business_target = problem.goal_track or problem.blocked_track or ""
+        for intent_type, stage, bonus in _intent_requests_for_problem(problem):
+            key = (intent_type, problem.track_name, business_target)
+            if key in seen:
+                continue
+            priority = problem.pressure + bonus
+            if (
+                problem.problem_type == active_problem_type
+                and problem.track_name == active_problem_track
+            ):
+                priority += 1000.0
+            requests.append(
+                IntentRequest(
+                    intent_type=intent_type,
+                    anchor_track=problem.track_name,
+                    business_target=business_target,
+                    priority=priority,
+                    source_problem_type=problem.problem_type,
+                    source_problem_track=problem.track_name,
+                    source_problem_stage=stage,
+                )
+            )
+            seen.add(key)
+    requests.sort(
+        key=lambda request: (
+            -request.priority,
+            INTENT_PRIORITY.get(request.intent_type, 99),
+            request.anchor_track,
+            request.business_target,
+        )
+    )
+    return tuple(requests[:4])
+
+
+def _intent_requests_for_problem(
+    problem: ProblemDescriptor,
+) -> tuple[tuple[str, str, float], ...]:
+    if problem.problem_type == "SEQUENCE_ADVANCE":
+        if is_work_position_track(problem.track_name):
+            return (("ADVANCE_WORK_SLOT", "work_slot_primary", 24.0),)
+        return (("ADVANCE_ORDER", "order_primary", 18.0),)
+    if problem.problem_type == "DIRECT_GOAL_WINDOW":
+        requests: list[tuple[str, str, float]] = [
+            ("OPEN_GOAL_ACCESS", "goal_access_primary", 16.0),
+            ("DELIVER", "deliver_backup", 6.0),
+        ]
+        if problem.pressure >= 80.0:
+            requests.append(("BREAK_CHAIN", "chain_pressure_backup", 4.0))
+        return tuple(requests)
+    if problem.problem_type == "BLOCKER_RELEASE":
+        requests: list[tuple[str, str, float]] = [
+            ("OPEN_SOURCE_ACCESS", "source_access_primary", 14.0),
+        ]
+        if problem.needs_staging_only:
+            requests.append(("BORROW_BUFFER", "staging_only_backup", 7.0))
+        if is_work_position_track(problem.track_name):
+            requests.append(("RESTORE", "work_slot_restore_backup", 2.0))
+        return tuple(requests)
+    if problem.problem_type == "CAPACITY_RELEASE":
+        requests = [("RELIEVE_CAPACITY", "capacity_primary", 12.0)]
+        if problem.pressure >= 70.0:
+            requests.append(("BORROW_BUFFER", "capacity_buffer_backup", 3.0))
+        return tuple(requests)
+    intent_type = problem_type_to_intent_type(problem.problem_type)
+    if not intent_type:
+        return ()
+    return ((intent_type, "primary", 0.0),)
+
+
+def _build_problem_primitive_candidates(
+    primitive_moves: list[HookAction],
+    *,
+    intent_requests: tuple[IntentRequest, ...],
+    gated_problem_set: GatedProblemSet,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle | None,
+) -> tuple[MoveCandidate, ...]:
+    if not intent_requests:
+        return tuple(
+            MoveCandidate(steps=(move,), kind="primitive")
+            for move in primitive_moves[:4]
+        )
+    selected: list[MoveCandidate] = []
+    used_signatures: set[tuple] = set()
+    problems_by_key = {
+        (problem_type_to_intent_type(problem.problem_type), problem.track_name): problem
+        for problem in (
+            gated_problem_set.primary_problem,
+            gated_problem_set.secondary_problem,
+        )
+        if problem is not None
+    }
+    for request in intent_requests:
+        problem = problems_by_key.get((request.intent_type, request.anchor_track))
+        if problem is None:
+            continue
+        matched = 0
+        for move in primitive_moves:
+            if not _primitive_matches_problem(
+                move,
+                problem=problem,
+                state=state,
+                plan_input=plan_input,
+            ):
+                continue
+            signature = (
+                move.action_type,
+                move.source_track,
+                move.target_track,
+                tuple(move.vehicle_nos),
+                tuple(move.path_tracks),
+            )
+            if signature in used_signatures:
+                continue
+            selected.append(
+                MoveCandidate(
+                    steps=(move,),
+                    kind="primitive",
+                    reason="primitive",
+                    focus_tracks=tuple(
+                        track
+                        for track in (problem.track_name, problem.blocked_track)
+                        if track
+                    ),
+                    intent_type=request.intent_type,
+                    intent_anchor=request.anchor_track,
+                    intent_target=request.business_target,
+                    staging_mode=_candidate_staging_mode_from_steps((move,)),
+                    problem_type=problem.problem_type,
+                    problem_track=problem.track_name,
+                    problem_stage="primitive_support",
+                    soft_penalty=6,
+                )
+            )
+            used_signatures.add(signature)
+            matched += 1
+            if matched >= 1:
+                break
+    if selected:
+        used_signatures.update(
+            (
+                candidate.steps[0].action_type,
+                candidate.steps[0].source_track,
+                candidate.steps[0].target_track,
+                tuple(candidate.steps[0].vehicle_nos),
+                tuple(candidate.steps[0].path_tracks),
+            )
+            for candidate in selected
+            if candidate.steps
+        )
+        for candidate in _build_global_signal_primitive_candidates(
+            primitive_moves,
+            state=state,
+            plan_input=plan_input,
+            route_oracle=route_oracle,
+            used_signatures=used_signatures,
+        ):
+            selected.append(candidate)
+        return tuple(selected)
+    fallback = _build_global_signal_primitive_candidates(
+        primitive_moves,
+        state=state,
+        plan_input=plan_input,
+        route_oracle=route_oracle,
+        used_signatures=set(),
+    )
+    if fallback:
+        return fallback
+    return tuple(
+        MoveCandidate(steps=(move,), kind="primitive", soft_penalty=10)
+        for move in primitive_moves[:2]
+    )
+
+
+def _build_global_signal_primitive_candidates(
+    primitive_moves: list[HookAction],
+    *,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle | None,
+    used_signatures: set[tuple],
+) -> tuple[MoveCandidate, ...]:
+    if route_oracle is None:
+        return ()
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    scored: list[tuple[int, int, MoveCandidate]] = []
+    for move in primitive_moves:
+        signature = (
+            move.action_type,
+            move.source_track,
+            move.target_track,
+            tuple(move.vehicle_nos),
+            tuple(move.path_tracks),
+        )
+        if signature in used_signatures:
+            continue
+        compiled = replay_candidate_steps(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            steps=[move],
+            route_oracle=route_oracle,
+        )
+        if compiled is None:
+            continue
+        signal = exact_spot_clearance_bonus(
+            plan_input=plan_input,
+            state=state,
+            move=move,
+            next_state=compiled.final_state,
+        ) + exact_spot_seeker_exposure_bonus(
+            plan_input=plan_input,
+            state=state,
+            move=move,
+            next_state=compiled.final_state,
+        )
+        if signal <= 0:
+            continue
+        scored.append(
+            (
+                -signal,
+                -len(move.vehicle_nos),
+                MoveCandidate(
+                    steps=(move,),
+                    kind="primitive",
+                    reason="primitive",
+                    focus_tracks=tuple(
+                        track for track in (move.source_track, move.target_track) if track
+                    ),
+                    problem_stage="global_exact_spot_signal",
+                    soft_penalty=2,
+                ),
+            )
+        )
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            item[1],
+            item[2].focus_tracks,
+        )
+    )
+    return tuple(candidate for *_prefix, candidate in scored[:2])
+
+
+def _primitive_matches_problem(
+    move: HookAction,
+    *,
+    problem: ProblemDescriptor,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> bool:
+    if problem.problem_type == "DIRECT_GOAL_WINDOW":
+        if move.source_track not in {problem.track_name, problem.blocked_track}:
+            return False
+        return move.target_track not in {problem.track_name, problem.blocked_track}
+    if problem.problem_type == "BLOCKER_RELEASE":
+        return move.source_track in {problem.track_name, problem.blocked_track}
+    if problem.problem_type == "SEQUENCE_ADVANCE":
+        return move.source_track == problem.track_name
+    if problem.problem_type == "CAPACITY_RELEASE":
+        return move.source_track == problem.track_name
+    return move.target_track in STAGING_TRACKS or move.source_track in STAGING_TRACKS
+
+
+def _request_accepts_candidate(
+    request: IntentRequest,
+    candidate: MoveCandidate,
+) -> bool:
+    origin = candidate.origin or candidate.reason
+    if request.intent_type == "BORROW_BUFFER":
+        return candidate.staging_mode == "USES_STAGING" or "stage" in origin or "frontier" in origin
+    if request.intent_type == "RESTORE":
+        return "restore" in origin or candidate.reason.startswith("work_position_")
+    if request.intent_type == "BREAK_CHAIN":
+        return origin.startswith("route_release_frontier") or origin.startswith("chain_macro_")
+    if request.intent_type == "DELIVER":
+        return origin.startswith("resource_release_direct_target") or origin.startswith("work_position_")
+    if request.intent_type == "OPEN_GOAL_ACCESS":
+        return not origin.startswith("chain_macro_")
+    if request.intent_type == "OPEN_SOURCE_ACCESS":
+        return not origin.startswith("route_release_frontier")
+    return True
+
+
+def _cluster_progress_value(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    track_name: str,
+) -> float:
+    sequence = list(state.track_sequences.get(track_name, ()))
+    if not sequence:
+        return 0.0
+    matched_prefix = 0
+    for vehicle_no in sequence:
+        vehicle = next((v for v in plan_input.vehicles if v.vehicle_no == vehicle_no), None)
+        if vehicle is None:
+            break
+        allowed = set(goal_effective_allowed_tracks(vehicle, state=state, plan_input=plan_input))
+        if track_name not in allowed:
+            break
+        matched_prefix += 1
+    return float(matched_prefix * 4)
+
+
+def _cluster_legal_risk(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    track_name: str,
+) -> float:
+    risk = 0.0
+    for vehicle_no in state.track_sequences.get(track_name, ()):
+        vehicle = next((v for v in plan_input.vehicles if v.vehicle_no == vehicle_no), None)
+        if vehicle is None:
+            continue
+        allowed = set(goal_effective_allowed_tracks(vehicle, state=state, plan_input=plan_input))
+        if track_name not in allowed:
+            risk += 1.0
+    return risk
+
+
+def build_candidates_for_problem(
+    *,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    track_by_vehicle: dict[str, str],
+    cluster: Any,
+    intent: StructuralIntent,
+    delayed_target_pairs: set[tuple[str, str]],
+) -> tuple[MoveCandidate, ...]:
+    request = IntentRequest(
+        intent_type=problem_type_to_intent_type(problem.problem_type),
+        anchor_track=problem.track_name,
+        business_target=problem.goal_track or problem.blocked_track or "",
+        priority=problem.pressure,
+        source_problem_type=problem.problem_type,
+        source_problem_track=problem.track_name,
+    )
+    return build_candidates_for_intent_request(
+        request=request,
+        problem=problem,
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        track_by_vehicle=track_by_vehicle,
+        cluster=cluster,
+        intent=intent,
+        delayed_target_pairs=delayed_target_pairs,
+    )
+
+
+def build_candidates_for_intent_request(
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    track_by_vehicle: dict[str, str],
+    cluster: Any,
+    intent: StructuralIntent,
+    delayed_target_pairs: set[tuple[str, str]],
+) -> tuple[MoveCandidate, ...]:
+    if request.intent_type in {"ADVANCE_ORDER", "ADVANCE_WORK_SLOT"}:
+        return _build_sequence_advance_candidates(
+            request=request,
+            problem=problem,
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            track_by_vehicle=track_by_vehicle,
+            cluster=cluster,
+        )
+    if request.intent_type == "RELIEVE_CAPACITY":
+        return _build_capacity_release_candidates(
+            request=request,
+            problem=problem,
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            cluster=cluster,
+            delayed_target_pairs=delayed_target_pairs,
+            intent=intent,
+        )
+    if request.intent_type in {"DELIVER", "OPEN_GOAL_ACCESS", "BREAK_CHAIN"}:
+        return _build_direct_goal_candidates(
+            request=request,
+            problem=problem,
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            cluster=cluster,
+            intent=intent,
+            delayed_target_pairs=delayed_target_pairs,
+        )
+    if request.intent_type in {"OPEN_SOURCE_ACCESS", "BORROW_BUFFER", "RESTORE"}:
+        return _build_blocker_clear_candidates(
+            request=request,
+            problem=problem,
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            cluster=cluster,
+            intent=intent,
+            delayed_target_pairs=delayed_target_pairs,
+        )
+    return ()
+
+
+def _problem_for_intent_request(
+    request: IntentRequest,
+    *,
+    diagnosed_problems: tuple[ProblemDescriptor, ...],
+    cluster: Any,
+) -> ProblemDescriptor | None:
+    for problem in diagnosed_problems:
+        if (
+            problem_type_to_intent_type(problem.problem_type) == request.intent_type
+            and problem.track_name == request.anchor_track
+        ):
+            return problem
+    fallback_problem_type = {
+        "DELIVER": "DIRECT_GOAL_WINDOW",
+        "OPEN_GOAL_ACCESS": "DIRECT_GOAL_WINDOW",
+        "BREAK_CHAIN": "DIRECT_GOAL_WINDOW",
+        "OPEN_SOURCE_ACCESS": "BLOCKER_RELEASE",
+        "BORROW_BUFFER": "BLOCKER_RELEASE",
+        "RESTORE": "BLOCKER_RELEASE",
+        "ADVANCE_ORDER": "SEQUENCE_ADVANCE",
+        "ADVANCE_WORK_SLOT": "SEQUENCE_ADVANCE",
+        "RELIEVE_CAPACITY": "CAPACITY_RELEASE",
+    }.get(request.intent_type, "")
+    if not fallback_problem_type:
+        return None
+    return ProblemDescriptor(
+        problem_type=fallback_problem_type,
+        track_name=request.anchor_track,
+        pressure=request.priority,
+        blocked_track=request.anchor_track,
+        goal_track=request.business_target,
+        source_family="intent_request",
+    )
+
+
+def _decorate_candidate_labels(
+    candidate: MoveCandidate | None,
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    stage: str,
+) -> MoveCandidate | None:
+    if candidate is None:
+        return None
+    business_target = request.business_target or _candidate_business_target(candidate)
+    return replace(
+        candidate,
+        intent_type=request.intent_type,
+        intent_anchor=request.anchor_track or candidate.problem_track,
+        intent_target=business_target,
+        staging_mode=_candidate_staging_mode_from_steps(candidate.steps),
+        problem_type=problem.problem_type,
+        problem_track=problem.track_name,
+        problem_stage=stage,
+    )
+
+
+def _candidate_is_same_intent(
+    first: MoveCandidate | None,
+    second: MoveCandidate | None,
+) -> bool:
+    if first is None or second is None:
+        return False
+    if tuple(first.focus_tracks) != tuple(second.focus_tracks):
+        return False
+    if first.reason != second.reason:
+        return False
+    first_targets = tuple(
+        (step.source_track, step.target_track, tuple(step.vehicle_nos))
+        for step in first.steps
+        if step.action_type == "DETACH"
+    )
+    second_targets = tuple(
+        (step.source_track, step.target_track, tuple(step.vehicle_nos))
+        for step in second.steps
+        if step.action_type == "DETACH"
+    )
+    return first_targets == second_targets
+
+
+def _candidate_business_target(candidate: MoveCandidate) -> str:
+    source_track = _candidate_primary_source_track(candidate)
+    if source_track is None:
+        return ""
+    targets = _candidate_business_target_tracks(candidate, source_track=source_track)
+    return targets[0] if targets else ""
+
+
+def _candidate_staging_mode_from_steps(
+    steps: tuple[HookAction, ...] | list[HookAction],
+) -> str:
+    return (
+        "USES_STAGING"
+        if any(
+            step.target_track in STAGING_TRACKS or step.source_track in STAGING_TRACKS
+            for step in steps
+        )
+        else "NONE"
+    )
+
+
+def _candidate_intent_signature(candidate: MoveCandidate) -> tuple[str, str, str, str]:
+    return (
+        candidate.intent_type or problem_type_to_intent_type(candidate.problem_type),
+        candidate.intent_anchor or candidate.problem_track or _candidate_primary_source_track(candidate) or "",
+        candidate.intent_target or _candidate_business_target(candidate),
+        candidate.staging_mode or _candidate_staging_mode_from_steps(candidate.steps),
+    )
+
+
+def _select_intent_request_candidates(
+    candidates: list[MoveCandidate],
+    *,
+    intent_requests: tuple[IntentRequest, ...],
+) -> list[MoveCandidate]:
+    if not candidates:
+        return []
+    best_by_signature: dict[tuple[str, str, str, str], MoveCandidate] = {}
+    backup_by_signature: dict[tuple[str, str, str, str], MoveCandidate] = {}
+    for candidate in candidates:
+        signature = _candidate_intent_signature(candidate)
+        current = best_by_signature.get(signature)
+        if current is None:
+            best_by_signature[signature] = candidate
+            continue
+        if _prefer_intent_signature_candidate(candidate, current):
+            backup_by_signature[signature] = current
+            best_by_signature[signature] = candidate
+        elif _prefer_intent_signature_candidate(
+            candidate,
+            backup_by_signature.get(signature),
+        ):
+            backup_by_signature[signature] = candidate
+    selected: list[MoveCandidate] = []
+    seen_steps: set[tuple] = set()
+    for request in intent_requests:
+        request_candidates: list[MoveCandidate] = []
+        for staging_mode in ("NONE", "USES_STAGING"):
+            signature = (
+                request.intent_type,
+                request.anchor_track,
+                request.business_target,
+                staging_mode,
+            )
+            current = best_by_signature.get(signature)
+            backup = backup_by_signature.get(signature)
+            if current is not None:
+                request_candidates.append(current)
+            if backup is not None:
+                request_candidates.append(backup)
+        if not request_candidates:
+            continue
+        request_candidates.sort(key=_intent_candidate_priority_key)
+        primary = request_candidates[0]
+        for candidate in (primary,):
+            step_signature = _candidate_step_signature(candidate)
+            if step_signature in seen_steps:
+                continue
+            seen_steps.add(step_signature)
+            selected.append(candidate)
+        for backup in request_candidates[1:]:
+            if _candidate_same_implementation_lane(primary, backup):
+                continue
+            step_signature = _candidate_step_signature(backup)
+            if step_signature in seen_steps:
+                continue
+            seen_steps.add(step_signature)
+            selected.append(backup)
+            break
+    return selected
+
+
+def _prefer_intent_signature_candidate(
+    candidate: MoveCandidate | None,
+    existing: MoveCandidate | None,
+) -> bool:
+    if candidate is None:
+        return False
+    if existing is None:
+        return True
+    return _intent_candidate_priority_key(candidate) < _intent_candidate_priority_key(existing)
+
+
+def _intent_candidate_priority_key(candidate: MoveCandidate) -> tuple[Any, ...]:
+    origin = candidate.origin or candidate.reason
+    return (
+        INTENT_PRIORITY.get(candidate.intent_type, 99),
+        _release_budget_origin_priority(origin),
+        0 if candidate.staging_mode == "NONE" else 1,
+        0 if candidate.reason.startswith("work_position_source_opening") else 1,
+        len(candidate.steps),
+        candidate.soft_penalty,
+        tuple(candidate.focus_tracks),
+        origin,
+    )
+
+
+def _candidate_same_implementation_lane(
+    first: MoveCandidate,
+    second: MoveCandidate,
+) -> bool:
+    return _candidate_lane(first) == _candidate_lane(second)
+
+
+def _candidate_lane(candidate: MoveCandidate) -> str:
+    origin = candidate.origin or candidate.reason
+    if origin.startswith("resource_release_direct_target"):
+        return "direct"
+    if origin.startswith("resource_release_stage_target"):
+        return "stage_target"
+    if origin.startswith("goal_frontier_source_opening"):
+        return "frontier_source"
+    if origin.startswith("route_release_frontier"):
+        return "frontier_route"
+    if origin.startswith("work_position_"):
+        return "work_position"
+    if origin.startswith("chain_macro_"):
+        return "chain_macro"
+    if candidate.kind == "primitive":
+        return "primitive"
+    return origin
+
+
+def _candidate_with_problem(
+    candidate: MoveCandidate | None,
+    *,
+    request: IntentRequest | None = None,
+    problem: ProblemDescriptor,
+    stage: str,
+) -> MoveCandidate | None:
+    if request is None:
+        request = IntentRequest(
+            intent_type=problem_type_to_intent_type(problem.problem_type),
+            anchor_track=problem.track_name,
+            business_target=problem.goal_track or problem.blocked_track or "",
+            priority=problem.pressure,
+            source_problem_type=problem.problem_type,
+            source_problem_track=problem.track_name,
+        )
+    return _decorate_candidate_labels(
+        candidate,
+        request=request,
+        problem=problem,
+        stage=stage,
+    )
+
+
+def _build_sequence_advance_candidates(
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    track_by_vehicle: dict[str, str],
+    cluster: Any,
+) -> tuple[MoveCandidate, ...]:
+    debt = cluster.order_debt
+    if debt is None:
+        return ()
+    candidates: list[MoveCandidate] = []
+    source_opening = _candidate_with_problem(
+        _build_work_position_source_opening_candidate(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        track_by_vehicle=track_by_vehicle,
+        target_track=cluster.track_name,
+        pending_vehicle_nos=list(debt.pending_vehicle_nos),
+        blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
+        ),
+        request=request,
+        problem=problem,
+        stage="sequence_primary",
+    )
+    if source_opening is not None:
+        _append_generation_candidate(candidates, source_opening)
+    for backup in (
+        _candidate_with_problem(
+            _build_work_position_window_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            track_by_vehicle=track_by_vehicle,
+            target_track=cluster.track_name,
+            pending_vehicle_nos=list(debt.pending_vehicle_nos),
+            blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
+            ),
+            request=request,
+            problem=problem,
+            stage="sequence_backup_window",
+        ),
+        _candidate_with_problem(
+            _build_work_position_window_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            track_by_vehicle=track_by_vehicle,
+            target_track=cluster.track_name,
+            pending_vehicle_nos=list(debt.pending_vehicle_nos),
+            blocking_prefix_vehicle_nos=list(debt.blocking_prefix_vehicle_nos),
+            front_block_only=True,
+            ),
+            request=request,
+            problem=problem,
+            stage="sequence_backup_front_window",
+        ),
+        _candidate_with_problem(
+            _build_work_position_free_fill_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            track_by_vehicle=track_by_vehicle,
+            target_track=cluster.track_name,
+            pending_vehicle_nos=list(debt.pending_vehicle_nos),
+            ),
+            request=request,
+            problem=problem,
+            stage="sequence_backup_fill",
+        ),
+    ):
+        if backup is None:
+            continue
+        if any(_candidate_is_same_intent(backup, existing) for existing in candidates):
+            continue
+        _append_generation_candidate(candidates, backup, sibling_candidates=candidates)
+    return tuple(candidates[:2])
+
+
+def _build_capacity_release_candidates(
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    cluster: Any,
+    delayed_target_pairs: set[tuple[str, str]],
+    intent: StructuralIntent,
+) -> tuple[MoveCandidate, ...]:
+    candidates: list[MoveCandidate] = []
+    primary = _candidate_with_problem(
+        _build_capacity_closure_primary_candidate(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        cluster=cluster,
+        delayed_target_pairs=delayed_target_pairs,
+        buffer_leases=intent.buffer_leases,
+        ),
+        request=request,
+        problem=problem,
+        stage="capacity_primary",
+    )
+    if primary is not None:
+        _append_generation_candidate(candidates, primary)
+    for debt in cluster.resource_debts:
+        if debt.kind != "CAPACITY_RELEASE":
+            continue
+        backup = _candidate_with_problem(
+            _build_resource_release_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            debt=debt,
+            delayed_target_pairs=delayed_target_pairs,
+            order_debts_by_track=getattr(intent, "order_debts_by_track", None),
+            buffer_leases=intent.buffer_leases,
+            ),
+            request=request,
+            problem=problem,
+            stage="capacity_backup_release",
+        )
+        if backup is not None and not any(
+            _candidate_is_same_intent(backup, existing) for existing in candidates
+        ):
+            _append_generation_candidate(candidates, backup, sibling_candidates=candidates)
+        break
+    return tuple(_rank_release_structural_candidates(_budget_release_generation_candidates(candidates))[:2])
+
+
+def _build_direct_goal_candidates(
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    cluster: Any,
+    intent: StructuralIntent,
+    delayed_target_pairs: set[tuple[str, str]],
+) -> tuple[MoveCandidate, ...]:
+    candidates: list[MoveCandidate] = []
+    for debt in cluster.resource_debts:
+        if debt.kind != "ROUTE_RELEASE":
+            continue
+        primary = _candidate_with_problem(
+            _build_resource_release_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            debt=debt,
+            delayed_target_pairs=delayed_target_pairs,
+            order_debts_by_track=getattr(intent, "order_debts_by_track", None),
+            buffer_leases=intent.buffer_leases,
+            ),
+            request=request,
+            problem=problem,
+            stage="goal_window_primary",
+        )
+        primary = _extend_same_track_structural_followup_candidate(
+            primary,
+            followup_kind="ROUTE_RELEASE",
+            request=request,
+            problem=problem,
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            delayed_target_pairs=delayed_target_pairs,
+            intent=intent,
+        )
+        if primary is not None and not any(
+            _candidate_is_same_intent(primary, existing) for existing in candidates
+        ):
+            _append_generation_candidate(
+                candidates,
+                primary,
+                sibling_candidates=candidates,
+            )
+        if not _direct_goal_primary_covers_source_opening(primary):
+            source_opening = _candidate_with_problem(
+                _build_goal_frontier_source_opening_candidate(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=problem.track_name,
+                ),
+                request=request,
+                problem=problem,
+                stage="goal_window_backup_frontier_source",
+            )
+            if source_opening is not None and not any(
+                _candidate_is_same_intent(source_opening, existing) for existing in candidates
+            ):
+                _append_generation_candidate(
+                    candidates,
+                    source_opening,
+                    sibling_candidates=candidates,
+                )
+        backup = _candidate_with_problem(
+            _build_route_release_frontier_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            debt=debt,
+            delayed_target_pairs=delayed_target_pairs,
+            buffer_leases=intent.buffer_leases,
+            ),
+            request=request,
+            problem=problem,
+            stage="goal_window_backup_frontier",
+        )
+        if backup is not None and not any(
+            _candidate_is_same_intent(backup, existing) for existing in candidates
+        ):
+            _append_generation_candidate(
+                candidates,
+                backup,
+                sibling_candidates=candidates,
+            )
+        break
+    return tuple(_rank_release_structural_candidates(_budget_release_generation_candidates(candidates))[:2])
+
+
+def _build_blocker_clear_candidates(
+    *,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    cluster: Any,
+    intent: StructuralIntent,
+    delayed_target_pairs: set[tuple[str, str]],
+) -> tuple[MoveCandidate, ...]:
+    candidates: list[MoveCandidate] = []
+    for debt in cluster.resource_debts:
+        if debt.kind != "FRONT_CLEARANCE":
+            continue
+        primary = _candidate_with_problem(
+            _build_resource_release_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            debt=debt,
+            delayed_target_pairs=delayed_target_pairs,
+            order_debts_by_track=getattr(intent, "order_debts_by_track", None),
+            buffer_leases=intent.buffer_leases,
+            ),
+            request=request,
+            problem=problem,
+            stage="blocker_primary",
+        )
+        if primary is not None and not any(
+            _candidate_is_same_intent(primary, existing) for existing in candidates
+        ):
+            _append_generation_candidate(
+                candidates,
+                primary,
+                sibling_candidates=candidates,
+            )
+        if not _blocker_primary_covers_source_opening(primary):
+            source_opening = _candidate_with_problem(
+                _build_goal_frontier_source_opening_candidate(
+                    plan_input=plan_input,
+                    state=state,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=problem.track_name,
+                ),
+                request=request,
+                problem=problem,
+                stage="blocker_backup_frontier_source",
+            )
+            if source_opening is not None and not any(
+                _candidate_is_same_intent(source_opening, existing) for existing in candidates
+            ):
+                _append_generation_candidate(
+                    candidates,
+                    source_opening,
+                    sibling_candidates=candidates,
+                )
+        break
+    return tuple(_rank_release_structural_candidates(_budget_release_generation_candidates(candidates))[:2])
+
+
+def _structural_candidates_by_problem(
+    candidates: tuple[MoveCandidate, ...],
+    *,
+    primary_problems: tuple[StructuralProblem, ...],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for problem in primary_problems:
+        problem_candidates = [
+            candidate
+            for candidate in candidates
+            if problem.track_name in candidate.focus_tracks
+        ]
+        rows.append(
+            {
+                "problem_type": problem.problem_type,
+                "track_name": problem.track_name,
+                "resource_kind": problem.resource_kind,
+                "candidate_count": len(problem_candidates),
+                "candidate_origins": [
+                    candidate.origin or candidate.reason or candidate.kind
+                    for candidate in problem_candidates[:8]
+                ],
+                "candidate_reasons": [
+                    candidate.reason
+                    for candidate in problem_candidates[:8]
+                ],
+            }
+        )
+    return rows
 
 
 def _build_route_release_frontier_candidate(
@@ -1025,14 +2389,11 @@ def _select_structural_candidates(
                 _structural_chain_slot(candidate, anchor_track=anchor_track),
             )
             current = chain_slot_candidates.get(slot_key)
-            if current is None or _structural_chain_candidate_priority(
-                candidate,
-                chain_index,
-                anchor_track,
-            ) < _structural_chain_candidate_priority(
-                current,
-                chain_index,
-                anchor_track,
+            if current is None or _prefer_slot_candidate_over_existing(
+                candidate=candidate,
+                existing=current,
+                chain_index=chain_index,
+                anchor_track=anchor_track,
             ):
                 chain_slot_candidates[slot_key] = candidate
 
@@ -1040,7 +2401,12 @@ def _select_structural_candidates(
         for chain in debt_chain_summary.chains:
             slot_candidates = [
                 chain_slot_candidates[(chain.track_names, slot_name)]
-                for slot_name in ("sequence", "anchor_release", "non_anchor_release")
+                for slot_name in (
+                    "sequence",
+                    "frontier_release",
+                    "anchor_release",
+                    "non_anchor_release",
+                )
                 if (chain.track_names, slot_name) in chain_slot_candidates
             ]
             slot_candidates.sort(
@@ -1156,7 +2522,21 @@ def _structural_candidate_limit(debt_graph: DebtGraphView | DebtChainSummary | N
     return 6
 
 
+def _structural_candidate_limit_for_intent_requests(
+    debt_graph: DebtGraphView | DebtChainSummary | None,
+    *,
+    intent_requests: tuple[IntentRequest, ...],
+) -> int:
+    if not intent_requests:
+        return 0
+    if len(intent_requests) <= 1:
+        return 3
+    return min(4, _structural_candidate_limit(debt_graph))
+
+
 def _structural_chain_slot(candidate: MoveCandidate, *, anchor_track: str) -> str:
+    if candidate.origin == "route_release_frontier":
+        return "frontier_release"
     if candidate.reason.startswith("work_position_") or candidate.reason.startswith("chain_macro_"):
         return "sequence"
     if anchor_track and anchor_track in candidate.focus_tracks:
@@ -1231,6 +2611,40 @@ def _structural_chain_candidate_priority(
     )
 
 
+def _prefer_slot_candidate_over_existing(
+    *,
+    candidate: MoveCandidate,
+    existing: MoveCandidate,
+    chain_index: int,
+    anchor_track: str,
+) -> bool:
+    candidate_is_direct_work = candidate.reason.startswith("work_position_")
+    existing_is_direct_work = existing.reason.startswith("work_position_")
+    candidate_is_macro = candidate.reason.startswith("chain_macro_")
+    existing_is_macro = existing.reason.startswith("chain_macro_")
+    if (
+        candidate_is_direct_work
+        and existing_is_macro
+        and tuple(candidate.focus_tracks) == tuple(existing.focus_tracks)
+    ):
+        return True
+    if (
+        existing_is_direct_work
+        and candidate_is_macro
+        and tuple(candidate.focus_tracks) == tuple(existing.focus_tracks)
+    ):
+        return False
+    return _structural_chain_candidate_priority(
+        candidate,
+        chain_index,
+        anchor_track,
+    ) < _structural_chain_candidate_priority(
+        existing,
+        chain_index,
+        anchor_track,
+    )
+
+
 def _generate_chain_macro_candidates(
     *,
     plan_input: NormalizedPlanInput,
@@ -1243,6 +2657,7 @@ def _generate_chain_macro_candidates(
     vehicle_by_no: dict[str, NormalizedVehicle],
     track_by_vehicle: dict[str, str],
     delayed_target_pairs: set[tuple[str, str]],
+    allowed_tracks: set[str] | None = None,
 ) -> tuple[MoveCandidate, ...]:
     if master is None or route_oracle is None:
         return ()
@@ -1252,6 +2667,9 @@ def _generate_chain_macro_candidates(
         key=lambda chain: (-chain.total_pressure, -len(chain.track_names), chain.anchor_track),
     )
     for chain in ranked_chains[:3]:
+        if allowed_tracks is not None and allowed_tracks:
+            if not set(chain.track_names).intersection(allowed_tracks):
+                continue
         chain_base_candidates = [
             candidate
             for candidate in base_candidates
@@ -1299,6 +2717,13 @@ def _generate_chain_macro_candidates(
                     seed=seed,
                     combined_steps=compiled.steps,
                 ),
+                intent_type=seed.intent_type,
+                intent_anchor=seed.intent_anchor,
+                intent_target=seed.intent_target,
+                staging_mode=_candidate_staging_mode_from_steps(compiled.steps),
+                problem_type=seed.problem_type,
+                problem_track=seed.problem_track,
+                problem_stage=seed.problem_stage,
                 structural_reserve=True,
             )
         )
@@ -1401,6 +2826,11 @@ def _macro_focus_tracks(
     )
     if compiled is None:
         return tuple(sorted(focus_tracks))
+    for step in combined_steps:
+        if step.source_track in chain_tracks:
+            focus_tracks.add(step.source_track)
+        if step.target_track in chain_tracks:
+            focus_tracks.add(step.target_track)
     next_intent = build_structural_intent(
         plan_input,
         compiled.final_state,
@@ -1517,6 +2947,8 @@ def _budget_release_generation_candidates(
     dispatch_slots: dict[tuple[str, tuple[str, ...]], MoveCandidate] = {}
     staging_slots: dict[str, MoveCandidate] = {}
     for candidate in candidates:
+        if _is_weak_release_generation_candidate(candidate, existing_candidates=candidates):
+            continue
         slot = _release_generation_slot(candidate)
         if slot is None:
             passthrough.append(candidate)
@@ -1543,13 +2975,73 @@ def _budget_release_generation_candidates(
     ]
 
 
+def _is_weak_release_generation_candidate(
+    candidate: MoveCandidate,
+    *,
+    existing_candidates: list[MoveCandidate],
+) -> bool:
+    origin = candidate.origin or candidate.reason
+    if origin == "goal_frontier_source_opening":
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track and any(
+            _candidate_primary_source_track(existing) == source_track
+            and _stronger_release_origin(existing) in {
+                "resource_release_gateway_clear_direct_target",
+                "resource_release_direct_target",
+                "resource_release_protected_prefix",
+            }
+            for existing in existing_candidates
+            if existing is not candidate
+        ):
+            return True
+    if origin == "resource_release_stage_target":
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track and any(
+            _candidate_primary_source_track(existing) == source_track
+            and _stronger_release_origin(existing) in {
+                "resource_release_gateway_clear_direct_target",
+                "resource_release_direct_target",
+                "resource_release_protected_prefix",
+                "goal_frontier_source_opening",
+                "route_release_frontier",
+            }
+            for existing in existing_candidates
+            if existing is not candidate
+        ):
+            return True
+    return False
+
+
+def _stronger_release_origin(candidate: MoveCandidate) -> str:
+    return candidate.origin or candidate.reason or candidate.kind
+
+
+def _direct_goal_primary_covers_source_opening(candidate: MoveCandidate | None) -> bool:
+    if candidate is None:
+        return False
+    return _stronger_release_origin(candidate) in {
+        "resource_release_gateway_clear_direct_target",
+        "resource_release_direct_target",
+        "resource_release_protected_prefix",
+    }
+
+
+def _blocker_primary_covers_source_opening(candidate: MoveCandidate | None) -> bool:
+    if candidate is None:
+        return False
+    return _stronger_release_origin(candidate) in {
+        "resource_release_gateway_clear_direct_target",
+        "resource_release_direct_target",
+        "resource_release_protected_prefix",
+    }
+
+
 def _release_generation_slot(
     candidate: MoveCandidate,
 ) -> tuple[str, Any] | None:
     origin = candidate.origin or candidate.reason
-    if origin == "route_release_frontier":
-        return None
     if origin not in {
+        "route_release_frontier",
         "goal_frontier_source_opening",
         "resource_release_direct_target",
         "resource_release_stage_target",
@@ -1598,9 +3090,10 @@ def _release_budget_origin_priority(origin: str) -> int:
         "resource_release_direct_target": 0,
         "resource_release_protected_prefix": 1,
         "goal_frontier_source_opening": 2,
-        "resource_release_dispatch": 3,
-        "resource_release_carried_prefix": 4,
-        "resource_release_stage_target": 5,
+        "route_release_frontier": 3,
+        "resource_release_dispatch": 4,
+        "resource_release_carried_prefix": 5,
+        "resource_release_stage_target": 6,
     }.get(origin, 9)
 
 
@@ -1753,6 +3246,7 @@ def _build_resource_release_candidate(
     vehicle_by_no: dict[str, NormalizedVehicle],
     debt: Any,
     delayed_target_pairs: set[tuple[str, str]] | None = None,
+    order_debts_by_track: dict[str, Any] | None = None,
     buffer_leases: tuple[BufferLease, ...] = (),
 ) -> MoveCandidate | None:
     if debt.kind not in {"ROUTE_RELEASE", "CAPACITY_RELEASE", "FRONT_CLEARANCE", "EXACT_SPOT_RELEASE"}:
@@ -1763,6 +3257,8 @@ def _build_resource_release_candidate(
     source_track = debt.track_name
     if list(state.track_sequences.get(source_track, []))[: len(block)] != block:
         return None
+    variants: list[MoveCandidate] = []
+
     candidate = _build_resource_release_dispatch_candidate(
         plan_input=plan_input,
         state=state,
@@ -1776,7 +3272,7 @@ def _build_resource_release_candidate(
         allow_carried_prefix=debt.kind != "ROUTE_RELEASE",
     )
     if candidate is not None:
-        return _with_candidate_origin(candidate, "resource_release_dispatch")
+        variants.append(_with_candidate_origin(candidate, "resource_release_dispatch"))
     if debt.kind == "CAPACITY_RELEASE":
         candidate = _build_protected_prefix_resource_release_candidate(
             plan_input=plan_input,
@@ -1789,7 +3285,24 @@ def _build_resource_release_candidate(
             buffer_leases=buffer_leases,
         )
         if candidate is not None:
-            return _with_candidate_origin(candidate, "resource_release_protected_prefix")
+            variants.append(
+                _with_candidate_origin(candidate, "resource_release_protected_prefix")
+            )
+    candidate = _build_resource_release_gateway_clear_direct_target_candidate(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        block=block,
+        source_track=source_track,
+    )
+    if candidate is not None:
+        variants.append(
+            _with_candidate_origin(
+                candidate,
+                "resource_release_gateway_clear_direct_target",
+            )
+        )
     target_tracks = _resource_release_target_tracks(
         plan_input=plan_input,
         state=state,
@@ -1797,6 +3310,7 @@ def _build_resource_release_candidate(
         block=block,
         source_track=source_track,
         delayed_target_pairs=delayed_target_pairs,
+        order_debts_by_track=order_debts_by_track,
     )
     staging_track = _best_staging_track(
         plan_input=plan_input,
@@ -1831,19 +3345,588 @@ def _build_resource_release_candidate(
         )
         if compiled is None or compiled.final_state.loco_carry:
             continue
-        return MoveCandidate(
-            steps=compiled.steps,
-            kind="structural",
-            reason="resource_release",
-            focus_tracks=(source_track,),
-            structural_reserve=True,
-            origin=(
-                "resource_release_direct_target"
-                if target_track not in STAGING_TRACKS
-                else "resource_release_stage_target"
-            ),
+        variants.append(
+            MoveCandidate(
+                steps=compiled.steps,
+                kind="structural",
+                reason="resource_release",
+                focus_tracks=(source_track,),
+                structural_reserve=True,
+                origin=(
+                    "resource_release_direct_target"
+                    if target_track not in STAGING_TRACKS
+                    else "resource_release_stage_target"
+                ),
+            )
         )
+    return _choose_best_resource_release_candidate(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        source_track=source_track,
+        block=block,
+        candidates=variants,
+    )
+
+
+def _extend_same_track_structural_followup_candidate(
+    candidate: MoveCandidate | None,
+    *,
+    followup_kind: str,
+    request: IntentRequest,
+    problem: ProblemDescriptor,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    delayed_target_pairs: set[tuple[str, str]],
+    intent: StructuralIntent,
+) -> MoveCandidate | None:
+    if candidate is None or not candidate.steps:
+        return candidate
+    if candidate.problem_type != "DIRECT_GOAL_WINDOW":
+        return candidate
+    if not _candidate_allows_direct_followup(candidate):
+        return candidate
+    compiled = _replay_noncarry_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=candidate.steps,
+        route_oracle=route_oracle,
+    )
+    if compiled is None:
+        return candidate
+    next_intent = build_structural_intent(
+        plan_input,
+        compiled.final_state,
+        route_oracle=route_oracle,
+    )
+    next_debt = next(
+        (
+            debt
+            for debt in next_intent.resource_debts
+            if debt.kind == followup_kind and debt.track_name == problem.track_name
+        ),
+        None,
+    )
+    if next_debt is None:
+        return candidate
+    followup = _build_resource_release_candidate(
+        plan_input=plan_input,
+        state=compiled.final_state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        debt=next_debt,
+        delayed_target_pairs=delayed_target_pairs,
+        order_debts_by_track=getattr(next_intent, "order_debts_by_track", None),
+        buffer_leases=next_intent.buffer_leases,
+    )
+    followup = _decorate_candidate_labels(
+        followup,
+        request=request,
+        problem=problem,
+        stage=f"{candidate.problem_stage or request.source_problem_stage}_followup",
+    )
+    if followup is None or not followup.steps:
+        return candidate
+    if len(followup.steps) != 1 or not _candidate_allows_direct_followup(followup):
+        return candidate
+    combined_steps = tuple(candidate.steps) + tuple(followup.steps)
+    if len(combined_steps) <= len(candidate.steps):
+        return candidate
+    combined = replace(
+        followup,
+        steps=combined_steps,
+        focus_tracks=tuple(dict.fromkeys((*candidate.focus_tracks, *followup.focus_tracks))),
+        structural_reserve=candidate.structural_reserve or followup.structural_reserve,
+        soft_penalty=min(candidate.soft_penalty, followup.soft_penalty),
+    )
+    if _candidate_followup_is_meaningful(
+        base_candidate=candidate,
+        combined_candidate=combined,
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        route_oracle=route_oracle,
+    ):
+        return combined
+    return candidate
+
+
+def _candidate_followup_is_meaningful(
+    *,
+    base_candidate: MoveCandidate,
+    combined_candidate: MoveCandidate,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    route_oracle: RouteOracle,
+) -> bool:
+    if len(combined_candidate.steps) <= len(base_candidate.steps):
+        return False
+    if any(
+        step.target_track in STAGING_TRACKS or step.source_track in STAGING_TRACKS
+        for step in combined_candidate.steps
+    ):
+        return False
+    base_compiled = _replay_noncarry_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=base_candidate.steps,
+        route_oracle=route_oracle,
+    )
+    combined_compiled = _replay_noncarry_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=combined_candidate.steps,
+        route_oracle=route_oracle,
+    )
+    if base_compiled is None or combined_compiled is None:
+        return False
+    before = compute_structural_metrics(plan_input, base_compiled.final_state)
+    after = compute_structural_metrics(plan_input, combined_compiled.final_state)
+    if after.loco_carry_count > before.loco_carry_count:
+        return False
+    return (
+        after.goal_track_blocker_count < before.goal_track_blocker_count
+        or after.front_blocker_count < before.front_blocker_count
+        or (
+            after.unfinished_count + 1 < before.unfinished_count
+            and after.capacity_overflow_track_count <= before.capacity_overflow_track_count
+        )
+    )
+
+
+def _candidate_allows_direct_followup(candidate: MoveCandidate) -> bool:
+    origin = candidate.origin or candidate.reason
+    if origin not in {
+        "resource_release_gateway_clear_direct_target",
+        "resource_release_direct_target",
+        "resource_release_protected_prefix",
+    }:
+        return False
+    source_track = _candidate_primary_source_track(candidate)
+    if source_track is None:
+        return False
+    target_tracks = _candidate_business_target_tracks(candidate, source_track=source_track)
+    return bool(target_tracks) and all(target_track not in STAGING_TRACKS for target_track in target_tracks)
+
+
+def _choose_best_resource_release_candidate(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    source_track: str,
+    block: list[str],
+    candidates: list[MoveCandidate],
+) -> MoveCandidate | None:
+    if not candidates:
+        return None
+    ranked: list[tuple[tuple[Any, ...], MoveCandidate]] = []
+    for candidate in candidates:
+        compiled = _replay_noncarry_steps(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            steps=candidate.steps,
+            route_oracle=route_oracle,
+        )
+        if compiled is None:
+            continue
+        ranked.append(
+            (
+                _resource_release_candidate_local_key(
+                    plan_input=plan_input,
+                    initial_state=state,
+                    final_state=compiled.final_state,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=source_track,
+                    block=block,
+                    candidate=candidate,
+                ),
+                candidate,
+            )
+        )
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0])
+    return ranked[0][1]
+
+
+def _resource_release_candidate_local_key(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    final_state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    source_track: str,
+    block: list[str],
+    candidate: MoveCandidate,
+) -> tuple[Any, ...]:
+    moved_vehicle_nos = {
+        vehicle_no
+        for step in candidate.steps
+        if step.action_type == "DETACH"
+        for vehicle_no in step.vehicle_nos
+    }
+    moved_count = len(moved_vehicle_nos)
+    satisfied_moved_count = 0
+    non_staging_goal_detach_count = 0
+    staging_detach_count = 0
+    for step in candidate.steps:
+        if step.action_type != "DETACH":
+            continue
+        if step.target_track in STAGING_TRACKS:
+            staging_detach_count += len(step.vehicle_nos)
+        else:
+            for vehicle_no in step.vehicle_nos:
+                vehicle = vehicle_by_no.get(vehicle_no)
+                if vehicle is None:
+                    continue
+                if goal_is_satisfied(
+                    vehicle,
+                    track_name=step.target_track,
+                    state=final_state,
+                    plan_input=plan_input,
+                ):
+                    satisfied_moved_count += 1
+                    non_staging_goal_detach_count += 1
+    initial_unsatisfied_in_block = sum(
+        1
+        for vehicle_no in block
+        if (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and not goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=initial_state,
+            plan_input=plan_input,
+        )
+    )
+    final_source_seq = list(final_state.track_sequences.get(source_track, []))
+    final_unsatisfied_prefix = 0
+    for vehicle_no in final_source_seq:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            break
+        if goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=final_state,
+            plan_input=plan_input,
+        ):
+            continue
+        final_unsatisfied_prefix += 1
+    origin = candidate.origin or candidate.reason or candidate.kind
+    return (
+        -non_staging_goal_detach_count,
+        -satisfied_moved_count,
+        -moved_count,
+        final_unsatisfied_prefix,
+        staging_detach_count,
+        _resource_release_local_origin_priority(origin),
+        len(candidate.steps),
+        -initial_unsatisfied_in_block,
+        tuple(candidate.focus_tracks),
+        origin,
+    )
+
+
+def _resource_release_local_origin_priority(origin: str) -> int:
+    return {
+        "resource_release_gateway_clear_direct_target": 0,
+        "resource_release_direct_target": 1,
+        "resource_release_protected_prefix": 2,
+        "resource_release_dispatch": 3,
+        "resource_release_carried_prefix": 4,
+        "resource_release_stage_target": 5,
+    }.get(origin, 9)
+
+
+def _build_capacity_closure_primary_candidate(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    cluster: Any,
+    delayed_target_pairs: set[tuple[str, str]] | None = None,
+    buffer_leases: tuple[BufferLease, ...] = (),
+) -> MoveCandidate | None:
+    ranked: list[tuple[tuple[Any, ...], MoveCandidate]] = []
+    for debt in cluster.resource_debts:
+        if debt.kind != "CAPACITY_RELEASE":
+            continue
+        candidate = _build_resource_release_candidate(
+            plan_input=plan_input,
+            state=state,
+            route_oracle=route_oracle,
+            vehicle_by_no=vehicle_by_no,
+            debt=debt,
+            delayed_target_pairs=delayed_target_pairs,
+            buffer_leases=buffer_leases,
+        )
+        if candidate is None:
+            continue
+        compiled = _replay_noncarry_steps(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            steps=candidate.steps,
+            route_oracle=route_oracle,
+        )
+        if compiled is None:
+            continue
+        ranked.append(
+            (
+                _capacity_closure_candidate_key(
+                    plan_input=plan_input,
+                    initial_state=state,
+                    final_state=compiled.final_state,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=debt.track_name,
+                    block=list(debt.vehicle_nos),
+                    candidate=candidate,
+                ),
+                candidate,
+            )
+        )
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[0])
+    best = ranked[0][1]
+    origin = best.origin or best.reason or best.kind
+    if origin not in {
+        "resource_release_gateway_clear_direct_target",
+        "resource_release_direct_target",
+        "resource_release_protected_prefix",
+    }:
+        return None
+    return best
+
+
+def _capacity_closure_candidate_key(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    final_state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    source_track: str,
+    block: list[str],
+    candidate: MoveCandidate,
+) -> tuple[Any, ...]:
+    origin = candidate.origin or candidate.reason or candidate.kind
+    return (
+        _capacity_closure_origin_priority(origin),
+        *_resource_release_candidate_local_key(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            final_state=final_state,
+            vehicle_by_no=vehicle_by_no,
+            source_track=source_track,
+            block=block,
+            candidate=candidate,
+        ),
+    )
+
+
+def _capacity_closure_origin_priority(origin: str) -> int:
+    return {
+        "resource_release_gateway_clear_direct_target": 0,
+        "resource_release_direct_target": 1,
+        "resource_release_protected_prefix": 2,
+        "resource_release_dispatch": 3,
+        "resource_release_carried_prefix": 4,
+        "resource_release_stage_target": 5,
+    }.get(origin, 9)
+
+
+def _build_resource_release_gateway_clear_direct_target_candidate(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    block: list[str],
+    source_track: str,
+) -> MoveCandidate | None:
+    target_track = _shared_single_allowed_target(
+        block=block,
+        source_track=source_track,
+        state=state,
+        plan_input=plan_input,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+    )
+    if target_track is None:
+        return None
+    if not _prefix_group_can_detach_to_target(
+        group=block,
+        target_track=target_track,
+        state=state,
+        plan_input=plan_input,
+        vehicle_by_no=vehicle_by_no,
+    ):
+        return None
+    source_node = _source_node_after_attach_for_block(
+        state=state,
+        route_oracle=route_oracle,
+        source_track=source_track,
+        block=block,
+    )
+    path_tracks = route_oracle.resolve_path_tracks_for_endpoint_constraints(
+        source_track,
+        target_track,
+        occupied_track_sequences=state.track_sequences,
+        source_node=source_node,
+        target_node=route_oracle.order_end_node(target_track),
+    )
+    if path_tracks is None:
+        return None
+    blocking_tracks = [
+        track_name
+        for track_name in path_tracks[1:-1]
+        if state.track_sequences.get(track_name)
+    ]
+    if len(blocking_tracks) != 1:
+        return None
+    clearance = _build_single_gateway_blocker_clearance(
+        plan_input=plan_input,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        blocker_track=blocking_tracks[0],
+        forbidden_targets={source_track, target_track},
+    )
+    if clearance is None:
+        return None
+    clearance_steps, cleared_state = clearance
+    direct_steps = _attach_detach_steps(
+        state=cleared_state,
+        route_oracle=route_oracle,
+        source_track=source_track,
+        target_track=target_track,
+        block=block,
+        action_source_track=source_track,
+    )
+    if direct_steps is None:
+        return None
+    compiled = replay_candidate_steps(
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=[*clearance_steps, *direct_steps],
+        route_oracle=route_oracle,
+    )
+    if compiled is None or compiled.final_state.loco_carry:
+        return None
+    if not all(
+        (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and goal_is_satisfied(
+            vehicle,
+            track_name=target_track,
+            state=compiled.final_state,
+            plan_input=plan_input,
+        )
+        for vehicle_no in block
+    ):
+        return None
+    return MoveCandidate(
+        steps=compiled.steps,
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=(source_track, target_track),
+        structural_reserve=True,
+        origin="resource_release_gateway_clear_direct_target",
+    )
+
+
+def _build_single_gateway_blocker_clearance(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    blocker_track: str,
+    forbidden_targets: set[str],
+) -> tuple[list[HookAction], ReplayState] | None:
+    blocker_seq = list(state.track_sequences.get(blocker_track, []))
+    if not blocker_seq:
+        return None
+    blocker_vehicle = vehicle_by_no.get(blocker_seq[0])
+    if blocker_vehicle is None:
+        return None
+    for target_track in blocker_vehicle.goal.allowed_target_tracks:
+        if target_track in forbidden_targets or target_track == blocker_track:
+            continue
+        steps = _attach_detach_steps(
+            state=state,
+            route_oracle=route_oracle,
+            source_track=blocker_track,
+            target_track=target_track,
+            block=[blocker_seq[0]],
+            action_source_track=blocker_track,
+        )
+        if steps is None:
+            continue
+        compiled = replay_candidate_steps(
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+            steps=steps,
+            route_oracle=route_oracle,
+        )
+        if compiled is None or compiled.final_state.loco_carry:
+            continue
+        return list(compiled.steps), compiled.final_state
     return None
+
+
+def _shared_single_allowed_target(
+    *,
+    block: list[str],
+    source_track: str,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    route_oracle: RouteOracle,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> str | None:
+    shared_target: str | None = None
+    for vehicle_no in block:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return None
+        effective_targets = [
+            target
+            for target in goal_effective_allowed_tracks(
+                vehicle,
+                state=state,
+                plan_input=plan_input,
+                route_oracle=route_oracle,
+            )
+            if target != source_track
+        ]
+        if len(effective_targets) != 1:
+            preferred_targets = [
+                target
+                for target in vehicle.goal.preferred_target_tracks
+                if target != source_track
+            ]
+            if len(preferred_targets) != 1:
+                return None
+            target_track = preferred_targets[0]
+        else:
+            target_track = effective_targets[0]
+        if shared_target is None:
+            shared_target = target_track
+        elif target_track != shared_target:
+            return None
+    return shared_target
 
 
 def _build_protected_prefix_resource_release_candidate(
@@ -2224,6 +4307,7 @@ def _build_resource_release_dispatch_candidate(
         route_oracle=route_oracle,
         vehicle_by_no=vehicle_by_no,
         groups=groups,
+        block=block,
         source_track=source_track,
         buffer_leases=buffer_leases,
         reason="resource_release",
@@ -2263,6 +4347,7 @@ def _build_route_release_dispatch_candidate(
         route_oracle=route_oracle,
         vehicle_by_no=vehicle_by_no,
         groups=groups,
+        block=block,
         source_track=source_track,
         buffer_leases=buffer_leases,
         reason="resource_release",
@@ -2279,6 +4364,7 @@ def _build_group_dispatch_candidate(
     route_oracle: RouteOracle,
     vehicle_by_no: dict[str, NormalizedVehicle],
     groups: list[tuple[str | None, list[str]]],
+    block: list[str],
     source_track: str,
     buffer_leases: tuple[BufferLease, ...] = (),
     reason: str,
@@ -2308,6 +4394,8 @@ def _build_group_dispatch_candidate(
     steps: list[HookAction] = []
     current_state = state
     forbidden_staging_tracks = {source_track}
+    best_prefix_candidate: MoveCandidate | None = None
+    best_prefix_key: tuple[Any, ...] | None = None
     for group_index, (preferred_target, group) in enumerate(groups):
         require_source_reaccess = group_index < len(groups) - 1 or _source_tail_after_group_needs_access(
             state=current_state,
@@ -2378,6 +4466,30 @@ def _build_group_dispatch_candidate(
             forbidden_staging_tracks.add(preferred_target)
         steps.extend(compiled.steps)
         current_state = compiled.final_state
+        if group_index >= 1:
+            prefix_candidate = MoveCandidate(
+                steps=tuple(steps),
+                kind="structural",
+                reason=reason,
+                focus_tracks=focus_tracks,
+                structural_reserve=True,
+                origin=reason,
+            )
+            if compiled.steps and compiled.steps[-1].target_track not in STAGING_TRACKS:
+                prefix_key = _group_dispatch_prefix_candidate_key(
+                    plan_input=plan_input,
+                    initial_state=state,
+                    final_state=current_state,
+                    vehicle_by_no=vehicle_by_no,
+                    source_track=source_track,
+                    block=block,
+                    candidate=prefix_candidate,
+                )
+                if best_prefix_key is None or prefix_key < best_prefix_key:
+                    best_prefix_key = prefix_key
+                    best_prefix_candidate = prefix_candidate
+    if best_prefix_candidate is not None:
+        return best_prefix_candidate
     if not steps:
         return None
     return MoveCandidate(
@@ -2387,6 +4499,75 @@ def _build_group_dispatch_candidate(
         focus_tracks=focus_tracks,
         structural_reserve=True,
         origin=reason,
+    )
+
+
+def _group_dispatch_prefix_candidate_key(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    final_state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    source_track: str,
+    block: list[str],
+    candidate: MoveCandidate,
+) -> tuple[Any, ...]:
+    staging_detach_count = 0
+    direct_goal_detach_count = 0
+    moved_count = 0
+    distinct_targets: set[str] = set()
+    for step in candidate.steps:
+        if step.action_type != "DETACH":
+            continue
+        moved_count += len(step.vehicle_nos)
+        distinct_targets.add(step.target_track)
+        if step.target_track in STAGING_TRACKS:
+            staging_detach_count += len(step.vehicle_nos)
+            continue
+        for vehicle_no in step.vehicle_nos:
+            vehicle = vehicle_by_no.get(vehicle_no)
+            if vehicle is None:
+                continue
+            if goal_is_satisfied(
+                vehicle,
+                track_name=step.target_track,
+                state=final_state,
+                plan_input=plan_input,
+            ):
+                direct_goal_detach_count += 1
+    final_source_seq = list(final_state.track_sequences.get(source_track, []))
+    final_unsatisfied_prefix = 0
+    for vehicle_no in final_source_seq:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            break
+        if goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=final_state,
+            plan_input=plan_input,
+        ):
+            continue
+        final_unsatisfied_prefix += 1
+    initial_unsatisfied_in_block = sum(
+        1
+        for vehicle_no in block
+        if (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and not goal_is_satisfied(
+            vehicle,
+            track_name=source_track,
+            state=initial_state,
+            plan_input=plan_input,
+        )
+    )
+    return (
+        staging_detach_count,
+        len(candidate.steps),
+        len(distinct_targets),
+        final_unsatisfied_prefix,
+        -direct_goal_detach_count,
+        -moved_count,
+        -initial_unsatisfied_in_block,
     )
 
 
@@ -2674,6 +4855,7 @@ def _resource_release_target_tracks(
     block: list[str],
     source_track: str,
     delayed_target_pairs: set[tuple[str, str]] | None = None,
+    order_debts_by_track: dict[str, Any] | None = None,
 ) -> list[str]:
     delayed_target_pairs = delayed_target_pairs or set()
     targets: list[str] = []
@@ -2685,7 +4867,18 @@ def _resource_release_target_tracks(
             if (
                 target_track == source_track
                 or target_track in targets
-                or (vehicle_no, target_track) in delayed_target_pairs
+                or (
+                    (vehicle_no, target_track) in delayed_target_pairs
+                    and not _delayed_target_block_can_advance_order_prefix(
+                        plan_input=plan_input,
+                        state=state,
+                        vehicle_by_no=vehicle_by_no,
+                        block=block,
+                        target_track=target_track,
+                        delayed_target_pairs=delayed_target_pairs,
+                        order_debts_by_track=order_debts_by_track,
+                    )
+                )
             ):
                 continue
             targets.append(target_track)
@@ -2706,6 +4899,40 @@ def _resource_release_target_tracks(
         ):
             compatible.append(target_track)
     return compatible
+
+
+def _delayed_target_block_can_advance_order_prefix(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+    block: list[str],
+    target_track: str,
+    delayed_target_pairs: set[tuple[str, str]] | None,
+    order_debts_by_track: dict[str, Any] | None,
+) -> bool:
+    if not delayed_target_pairs or not order_debts_by_track:
+        return False
+    order_debt = order_debts_by_track.get(target_track)
+    if order_debt is None:
+        return False
+    if any((vehicle_no, target_track) not in delayed_target_pairs for vehicle_no in block):
+        return False
+    preview_state = state.model_copy(deep=True)
+    preview_state.track_sequences[target_track] = [
+        *block,
+        *preview_state.track_sequences.get(target_track, []),
+    ]
+    return all(
+        (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and goal_is_satisfied(
+            vehicle,
+            track_name=target_track,
+            state=preview_state,
+            plan_input=plan_input,
+        )
+        for vehicle_no in block
+    )
 
 
 def _build_work_position_window_candidate(
@@ -3305,7 +5532,7 @@ def _build_staged_prefix_work_position_candidate(
     transfer_block: list[str],
     blocking_prefix: list[str],
 ) -> MoveCandidate | None:
-    if blocking_prefix or not protected_prefix or not transfer_block:
+    if not protected_prefix or not transfer_block:
         return None
     if not all(
         (vehicle := vehicle_by_no.get(vehicle_no)) is not None
@@ -3327,6 +5554,7 @@ def _build_staged_prefix_work_position_candidate(
         target_track=target_track,
         protected_prefix=protected_prefix,
         transfer_block=transfer_block,
+        blocking_prefix=blocking_prefix,
         allow_split_prefix=False,
     )
     if candidate is not None:
@@ -3340,6 +5568,7 @@ def _build_staged_prefix_work_position_candidate(
         target_track=target_track,
         protected_prefix=protected_prefix,
         transfer_block=transfer_block,
+        blocking_prefix=blocking_prefix,
         allow_split_prefix=True,
     )
     return _with_candidate_origin(candidate, "work_position_source_opening_staged_split_prefix")
@@ -3355,6 +5584,7 @@ def _compile_staged_prefix_work_position_candidate(
     target_track: str,
     protected_prefix: list[str],
     transfer_block: list[str],
+    blocking_prefix: list[str],
     allow_split_prefix: bool,
 ) -> MoveCandidate | None:
     steps: list[HookAction] = []
@@ -3362,6 +5592,20 @@ def _compile_staged_prefix_work_position_candidate(
     staged_chunks: list[tuple[str, list[str]]] = []
     remaining_prefix = list(protected_prefix)
     forbidden_tracks = {source_track, target_track}
+
+    if blocking_prefix:
+        clear_steps, current_state = _compile_prefix_clearance_steps(
+            plan_input=plan_input,
+            state=current_state,
+            route_oracle=route_oracle,
+            source_track=target_track,
+            vehicle_by_no=vehicle_by_no,
+            block=blocking_prefix,
+            forbidden_tracks=forbidden_tracks,
+        )
+        if clear_steps is None:
+            return None
+        steps.extend(clear_steps)
 
     while remaining_prefix:
         chunk_plan = _next_prefix_staging_chunk(
@@ -4618,6 +6862,9 @@ def _append_generation_candidate(
     *,
     sibling_candidates: list[MoveCandidate] | None = None,
 ) -> None:
+    if candidate.origin == "route_release_frontier":
+        collection.append(candidate)
+        return
     existing_candidates = list(collection)
     if sibling_candidates is not None:
         existing_candidates.extend(sibling_candidates)
@@ -4647,7 +6894,29 @@ def _prefer_existing_generation_candidate(
     return (existing_origin, candidate_origin) in {
         ("goal_frontier_source_opening", "resource_release_dispatch"),
         ("work_position_free_fill", "resource_release_direct_target"),
+        ("work_position_source_opening", "goal_frontier_source_opening"),
     }
+
+
+def _work_position_front_window_is_redundant(
+    *,
+    front_candidate: MoveCandidate,
+    base_candidate: MoveCandidate | None,
+) -> bool:
+    if _candidate_has_same_steps(front_candidate, base_candidate):
+        return True
+    if base_candidate is None:
+        return False
+    base_origin = base_candidate.origin or base_candidate.reason
+    front_origin = front_candidate.origin or front_candidate.reason
+    if front_origin != "work_position_window_front_block":
+        return False
+    if not base_origin.startswith("work_position_"):
+        return False
+    return (
+        tuple(front_candidate.focus_tracks) == tuple(base_candidate.focus_tracks)
+        and len(front_candidate.steps) >= len(base_candidate.steps)
+    )
 
 
 def _candidate_has_same_steps(
@@ -4677,6 +6946,121 @@ def _candidate_origin_counts(candidates: tuple[MoveCandidate, ...]) -> dict[str,
         candidate.origin or candidate.reason or candidate.kind
         for candidate in candidates
     )
+    return dict(counter.most_common())
+
+
+def _candidate_intent_counts(
+    candidates: tuple[MoveCandidate, ...] | list[MoveCandidate],
+) -> dict[str, int]:
+    counter = Counter(
+        candidate.intent_type or "UNCLASSIFIED"
+        for candidate in candidates
+    )
+    return dict(counter.most_common())
+
+
+def _structural_candidate_competition_examples(
+    candidates: tuple[MoveCandidate, ...],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, tuple[str, ...]], list[MoveCandidate]] = {}
+    for candidate in candidates:
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track is None:
+            continue
+        target_tracks = _candidate_business_target_tracks(
+            candidate,
+            source_track=source_track,
+        )
+        key = (source_track, target_tracks)
+        grouped.setdefault(key, []).append(candidate)
+    examples: list[dict[str, Any]] = []
+    for (source_track, target_tracks), group in grouped.items():
+        origins = sorted(
+            {
+                candidate.origin or candidate.reason or candidate.kind
+                for candidate in group
+            }
+        )
+        if len(origins) <= 1:
+            continue
+        examples.append(
+            {
+                "source_track": source_track,
+                "target_tracks": list(target_tracks),
+                "candidate_count": len(group),
+                "origins": origins,
+            }
+        )
+    examples.sort(
+        key=lambda item: (-item["candidate_count"], item["source_track"], item["origins"])
+    )
+    return examples[:24]
+
+
+def _structural_candidate_competition_group_count(
+    candidates: tuple[MoveCandidate, ...],
+) -> int:
+    count = 0
+    grouped: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for candidate in candidates:
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track is None:
+            continue
+        target_tracks = _candidate_business_target_tracks(
+            candidate,
+            source_track=source_track,
+        )
+        key = (source_track, target_tracks)
+        grouped.setdefault(key, set()).add(candidate.origin or candidate.reason or candidate.kind)
+    for origins in grouped.values():
+        if len(origins) > 1:
+            count += 1
+    return count
+
+
+def _structural_candidate_competition_origin_counts(
+    candidates: tuple[MoveCandidate, ...],
+) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    grouped: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for candidate in candidates:
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track is None:
+            continue
+        target_tracks = _candidate_business_target_tracks(
+            candidate,
+            source_track=source_track,
+        )
+        key = (source_track, target_tracks)
+        grouped.setdefault(key, set()).add(candidate.origin or candidate.reason or candidate.kind)
+    for origins in grouped.values():
+        if len(origins) <= 1:
+            continue
+        for origin in origins:
+            counter[origin] += 1
+    return dict(counter.most_common())
+
+
+def _structural_candidate_competition_intent_counts(
+    candidates: tuple[MoveCandidate, ...],
+) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    grouped: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for candidate in candidates:
+        source_track = _candidate_primary_source_track(candidate)
+        if source_track is None:
+            continue
+        target_tracks = _candidate_business_target_tracks(
+            candidate,
+            source_track=source_track,
+        )
+        key = (source_track, target_tracks)
+        grouped.setdefault(key, set()).add(candidate.intent_type or "UNCLASSIFIED")
+    for intents in grouped.values():
+        if len(intents) <= 1:
+            continue
+        for intent_type in intents:
+            counter[intent_type] += 1
     return dict(counter.most_common())
 
 
@@ -4733,6 +7117,7 @@ def _candidate_search_sort_key(
     intent: StructuralIntent | None = None,
 ) -> tuple:
     kind_priority = 0 if candidate.kind == "structural" else 1
+    intent_priority = INTENT_PRIORITY.get(candidate.intent_type, 99)
     if candidate.reason.startswith("work_position_"):
         reason_priority = 0
     elif candidate.reason.startswith("chain_macro_"):
@@ -4756,8 +7141,12 @@ def _candidate_search_sort_key(
     )
     return (
         kind_priority,
+        intent_priority,
+        0 if candidate.problem_stage.endswith("primary") else 1,
         reason_priority,
         candidate.soft_penalty,
+        _candidate_goal_progress_penalty(candidate),
+        _candidate_staging_only_penalty(candidate),
         len(candidate.steps),
         tuple(candidate.focus_tracks),
         0 if candidate.structural_reserve else 1,
@@ -4786,7 +7175,12 @@ def _candidate_task_queue_priority(
         chain_index,
         role_priority,
         0 if anchor_track in candidate.focus_tracks else 1,
-        0 if candidate.reason.startswith("work_position_") else 1,
+        0
+        if (
+            candidate.reason.startswith("work_position_")
+            or candidate.origin in {"route_release_frontier", "resource_release_direct_target"}
+        )
+        else 1,
         tuple(candidate.focus_tracks),
     )
 
@@ -4812,4 +7206,26 @@ def _candidate_cache_role_priority(
         return 2
     if "SOURCE_REMAINDER" in roles:
         return 3
+    return 4
+
+
+def _candidate_goal_progress_penalty(candidate: MoveCandidate) -> int:
+    detach_steps = [step for step in candidate.steps if step.action_type == "DETACH"]
+    if not detach_steps:
+        return 3
+    if any(step.target_track not in STAGING_TRACKS for step in detach_steps):
+        return 0
+    return 2
+
+
+def _candidate_staging_only_penalty(candidate: MoveCandidate) -> int:
+    detach_steps = [step for step in candidate.steps if step.action_type == "DETACH"]
+    if not detach_steps:
+        return 0
+    staging_targets = sum(1 for step in detach_steps if step.target_track in STAGING_TRACKS)
+    business_targets = len(detach_steps) - staging_targets
+    if business_targets > 0:
+        return 0
+    if candidate.origin == "route_release_frontier":
+        return 1
     return 4

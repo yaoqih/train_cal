@@ -141,6 +141,8 @@ def build_demo_view_model(
     time_budget_ms: float | None = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS),
     compare_external_plan: bool = False,
     initial_state_override: ReplayState | None = None,
+    use_validation_recovery: bool = True,
+    diagnose_front_search_only: bool = False,
 ) -> DemoViewModel:
     normalized = normalize_plan_input(
         payload,
@@ -161,6 +163,8 @@ def build_demo_view_model(
         heuristic_weight=heuristic_weight,
         beam_width=beam_width,
         time_budget_ms=time_budget_ms,
+        use_validation_recovery=use_validation_recovery,
+        diagnose_front_search_only=diagnose_front_search_only,
     )
     hook_plan = [DemoHook.model_validate(item) for item in raw_hook_plan]
     replay = replay_plan(
@@ -294,6 +298,8 @@ def build_demo_workflow_view_model(
     heuristic_weight: float = 1.0,
     beam_width: int | None = VALIDATION_DEFAULT_BEAM_WIDTH,
     time_budget_ms: float | None = validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS),
+    use_validation_recovery: bool = True,
+    diagnose_front_search_only: bool = False,
 ) -> DemoWorkflowViewModel:
     from fzed_shunting.workflow.runner import solve_workflow
 
@@ -305,6 +311,8 @@ def build_demo_workflow_view_model(
             heuristic_weight=heuristic_weight,
             beam_width=beam_width,
             time_budget_ms=time_budget_ms,
+            use_validation_recovery=use_validation_recovery,
+            diagnose_front_search_only=diagnose_front_search_only,
         )
     )
 
@@ -321,24 +329,42 @@ def _resolve_hook_plan(
     heuristic_weight: float,
     beam_width: int | None,
     time_budget_ms: float | None = None,
+    use_validation_recovery: bool = True,
+    diagnose_front_search_only: bool = False,
 ) -> list[dict]:
     if plan_payload is None:
-        result = solve_with_validation_recovery_result(
-            normalized,
-            initial,
-            master=master,
-            solver_mode=solver,
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width,
-            time_budget_ms=time_budget_ms,
-            enable_depot_late_scheduling=False,
-            solve_result_fn=solve_with_simple_astar_result,
-            improve_pathological_success=True,
-        )
-        if not result.is_complete:
-            raise ValueError(
-                "No complete solver plan found within validation-profile recovery"
+        if use_validation_recovery:
+            result = solve_with_validation_recovery_result(
+                normalized,
+                initial,
+                master=master,
+                solver_mode=solver,
+                heuristic_weight=heuristic_weight,
+                beam_width=beam_width,
+                time_budget_ms=time_budget_ms,
+                enable_depot_late_scheduling=False,
+                solve_result_fn=solve_with_simple_astar_result,
+                improve_pathological_success=True,
             )
+        else:
+            result = solve_with_simple_astar_result(
+                normalized,
+                initial,
+                master=master,
+                solver_mode=solver,
+                heuristic_weight=heuristic_weight,
+                beam_width=beam_width,
+                time_budget_ms=time_budget_ms,
+                enable_anytime_fallback=False,
+                enable_depot_late_scheduling=False,
+                diagnose_front_search_only=diagnose_front_search_only,
+            )
+        if not result.is_complete:
+            if use_validation_recovery:
+                raise ValueError(
+                    "No complete solver plan found within validation-profile recovery"
+                )
+            raise ValueError("No complete solver plan found in front-search-only mode")
         return [
             _build_demo_hook(
                 idx,

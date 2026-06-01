@@ -41,7 +41,7 @@ def test_physical_route_lengths_follow_business_appendix_without_overwriting_tra
     master = load_master_data(DATA_DIR)
 
     assert master.physical_routes["L9-油漆尽头"].status == "已确认"
-    assert master.physical_routes["大门L1"].total_length_m == 68.0
+    assert master.physical_routes["大门L1"].total_length_m == 193.0
     assert master.physical_routes["大门L1"].left_node == "5号门"
     assert master.physical_routes["L9-油漆尽头"].total_length_m == 209.0
     assert master.physical_routes["L15-抛丸尽头"].status == "已确认"

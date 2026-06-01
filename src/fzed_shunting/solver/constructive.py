@@ -424,13 +424,19 @@ def _greedy_forward(
         structural_metrics = compute_structural_metrics(plan_input, state)
         use_structural_candidates = (
             route_release_bias
-            or _has_order_sequence_pressure(
+            or _has_structural_pressure(
                 plan_input=plan_input,
                 state=state,
                 route_oracle=route_oracle,
                 structural_metrics=structural_metrics,
             )
         )
+        if use_structural_candidates:
+            stats["structural_gate_open_steps"] = stats.get("structural_gate_open_steps", 0) + 1
+        else:
+            stats["structural_gate_closed_steps"] = (
+                stats.get("structural_gate_closed_steps", 0) + 1
+            )
         if use_structural_candidates:
             move_stats: dict[str, Any] = {}
             candidates = generate_move_candidates(
@@ -440,6 +446,10 @@ def _greedy_forward(
                 route_oracle=route_oracle,
                 debug_stats=move_stats,
             )
+            if move_stats.get("structural_intent_candidate_count", 0) > 0:
+                stats["structural_candidates_available_steps"] = (
+                    stats.get("structural_candidates_available_steps", 0) + 1
+                )
         else:
             candidates = [
                 MoveCandidate(steps=(move,), kind="primitive")
@@ -587,6 +597,13 @@ def _greedy_forward(
             stats[f"structural_{chosen_candidate.reason}"] = (
                 stats.get(f"structural_{chosen_candidate.reason}", 0) + 1
             )
+        chosen_origin = chosen_candidate.origin or chosen_candidate.reason or chosen_candidate.kind
+        origin_counts = stats.setdefault("selected_candidate_origin_counts", {})
+        origin_counts[chosen_origin] = origin_counts.get(chosen_origin, 0) + 1
+        origin_step_counts = stats.setdefault("selected_candidate_step_count_by_origin", {})
+        origin_step_counts[chosen_origin] = (
+            origin_step_counts.get(chosen_origin, 0) + len(chosen_candidate.steps)
+        )
         if len(chosen_candidate.steps) > 1:
             stats["multi_step_candidate_decisions"] = (
                 stats.get("multi_step_candidate_decisions", 0) + 1
@@ -599,6 +616,7 @@ def _greedy_forward(
                     "tier": chosen_tier,
                     "kind": chosen_candidate.kind,
                     "reason": chosen_candidate.reason,
+                    "origin": chosen_origin,
                     "focus_tracks": list(chosen_candidate.focus_tracks),
                     "step_count": len(chosen_candidate.steps),
                     "score": repr(chosen_score),
@@ -742,7 +760,7 @@ def _progress_score(
     )
 
 
-def _has_order_sequence_pressure(
+def _has_structural_pressure(
     *,
     plan_input: NormalizedPlanInput,
     state: ReplayState,
@@ -751,8 +769,6 @@ def _has_order_sequence_pressure(
 ) -> bool:
     if structural_metrics.target_sequence_defect_count > 0:
         return True
-    if not structural_metrics.target_sequence_defect_by_track:
-        return False
     intent = build_structural_intent(
         plan_input,
         state,
@@ -761,6 +777,14 @@ def _has_order_sequence_pressure(
     if intent.delayed_commitments:
         return True
     if intent.buffer_leases:
+        return True
+    if any(intent.debt_clusters_by_track.values()):
+        return True
+    if any(
+        debt.kind in {"CAPACITY_RELEASE", "ROUTE_RELEASE", "FRONT_CLEARANCE"}
+        and (debt.pressure > 0 or debt.vehicle_nos or debt.blocked_vehicle_nos)
+        for debt in intent.resource_debts
+    ):
         return True
     return any(
         debt.defect_count > 0 or bool(debt.blocking_prefix_vehicle_nos)

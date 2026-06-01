@@ -314,3 +314,108 @@ def test_random_depot_vehicle_on_initial_reserved_exact_spot_is_still_satisfied(
         state=state,
         plan_input=normalized,
     )
+
+
+def test_random_depot_single_vehicle_prefers_inner_spot_for_factory_repair():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "FACTORY",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SECTION",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    vehicles = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    factory_allocated = allocate_spots_for_block(
+        vehicles=[vehicles["FACTORY"]],
+        target_track="修1",
+        yard_mode=normalized.yard_mode,
+        occupied_spot_assignments={},
+    )
+    section_allocated = allocate_spots_for_block(
+        vehicles=[vehicles["SECTION"]],
+        target_track="修1",
+        yard_mode=normalized.yard_mode,
+        occupied_spot_assignments={},
+    )
+
+    assert factory_allocated == {"FACTORY": "105"}
+    assert section_allocated == {"SECTION": "101"}
+
+
+def test_random_depot_mixed_allocation_keeps_factory_on_inner_spot():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "修3", "trackDistance": 151.7},
+            {"trackName": "修4", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "SECTION",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "FACTORY",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetTrack": "大库",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+    vehicles = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    allocated = allocate_spots_for_block(
+        vehicles=[vehicles["SECTION"], vehicles["FACTORY"]],
+        target_track="修1",
+        yard_mode=normalized.yard_mode,
+        occupied_spot_assignments={},
+    )
+
+    assert allocated == {"SECTION": "101", "FACTORY": "105"}

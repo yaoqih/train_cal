@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from fzed_shunting.domain.master_data import load_master_data
-from fzed_shunting.workflow.runner import solve_workflow
+from fzed_shunting.workflow.runner import WorkflowStageFailure, solve_workflow
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -115,6 +116,459 @@ def test_solve_workflow_supports_outer_depot_random_stage():
     assert final_tracks[0] in {"修1库外", "修2库外", "修3库外", "修4库外"}
 
 
+def test_solve_workflow_passes_front_only_flags_to_stage_solver(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+        ],
+        "initialVehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_FRONT_ONLY",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            }
+        ],
+        "workflowStages": [
+            {
+                "name": "front_only_stage",
+                "vehicleGoals": [
+                    {"vehicleNo": "WF_FRONT_ONLY", "targetTrack": "存5北", "isSpotting": ""}
+                ],
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    captured = {}
+
+    def fake_build_demo_view_model(
+        stage_master,
+        stage_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+        initial_state_override=None,
+        use_validation_recovery=True,
+        diagnose_front_search_only=False,
+    ):
+        captured["use_validation_recovery"] = use_validation_recovery
+        captured["diagnose_front_search_only"] = diagnose_front_search_only
+        return SimpleNamespace(
+            summary=SimpleNamespace(
+                is_valid=True,
+                hook_count=0,
+                final_tracks=["存5北"],
+            ),
+            final_spot_assignments={},
+            final_work_position_assignments={},
+            failed_hook_nos=[],
+            verifier_errors=[],
+            steps=[
+                SimpleNamespace(
+                    track_sequences={"存5北": ["WF_FRONT_ONLY"]},
+                    loco_track_name=stage_payload["locoTrackName"],
+                    weighed_vehicle_nos=[],
+                    spot_assignments={},
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.demo.view_model.build_demo_view_model",
+        fake_build_demo_view_model,
+    )
+
+    result = solve_workflow(
+        master,
+        payload,
+        use_validation_recovery=False,
+        diagnose_front_search_only=True,
+    )
+
+    assert result.stage_count == 1
+    assert captured == {
+        "use_validation_recovery": False,
+        "diagnose_front_search_only": True,
+    }
+
+
+def test_solve_workflow_builds_initial_state_from_normalized_order(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+        ],
+        "initialVehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_ORDER_2",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_ORDER_1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            },
+        ],
+        "workflowStages": [
+            {
+                "name": "hold_stage",
+                "vehicleGoals": [
+                    {"vehicleNo": "WF_ORDER_1", "targetTrack": "存5北", "isSpotting": ""},
+                    {"vehicleNo": "WF_ORDER_2", "targetTrack": "存5北", "isSpotting": ""},
+                ],
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+    captured = {}
+
+    def fake_build_demo_view_model(
+        stage_master,
+        stage_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+        initial_state_override=None,
+        use_validation_recovery=True,
+        diagnose_front_search_only=False,
+    ):
+        captured["track_sequences"] = dict(initial_state_override.track_sequences)
+        captured["spot_assignments"] = dict(initial_state_override.spot_assignments)
+        return SimpleNamespace(
+            summary=SimpleNamespace(
+                is_valid=True,
+                hook_count=0,
+                final_tracks=["存5北"],
+            ),
+            final_spot_assignments={},
+            final_work_position_assignments={},
+            failed_hook_nos=[],
+            verifier_errors=[],
+            steps=[
+                SimpleNamespace(
+                    track_sequences={"存5北": ["WF_ORDER_1", "WF_ORDER_2"]},
+                    loco_track_name=stage_payload["locoTrackName"],
+                    weighed_vehicle_nos=[],
+                    spot_assignments={},
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.demo.view_model.build_demo_view_model",
+        fake_build_demo_view_model,
+    )
+
+    solve_workflow(master, payload)
+
+    assert captured["track_sequences"] == {"存5北": ["WF_ORDER_1", "WF_ORDER_2"]}
+    assert captured["spot_assignments"] == {}
+
+
+def test_solve_workflow_resolves_phase4_dynamic_current_hold(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1", "trackDistance": 151.7},
+            {"trackName": "存4北", "trackDistance": 317.8},
+        ],
+        "initialVehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_HOLD",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            }
+        ],
+        "workflowStages": [
+            {
+                "name": "phase3_exact",
+                "vehicleGoals": [
+                    {
+                        "vehicleNo": "WF_HOLD",
+                        "targetTrack": "大库",
+                        "targetMode": "SPOT",
+                        "targetSpotCode": "101",
+                        "targetSource": "PHASE3_FINAL",
+                        "isSpotting": "101",
+                    }
+                ],
+            },
+            {
+                "name": "phase4_cleanup",
+                "stagePolicy": {"stageMode": "PHASE4_RESIDUAL_CLEANUP"},
+                "vehicleGoals": [
+                    {
+                        "vehicleNo": "WF_HOLD",
+                        "targetTrack": "修1",
+                        "targetMode": "SNAPSHOT",
+                        "targetSource": "PHASE4_DYNAMIC_CURRENT_HOLD",
+                        "isSpotting": "",
+                    }
+                ],
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    seen_payloads: list[dict] = []
+
+    def fake_build_demo_view_model(
+        stage_master,
+        stage_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+        initial_state_override=None,
+        use_validation_recovery=True,
+        diagnose_front_search_only=False,
+    ):
+        seen_payloads.append(stage_payload)
+        if stage_payload["workflowStageName"] == "phase3_exact":
+            track_sequences = {"修1": ["WF_HOLD"]}
+            spot_assignments = {"WF_HOLD": "101"}
+            loco_track_name = "修1"
+        else:
+            track_sequences = {"修1": ["WF_HOLD"]}
+            spot_assignments = {"WF_HOLD": "101"}
+            loco_track_name = "修1"
+        return SimpleNamespace(
+            summary=SimpleNamespace(
+                is_valid=True,
+                hook_count=0,
+                final_tracks=sorted(track_sequences),
+            ),
+            final_spot_assignments=spot_assignments,
+            final_work_position_assignments={},
+            failed_hook_nos=[],
+            verifier_errors=[],
+            steps=[
+                SimpleNamespace(
+                    track_sequences=track_sequences,
+                    loco_track_name=loco_track_name,
+                    weighed_vehicle_nos=[],
+                    spot_assignments=spot_assignments,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.demo.view_model.build_demo_view_model",
+        fake_build_demo_view_model,
+    )
+
+    result = solve_workflow(master, payload)
+
+    assert result.stage_count == 2
+    phase4_goal = seen_payloads[1]["vehicleInfo"][0]
+    assert phase4_goal["targetTrack"] == "修1"
+    assert phase4_goal["targetMode"] == "SPOT"
+    assert phase4_goal["targetSpotCode"] == "101"
+    assert phase4_goal["isSpotting"] == "101"
+
+
+def test_solve_workflow_marks_inspection_spot_when_phase4_holds_06_or_07(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1", "trackDistance": 151.7},
+        ],
+        "initialVehicleInfo": [
+            {
+                "trackName": "修1",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_INSPECT_HOLD",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            }
+        ],
+        "workflowStages": [
+            {
+                "name": "phase3_exact",
+                "vehicleGoals": [
+                    {
+                        "vehicleNo": "WF_INSPECT_HOLD",
+                        "targetTrack": "大库",
+                        "targetMode": "SPOT",
+                        "targetSpotCode": "106",
+                        "targetSource": "PHASE3_FINAL",
+                        "isSpotting": "迎检",
+                    }
+                ],
+            },
+            {
+                "name": "phase4_cleanup",
+                "stagePolicy": {"stageMode": "PHASE4_RESIDUAL_CLEANUP"},
+                "vehicleGoals": [
+                    {
+                        "vehicleNo": "WF_INSPECT_HOLD",
+                        "targetTrack": "修1",
+                        "targetMode": "SNAPSHOT",
+                        "targetSource": "PHASE4_DYNAMIC_CURRENT_HOLD",
+                        "isSpotting": "",
+                    }
+                ],
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    seen_payloads: list[dict] = []
+
+    def fake_build_demo_view_model(
+        stage_master,
+        stage_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+        initial_state_override=None,
+        use_validation_recovery=True,
+        diagnose_front_search_only=False,
+    ):
+        seen_payloads.append(stage_payload)
+        return SimpleNamespace(
+            summary=SimpleNamespace(is_valid=True, hook_count=0, final_tracks=["修1"]),
+            final_spot_assignments={"WF_INSPECT_HOLD": "106"},
+            final_work_position_assignments={},
+            failed_hook_nos=[],
+            verifier_errors=[],
+            steps=[
+                SimpleNamespace(
+                    track_sequences={"修1": ["WF_INSPECT_HOLD"]},
+                    loco_track_name="修1",
+                    weighed_vehicle_nos=[],
+                    spot_assignments={"WF_INSPECT_HOLD": "106"},
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.demo.view_model.build_demo_view_model",
+        fake_build_demo_view_model,
+    )
+
+    solve_workflow(master, payload)
+
+    phase4_goal = seen_payloads[1]["vehicleInfo"][0]
+    assert phase4_goal["targetSpotCode"] == "106"
+    assert phase4_goal["isSpotting"] == "迎检"
+
+
+def test_solve_workflow_raises_stage_failure_with_progress(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "修1", "trackDistance": 151.7},
+        ],
+        "initialVehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "WF_FAIL",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "vehicleAttributes": "",
+            }
+        ],
+        "workflowStages": [
+            {
+                "name": "stage_ok",
+                "vehicleGoals": [
+                    {"vehicleNo": "WF_FAIL", "targetTrack": "存5北", "isSpotting": ""}
+                ],
+            },
+            {
+                "name": "stage_fail",
+                "stagePolicy": {"stageMode": "PHASE1_PRE_REPAIR_BUFFERING"},
+                "vehicleGoals": [
+                    {
+                        "vehicleNo": "WF_FAIL",
+                        "targetTrack": "机南",
+                        "targetMode": "AREA",
+                        "targetAreaCode": "STAGE::PHASE1_BACKBONE_PLACE",
+                        "targetSource": "PHASE1_BACKBONE_PLACE",
+                        "isSpotting": "",
+                    }
+                ],
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    call_count = {"value": 0}
+
+    def fake_build_demo_view_model(
+        stage_master,
+        stage_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=None,
+        time_budget_ms=None,
+        initial_state_override=None,
+        use_validation_recovery=True,
+        diagnose_front_search_only=False,
+    ):
+        call_count["value"] += 1
+        if call_count["value"] == 2:
+            raise ValueError("stage boom")
+        return SimpleNamespace(
+            summary=SimpleNamespace(is_valid=True, hook_count=0, final_tracks=["存5北"]),
+            final_spot_assignments={},
+            final_work_position_assignments={},
+            failed_hook_nos=[],
+            verifier_errors=[],
+            steps=[
+                SimpleNamespace(
+                    track_sequences={"存5北": ["WF_FAIL"]},
+                    loco_track_name=stage_payload["locoTrackName"],
+                    weighed_vehicle_nos=[],
+                    spot_assignments={},
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.demo.view_model.build_demo_view_model",
+        fake_build_demo_view_model,
+    )
+
+    with pytest.raises(WorkflowStageFailure) as exc_info:
+        solve_workflow(master, payload)
+
+    exc = exc_info.value
+    assert exc.failed_stage_name == "stage_fail"
+    assert exc.failed_stage_index == 2
+    assert exc.completed_stage_names == ["stage_ok"]
+    assert exc.cause_message == "stage boom"
+    assert exc.stage_input_summary["stage_mode"] == "PHASE1_PRE_REPAIR_BUFFERING"
+    assert exc.stage_input_summary["active_move_count"] == 1
+    assert exc.stage_input_summary["phase1_buffer_vehicle_count"] == 1
+    assert exc.stage_input_summary["phase1_buffer_source_counts"] == {"存5北": 1}
+    assert exc.stage_input_summary["phase1_buffer_target_lengths_m"] == {"机南": 14.3}
+
+
 def test_solve_workflow_requires_goal_for_each_vehicle_in_stage():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -142,8 +596,9 @@ def test_solve_workflow_requires_goal_for_each_vehicle_in_stage():
         "locoTrackName": "机库",
     }
 
-    with pytest.raises(ValueError):
+    with pytest.raises(WorkflowStageFailure) as exc_info:
         solve_workflow(master, payload)
+    assert exc_info.value.failed_stage_name == "invalid_stage"
 
 
 def test_solve_workflow_carries_weigh_state_across_stages():
@@ -762,7 +1217,7 @@ def test_solve_workflow_supports_inspection_depot_then_departure():
     assert result.stages[0].view is not None
     assert result.stages[1].view is not None
     assert result.stages[0].view.summary.is_valid is True
-    assert result.stages[0].view.final_spot_assignments == {"WFINS1": "101"}
+    assert result.stages[0].view.final_spot_assignments == {"WFINS1": "107"}
     assert result.stages[1].view.steps[-1].track_sequences["存4北"] == ["WFINS1"]
 
 

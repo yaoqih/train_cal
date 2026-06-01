@@ -90,7 +90,7 @@ def test_structural_intent_unifies_order_route_capacity_and_commitment_facts():
         for debt in intent.resource_debts
         if debt.kind == "CAPACITY_RELEASE" and debt.track_name == "存1"
     )
-    assert capacity_debt.vehicle_nos == ("CAP_KEEP", "CAP_RELEASE")
+    assert capacity_debt.vehicle_nos == ("CAP_KEEP",)
 
     assert any(
         block.track_name == "存1" and block.vehicle_nos == ("CAP_KEEP",)
@@ -140,6 +140,49 @@ def test_structural_intent_front_clearance_debt_covers_dispatchable_prefix():
         "TO_STORE_B",
         "TO_CUN3",
     )
+
+
+def test_capacity_release_actionable_prefix_stops_before_keep_group():
+    from fzed_shunting.solver.structural_intent import _capacity_release_actionable_prefix
+
+    master, normalized, state = _normalize(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "预修", "trackDistance": 208.5},
+                {"trackName": "调棚", "trackDistance": 82.2},
+                {"trackName": "机棚", "trackDistance": 105.8},
+            ],
+            "vehicleInfo": [
+                *[
+                    {
+                        **_vehicle(f"TO_DIAOPENG_{index}", "预修", "调棚", order=index + 1),
+                        "targetMode": "SNAPSHOT",
+                    }
+                    for index in range(8)
+                ],
+                *[
+                    {
+                        **_vehicle(f"KEEP_PREXIU_{index}", "预修", "预修", order=9 + index),
+                        "targetMode": "SNAPSHOT",
+                    }
+                    for index in range(10)
+                ],
+            ],
+            "locoTrackName": "机库",
+        }
+    )
+
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    prefix = _capacity_release_actionable_prefix(
+        track_name="预修",
+        vehicle_nos=list(state.track_sequences["预修"]),
+        state=state,
+        plan_input=normalized,
+        vehicle_by_no=vehicle_by_no,
+    )
+
+    assert prefix == [f"TO_DIAOPENG_{index}" for index in range(8)]
 
 
 def test_structural_intent_marks_exact_spot_occupant_as_resource_debt():

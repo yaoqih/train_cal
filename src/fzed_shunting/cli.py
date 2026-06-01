@@ -24,6 +24,7 @@ from fzed_shunting.solver.profile import (
 )
 from fzed_shunting.solver.validation_recovery import solve_with_validation_recovery_result
 from fzed_shunting.workflow.runner import solve_workflow
+from fzed_shunting.workflow.l7_closed_topology_mode import is_l7_closed_topology_mode
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 
@@ -248,6 +249,43 @@ def _solve_payload(
     beam_width: int | None,
     time_budget_ms: float | None = None,
 ) -> dict:
+    if _is_workflow_payload(payload):
+        result = solve_workflow(
+            master,
+            payload,
+            solver=solver or VALIDATION_DEFAULT_SOLVER,
+            heuristic_weight=heuristic_weight,
+            beam_width=beam_width,
+            time_budget_ms=time_budget_ms,
+        )
+        stage_payloads = [
+            {
+                "name": stage.name,
+                "description": stage.description,
+                "isValid": stage.view.summary.is_valid if stage.view else False,
+                "hookCount": stage.view.summary.hook_count if stage.view else 0,
+                "finalTracks": stage.view.summary.final_tracks if stage.view else [],
+                "finalSpotAssignments": stage.view.final_spot_assignments if stage.view else {},
+                "workPositionAssignments": stage.view.final_work_position_assignments if stage.view else {},
+                "failedHookNos": stage.view.failed_hook_nos if stage.view else [],
+                "verifierErrors": stage.view.verifier_errors if stage.view else [],
+            }
+            for stage in result.stages
+        ]
+        vehicle_count = len(payload.get("initialVehicleInfo") or payload.get("vehicleInfo") or [])
+        return {
+            "scenario_type": "workflow",
+            "solver": solver or VALIDATION_DEFAULT_SOLVER,
+            "vehicle_count": vehicle_count,
+            "stage_count": result.stage_count,
+            "hook_count": sum(stage["hookCount"] for stage in stage_payloads),
+            "stages": stage_payloads,
+            "hook_plan": [],
+            "final_state": None,
+            "is_valid": all(stage["isValid"] for stage in stage_payloads),
+            "verifier_errors": [],
+            "solver_errors": [],
+        }
     normalized = normalize_plan_input(payload, master)
     initial = build_initial_state(normalized)
     effective_solver = solver or VALIDATION_DEFAULT_SOLVER
@@ -358,7 +396,7 @@ def _solve_suite_payload(
         return {
             "scenario_type": "workflow",
             "solver": solver,
-            "vehicle_count": len(payload.get("initialVehicleInfo", [])),
+            "vehicle_count": len(payload.get("initialVehicleInfo") or payload.get("vehicleInfo") or []),
             "stage_count": result.stage_count,
             "hook_count": sum(stage["hookCount"] for stage in stage_payloads),
             "stages": stage_payloads,
@@ -389,8 +427,8 @@ def _build_suite_error_result(
         return {
             "scenario_type": "workflow",
             "solver": solver,
-            "vehicle_count": len(payload.get("initialVehicleInfo", [])),
-            "stage_count": len(payload.get("workflowStages", [])),
+            "vehicle_count": len(payload.get("initialVehicleInfo") or payload.get("vehicleInfo") or []),
+            "stage_count": len(payload.get("workflowStages") or []),
             "hook_count": 0,
             "stages": [],
             "hook_plan": [],
@@ -415,7 +453,7 @@ def _build_suite_error_result(
 
 def _is_workflow_payload(payload: dict) -> bool:
     workflow_stages = payload.get("workflowStages")
-    return isinstance(workflow_stages, list)
+    return isinstance(workflow_stages, list) or is_l7_closed_topology_mode(payload)
 
 
 def _cli_time_budget_ms(timeout_seconds: float | None) -> float | None:

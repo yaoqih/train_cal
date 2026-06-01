@@ -2963,6 +2963,16 @@ def _violates_close_door_hook_rule(
     vehicle_by_no: dict,
     state: ReplayState,
 ) -> bool:
+    first_vehicle = vehicle_by_no.get(block[0]) if block else None
+    if (
+        first_vehicle is not None
+        and first_vehicle.is_close_door
+        and any(
+            (vehicle := vehicle_by_no.get(vno)) is not None and vehicle.is_heavy
+            for vno in block[1:]
+        )
+    ):
+        return True
     if target_track == "存4北":
         # PREPEND model: a close-door vehicle in block lands at index 0 and only
         # reaches position ≥ 4 (required by goal) if ≥ 3 OTHER vehicles are
@@ -2988,8 +2998,7 @@ def _violates_close_door_hook_rule(
         return False
     if len(block) <= 10:
         return False
-    first_vehicle = vehicle_by_no[block[0]]
-    return bool(first_vehicle.is_close_door)
+    return bool(first_vehicle and first_vehicle.is_close_door)
 
 
 def _violates_non_cun4bei_attach_close_door_rule(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from time import perf_counter
 from typing import Any
@@ -18,6 +19,7 @@ from fzed_shunting.solver.complete_selection import (
     complete_result_is_better,
     complete_result_quality_score,
 )
+from fzed_shunting.solver.move_candidates import generate_move_candidates
 from fzed_shunting.solver.debt_chain import analyze_debt_chains
 from fzed_shunting.solver.route_blockage import compute_route_blockage_plan
 from fzed_shunting.solver.lns import (
@@ -134,6 +136,7 @@ def solve_with_simple_astar(
     enable_constructive_seed: bool = True,
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+    diagnose_front_search_only: bool = False,
 ) -> list[HookAction]:
     return solve_with_simple_astar_result(
         plan_input=plan_input,
@@ -150,6 +153,7 @@ def solve_with_simple_astar(
         enable_constructive_seed=enable_constructive_seed,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
         near_goal_partial_resume_max_final_heuristic=near_goal_partial_resume_max_final_heuristic,
+        diagnose_front_search_only=diagnose_front_search_only,
     ).plan
 
 
@@ -168,6 +172,7 @@ def solve_with_simple_astar_result(
     enable_constructive_seed: bool = True,
     enable_depot_late_scheduling: bool = True,
     near_goal_partial_resume_max_final_heuristic: int = DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC,
+    diagnose_front_search_only: bool = False,
 ) -> SolverResult:
     solver_mode = _normalize_solver_mode(solver_mode)
     _validate_solver_options(
@@ -179,6 +184,11 @@ def solve_with_simple_astar_result(
         raise ValueError("verify=True requires master to be provided for plan_verifier")
     if debug_stats is None:
         debug_stats = {}
+    if diagnose_front_search_only:
+        enable_anytime_fallback = False
+        enable_constructive_seed = False
+        enable_depot_late_scheduling = False
+        debug_stats["diagnose_front_search_only"] = True
     final_capacity_warnings = _final_track_goal_capacity_warnings(plan_input)
     if final_capacity_warnings and debug_stats is not None:
         debug_stats["final_capacity_warnings"] = final_capacity_warnings
@@ -191,6 +201,9 @@ def solve_with_simple_astar_result(
         "verify_ms": 0.0,
     }
     optimize_depot_late_in_search = enable_depot_late_scheduling
+    enable_primary_structural_diversity = (
+        solver_mode == "beam" and not diagnose_front_search_only
+    )
     reserve_primary_for_partial_rescue = (
         near_goal_partial_resume_max_final_heuristic
         <= DEFAULT_NEAR_GOAL_PARTIAL_RESUME_MAX_FINAL_HEURISTIC
@@ -884,7 +897,7 @@ def solve_with_simple_astar_result(
                         debug_stats=debug_stats,
                         budget=SearchBudget(time_budget_ms=exact_time_budget_ms, node_budget=node_budget),
                         enable_depot_late_scheduling=optimize_depot_late_in_search,
-                        enable_structural_diversity=solver_mode == "beam",
+                        enable_structural_diversity=enable_primary_structural_diversity,
                     )
                     result = _shorter_complete_result(
                         constructive_seed,
@@ -992,6 +1005,7 @@ def solve_with_simple_astar_result(
         if (
             solver_mode == "beam"
             and beam_width is not None
+            and not diagnose_front_search_only
             and not _should_skip_primary_after_complete_rescue(
                 solver_mode=solver_mode,
                 constructive_seed=constructive_seed,
@@ -1142,7 +1156,8 @@ def solve_with_simple_astar_result(
             )
 
     if (
-        enable_anytime_fallback
+        not diagnose_front_search_only
+        and enable_anytime_fallback
         and solver_mode == "beam"
         and not result.is_complete
         and result.partial_plan
@@ -1239,7 +1254,8 @@ def solve_with_simple_astar_result(
     # Skip ``solver_mode == "beam"`` because that path already has a dedicated
     # post-repair loop above with its own tuned budget.
     if (
-        solver_mode != "beam"
+        not diagnose_front_search_only
+        and solver_mode != "beam"
         and result.is_complete
         and result.plan
         and not result.is_proven_optimal
@@ -1279,15 +1295,16 @@ def solve_with_simple_astar_result(
     # _score_move prevents partial plans upstream, making post-hoc rescue
     # redundant.
 
-    result = _compress_complete_plan(
-        result,
-        plan_input=plan_input,
-        initial_state=initial_state,
-        master=master,
-        debug_stats=debug_stats,
-        started_at=started_at,
-        time_budget_ms=time_budget_ms,
-    )
+    if not diagnose_front_search_only:
+        result = _compress_complete_plan(
+            result,
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            debug_stats=debug_stats,
+            started_at=started_at,
+            time_budget_ms=time_budget_ms,
+        )
 
     # Depot-late post-processing: only when the flag is on and we have a plan.
     # Reorders adjacent (depot, non-depot) hook pairs to push depot hooks
@@ -1295,7 +1312,12 @@ def solve_with_simple_astar_result(
     # (either an internal simulate rejection or a full-verifier rejection of
     # the reordered plan — e.g. intermediate route interference that
     # _apply_move doesn't detect) the plan is left unchanged.
-    if enable_depot_late_scheduling and result.is_complete and result.plan:
+    if (
+        not diagnose_front_search_only
+        and enable_depot_late_scheduling
+        and result.is_complete
+        and result.plan
+    ):
         from fzed_shunting.solver.depot_late import reorder_depot_late
 
         reordered_plan = reorder_depot_late(result.plan, initial_state, plan_input)
@@ -1353,6 +1375,10 @@ def solve_with_simple_astar_result(
         master=master,
         debug_stats=debug_stats,
     )
+    if diagnose_front_search_only:
+        stats = dict(result.debug_stats or {})
+        stats["diagnose_front_search_only"] = True
+        result = replace(result, debug_stats=stats)
 
     if verify:
         _ts = perf_counter()
@@ -1387,7 +1413,10 @@ def _compress_complete_plan(
     started_at: float | None = None,
     time_budget_ms: float | None = None,
 ) -> SolverResult:
-    stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
+    stats = dict(result.debug_stats or {})
+    if debug_stats is not None:
+        for key, value in debug_stats.items():
+            stats.setdefault(key, value)
     if not result.is_complete or not result.plan or master is None:
         stats["plan_compression"] = {
             "accepted_rewrite_count": 0,
@@ -1460,7 +1489,13 @@ def _attach_structural_debug_stats(
     master: MasterData | None,
     debug_stats: dict[str, Any] | None,
 ) -> SolverResult:
-    stats = debug_stats if debug_stats is not None else dict(result.debug_stats or {})
+    # Always start from the stats attached to the winning result itself.
+    # `debug_stats` may belong to an earlier primary-search attempt and can
+    # otherwise overwrite constructive / tail-completion diagnostics.
+    stats = dict(result.debug_stats or {})
+    if debug_stats is not None:
+        for key, value in debug_stats.items():
+            stats.setdefault(key, value)
     stats["initial_structural_metrics"] = compute_structural_metrics(
         plan_input,
         initial_state,
@@ -1483,6 +1518,14 @@ def _attach_structural_debug_stats(
         ).to_dict()
     active_plan = result.plan if result.is_complete else result.partial_plan
     stats["plan_shape_metrics"] = summarize_plan_shape(active_plan)
+    stats.update(
+        _summarize_plan_origin_families(
+            plan_input=plan_input,
+            initial_state=initial_state,
+            master=master,
+            plan=active_plan,
+        )
+    )
     tail_stage = result.fallback_stage if result.is_complete else result.partial_fallback_stage
     stats["tail_completion_invocation_count"] = (
         1 if tail_stage in {
@@ -1528,6 +1571,75 @@ def _attach_structural_debug_stats(
     return replace(result, debug_stats=stats)
 
 
+def _clone_debug_value(value: Any) -> Any:
+    try:
+        return deepcopy(value)
+    except Exception:  # noqa: BLE001
+        return value
+
+
+def _constructive_debug_snapshot(stats: dict[str, Any] | None) -> dict[str, Any]:
+    if not stats:
+        return {}
+    snapshot: dict[str, Any] = {}
+    for key, value in stats.items():
+        if key.startswith("constructive_"):
+            snapshot[key] = _clone_debug_value(value)
+    return snapshot
+
+
+def _annotate_constructive_debug_stats(
+    *,
+    stats: dict[str, Any] | None,
+    plan: list[HookAction],
+    reached_goal: bool,
+    iterations: int,
+    stuck_reason: str | None,
+    final_heuristic: Any,
+    decision_indices: tuple[int, ...],
+) -> dict[str, Any]:
+    annotated = dict(stats or {})
+    annotated["constructive_hook_count"] = len(plan)
+    annotated["constructive_partial_hook_count"] = 0 if reached_goal else len(plan)
+    annotated["constructive_reached_goal"] = reached_goal
+    annotated["constructive_iterations"] = iterations
+    annotated["constructive_decision_count"] = len(decision_indices)
+    annotated["constructive_decision_indices"] = list(decision_indices)
+    annotated["constructive_stuck_reason"] = stuck_reason
+    if final_heuristic is not None:
+        annotated["constructive_final_heuristic"] = final_heuristic
+    selected_counts = annotated.get("selected_candidate_origin_counts")
+    if isinstance(selected_counts, dict):
+        annotated["constructive_selected_candidate_origin_counts"] = dict(selected_counts)
+    selected_steps = annotated.get("selected_candidate_step_count_by_origin")
+    if isinstance(selected_steps, dict):
+        annotated["constructive_selected_candidate_step_count_by_origin"] = dict(selected_steps)
+    decision_trace = annotated.get("decision_trace")
+    if isinstance(decision_trace, list):
+        annotated["constructive_decision_trace"] = [dict(item) for item in decision_trace]
+    return annotated
+
+
+def _preserve_constructive_debug_stats(
+    preferred: SolverResult,
+    fallback: SolverResult | None,
+) -> SolverResult:
+    fallback_snapshot = _constructive_debug_snapshot(
+        fallback.debug_stats if fallback is not None else None
+    )
+    if not fallback_snapshot:
+        return preferred
+    stats = dict(preferred.debug_stats or {})
+    changed = False
+    for key, value in fallback_snapshot.items():
+        if key not in stats:
+            stats[key] = value
+            changed = True
+    if not changed:
+        return preferred
+    return replace(preferred, debug_stats=stats)
+
+
 def _debug_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -1556,6 +1668,143 @@ def _replay_solver_moves(
     except Exception:  # noqa: BLE001
         return None
     return state
+
+
+def _summarize_plan_origin_families(
+    *,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+    plan: list[HookAction],
+) -> dict[str, Any]:
+    if not plan:
+        return {
+            "hook_count_by_origin_family": {},
+            "selected_origin_family_sequence": [],
+            "final_plan_hook_count_by_origin_family": {},
+            "final_plan_origin_sequence": [],
+            "final_plan_primitive_recovery_segments": [],
+            "final_plan_late_churn_start_index": None,
+        }
+    route_oracle = RouteOracle(master) if master is not None else None
+    state = ReplayState.model_validate(initial_state.model_dump())
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+    hook_count_by_origin_family: dict[str, int] = {}
+    selected_origin_family_sequence: list[str] = []
+    cursor = 0
+    while cursor < len(plan):
+        move_stats: dict[str, Any] = {}
+        candidates = generate_move_candidates(
+            plan_input,
+            state,
+            master=master,
+            route_oracle=route_oracle,
+            debug_stats=move_stats,
+        )
+        matched = None
+        matched_end = cursor + 1
+        for candidate in candidates:
+            steps = list(candidate.steps)
+            if not steps:
+                continue
+            end = cursor + len(steps)
+            if end > len(plan):
+                continue
+            if plan[cursor:end] != steps:
+                continue
+            matched = candidate
+            matched_end = end
+            break
+        origin = (
+            matched.origin or matched.reason or matched.kind
+            if matched is not None
+            else "unmatched_primitive"
+        )
+        step_count = matched_end - cursor
+        hook_count_by_origin_family[origin] = hook_count_by_origin_family.get(origin, 0) + step_count
+        selected_origin_family_sequence.append(origin)
+        try:
+            for move in plan[cursor:matched_end]:
+                state = _apply_move(
+                    state=state,
+                    move=move,
+                    plan_input=plan_input,
+                    vehicle_by_no=vehicle_by_no,
+                )
+        except Exception:  # noqa: BLE001
+            return {
+                "hook_count_by_origin_family": hook_count_by_origin_family,
+                "selected_origin_family_sequence": selected_origin_family_sequence,
+                "primitive_recovery_segments": _primitive_recovery_segments(
+                    selected_origin_family_sequence
+                ),
+                "late_churn_start_index": _late_churn_start_index(
+                    selected_origin_family_sequence
+                ),
+                "final_plan_hook_count_by_origin_family": dict(hook_count_by_origin_family),
+                "final_plan_origin_sequence": list(selected_origin_family_sequence),
+                "final_plan_primitive_recovery_segments": _primitive_recovery_segments(
+                    selected_origin_family_sequence
+                ),
+                "final_plan_late_churn_start_index": _late_churn_start_index(
+                    selected_origin_family_sequence
+                ),
+                "plan_origin_family_replay_incomplete_at_hook_index": cursor,
+            }
+        cursor = matched_end
+    primitive_recovery_segments = _primitive_recovery_segments(
+        selected_origin_family_sequence
+    )
+    late_churn_start_index = _late_churn_start_index(
+        selected_origin_family_sequence
+    )
+    return {
+        "hook_count_by_origin_family": hook_count_by_origin_family,
+        "selected_origin_family_sequence": selected_origin_family_sequence,
+        "primitive_recovery_segments": primitive_recovery_segments,
+        "late_churn_start_index": late_churn_start_index,
+        "final_plan_hook_count_by_origin_family": dict(hook_count_by_origin_family),
+        "final_plan_origin_sequence": list(selected_origin_family_sequence),
+        "final_plan_primitive_recovery_segments": primitive_recovery_segments,
+        "final_plan_late_churn_start_index": late_churn_start_index,
+    }
+
+
+def _primitive_recovery_segments(sequence: list[str]) -> list[dict[str, int]]:
+    segments: list[dict[str, int]] = []
+    index = 0
+    while index < len(sequence):
+        if sequence[index] not in {"primitive", "unmatched_primitive"}:
+            index += 1
+            continue
+        start = index
+        primitive_count = 0
+        while index < len(sequence) and sequence[index] in {"primitive", "unmatched_primitive"}:
+            primitive_count += 1
+            index += 1
+        prev_origin = sequence[start - 1] if start > 0 else ""
+        if prev_origin and prev_origin not in {"primitive", "unmatched_primitive"}:
+            segments.append(
+                {
+                    "start_index": start,
+                    "length": index - start,
+                    "primitive_count": primitive_count,
+                }
+            )
+    return segments
+
+
+def _late_churn_start_index(sequence: list[str]) -> int | None:
+    if len(sequence) < 6:
+        return None
+    for start in range(max(0, len(sequence) // 3), len(sequence) - 3):
+        window = sequence[start : start + 4]
+        primitive_count = sum(
+            1 for origin in window if origin in {"primitive", "unmatched_primitive"}
+        )
+        if primitive_count >= 3:
+            return start
+    return None
 
 
 def _build_telemetry(
@@ -2294,6 +2543,14 @@ def _route_release_partial_is_bounded_improvement(
         master=master,
     ):
         return False
+    if _route_release_partial_has_capacity_regression(
+        candidate,
+        baseline_partial=baseline_partial,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    ):
+        return False
     baseline_len = len(baseline_partial.partial_plan)
     candidate_len = len(candidate.partial_plan)
     baseline_pressure = _partial_route_pressure_for_bounded_improvement(
@@ -2320,6 +2577,43 @@ def _route_release_partial_is_bounded_improvement(
         int(baseline_len * ROUTE_RELEASE_PARTIAL_MAX_HOOK_FACTOR),
     ) + material_route_release_extra
     return candidate_len <= max_len
+
+
+def _route_release_partial_has_capacity_regression(
+    candidate: SolverResult,
+    *,
+    baseline_partial: SolverResult,
+    plan_input: NormalizedPlanInput,
+    initial_state: ReplayState,
+    master: MasterData | None,
+) -> bool:
+    candidate_structural, _ = _partial_result_structural_route_stats(
+        candidate,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    )
+    baseline_structural, _ = _partial_result_structural_route_stats(
+        baseline_partial,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    )
+    candidate_overflow = _optional_int(
+        candidate_structural.get("capacity_overflow_track_count")
+    ) or 0
+    baseline_overflow = _optional_int(
+        baseline_structural.get("capacity_overflow_track_count")
+    ) or 0
+    if candidate_overflow > baseline_overflow:
+        return True
+    candidate_debt = _capacity_debt_total(
+        candidate_structural.get("capacity_debt_by_track") or {}
+    )
+    baseline_debt = _capacity_debt_total(
+        baseline_structural.get("capacity_debt_by_track") or {}
+    )
+    return candidate_debt > baseline_debt + 1e-9
 
 
 def _partial_route_pressure_from_debug(result: SolverResult) -> int | None:
@@ -2358,6 +2652,14 @@ def _route_release_partial_should_preserve_primary_budget(
     if candidate.is_complete or not candidate.partial_plan:
         return False
     if baseline_partial is None or not baseline_partial.partial_plan:
+        return False
+    if _route_release_partial_has_capacity_regression(
+        candidate,
+        baseline_partial=baseline_partial,
+        plan_input=plan_input,
+        initial_state=initial_state,
+        master=master,
+    ):
         return False
     baseline_pressure = _partial_route_pressure_for_bounded_improvement(
         baseline_partial,
@@ -2603,12 +2905,12 @@ def _shorter_complete_result(
             and _partial_result_score(candidate, master=master)
             < _partial_result_score(incumbent, master=master)
         ):
-            return candidate
+            return _preserve_constructive_debug_stats(candidate, incumbent)
         return incumbent
     if not incumbent.is_complete:
-        return candidate
+        return _preserve_constructive_debug_stats(candidate, incumbent)
     if _complete_result_is_better(candidate, incumbent):
-        return candidate
+        return _preserve_constructive_debug_stats(candidate, incumbent)
     return incumbent
 
 
@@ -4054,7 +4356,15 @@ def _run_constructive_stage(
         return None
     if not ctr.plan and not ctr.reached_goal:
         return None
-    debug_stats = dict(ctr.debug_stats or {})
+    debug_stats = _annotate_constructive_debug_stats(
+        stats=ctr.debug_stats,
+        plan=list(ctr.plan),
+        reached_goal=ctr.reached_goal,
+        iterations=ctr.iterations,
+        stuck_reason=ctr.stuck_reason,
+        final_heuristic=ctr.final_heuristic,
+        decision_indices=ctr.decision_indices,
+    )
     if ctr.final_heuristic is not None:
         debug_stats["final_heuristic"] = ctr.final_heuristic
     return SolverResult(
@@ -7315,6 +7625,13 @@ def _try_route_clean_random_area_tail_completion_from_state(
         or structural.work_position_unfinished_count > 0
     ):
         return None
+    entry_debug = _route_clean_random_area_tail_entry_debug(
+        plan_input=plan_input,
+        state=state,
+        master=master,
+        structural=structural,
+        prefix_plan=prefix_plan,
+    )
 
     started_at = perf_counter()
     current_state = state
@@ -7336,6 +7653,7 @@ def _try_route_clean_random_area_tail_completion_from_state(
                 is_complete=True,
                 is_proven_optimal=False,
                 fallback_stage="route_clean_random_area_tail_completion",
+                debug_stats=entry_debug,
             )
             try:
                 return _attach_verification(
@@ -7389,6 +7707,7 @@ def _try_route_clean_random_area_tail_completion_from_state(
         fallback_stage="route_clean_random_area_tail_completion",
         partial_fallback_stage="route_clean_random_area_tail_completion",
         debug_stats={
+            **entry_debug,
             "partial_structural_metrics": current_structural.to_dict(),
             "partial_route_blockage_plan": compute_route_blockage_plan(
                 plan_input,
@@ -7418,7 +7737,81 @@ def _try_route_clean_random_area_tail_completion_from_state(
         return result
 
 
+def _route_clean_random_area_tail_entry_debug(
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    master: MasterData,
+    structural: Any,
+    prefix_plan: list[HookAction],
+) -> dict[str, Any]:
+    route_oracle = RouteOracle(master)
+    move_stats: dict[str, Any] = {}
+    candidates = generate_move_candidates(
+        plan_input,
+        state,
+        master=master,
+        route_oracle=route_oracle,
+        debug_stats=move_stats,
+    )
+    origin_counts: dict[str, int] = {}
+    interesting_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        origin = candidate.origin or candidate.reason or candidate.kind
+        origin_counts[origin] = origin_counts.get(origin, 0) + 1
+        if len(interesting_candidates) >= 12:
+            continue
+        if origin in {
+            "resource_release_gateway_clear_direct_target",
+            "resource_release_direct_target",
+            "resource_release_dispatch",
+            "goal_frontier_source_opening",
+            "route_release_frontier",
+        }:
+            interesting_candidates.append(
+                {
+                    "origin": origin,
+                    "reason": candidate.reason,
+                    "focus_tracks": list(candidate.focus_tracks),
+                    "step_count": len(candidate.steps),
+                    "steps": [
+                        {
+                            "action_type": step.action_type,
+                            "source_track": step.source_track,
+                            "target_track": step.target_track,
+                            "vehicle_nos": list(step.vehicle_nos),
+                        }
+                        for step in candidate.steps
+                    ],
+                }
+            )
+    interesting_tracks = [
+        track_name
+        for track_name in ("预修", "调棚", "调北", "存1", "存2", "存3", "存4")
+        if track_name in state.track_sequences
+    ]
+    return {
+        "route_clean_tail_entry_prefix_hook_count": len(prefix_plan),
+        "route_clean_tail_entry_structural_metrics": structural.to_dict(),
+        "route_clean_tail_entry_track_sequences": {
+            track_name: list(state.track_sequences.get(track_name, ()))
+            for track_name in interesting_tracks
+        },
+        "route_clean_tail_entry_candidate_origin_counts": origin_counts,
+        "route_clean_tail_entry_interesting_candidates": interesting_candidates,
+        "route_clean_tail_entry_move_stats": move_stats,
+    }
+
+
 def _random_area_tail_step_improves(*, before: Any, after: Any) -> bool:
+    before_capacity_overflow = getattr(before, "capacity_overflow_track_count", 0)
+    after_capacity_overflow = getattr(after, "capacity_overflow_track_count", 0)
+    if after_capacity_overflow > before_capacity_overflow:
+        return False
+    before_capacity_debt = _capacity_debt_total(getattr(before, "capacity_debt_by_track", {}))
+    after_capacity_debt = _capacity_debt_total(getattr(after, "capacity_debt_by_track", {}))
+    if after_capacity_debt > before_capacity_debt + 1e-9:
+        return False
     return (
         after.unfinished_count < before.unfinished_count
         or getattr(after, "area_random_unfinished_count", 0)
@@ -9228,6 +9621,16 @@ def _route_clean_direct_prefix_improves(
         return False
     before_metrics = compute_structural_metrics(plan_input, before)
     after_metrics = compute_structural_metrics(plan_input, after)
+    if (
+        getattr(after_metrics, "capacity_overflow_track_count", 0)
+        > getattr(before_metrics, "capacity_overflow_track_count", 0)
+    ):
+        return False
+    if (
+        _capacity_debt_total(getattr(after_metrics, "capacity_debt_by_track", {}))
+        > _capacity_debt_total(getattr(before_metrics, "capacity_debt_by_track", {})) + 1e-9
+    ):
+        return False
     return (
         after_metrics.unfinished_count < before_metrics.unfinished_count
         or after_metrics.work_position_unfinished_count
@@ -9235,6 +9638,12 @@ def _route_clean_direct_prefix_improves(
         or after_metrics.front_blocker_count < before_metrics.front_blocker_count
         or after_metrics.goal_track_blocker_count < before_metrics.goal_track_blocker_count
     )
+
+
+def _capacity_debt_total(capacity_debt_by_track: Any) -> float:
+    if not capacity_debt_by_track:
+        return 0.0
+    return sum(float(value) for value in capacity_debt_by_track.values())
 
 
 def _vehicles_satisfied_on_track(

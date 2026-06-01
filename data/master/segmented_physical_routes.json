@@ -2,14 +2,14 @@
   {
     "branch_code": "大门L1",
     "display_name": "联6",
-    "aggregate_physical_distance_m": 68.0,
+    "aggregate_physical_distance_m": 193.0,
     "status": "已确认",
     "left_node": "5号门",
     "right_node": "L1",
     "segments": [
       {
         "track_code": "联6",
-        "physical_distance_m": 68.0
+        "physical_distance_m": 193.0
       }
     ]
   },

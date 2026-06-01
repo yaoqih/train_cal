@@ -21,6 +21,12 @@ def validate_hook_vehicle_group(vehicles: Sequence[NormalizedVehicle]) -> list[s
     )
 
     errors: list[str] = []
+    if (
+        len(vehicles) >= 2
+        and vehicles[0].is_close_door
+        and any(vehicle.is_heavy for vehicle in vehicles[1:])
+    ):
+        errors.append("有重车时关门车不能排在机后第一位")
     if heavy_count == 0 and empty_count > 20:
         errors.append("纯空车单钩最多 20 辆")
     if heavy_count > 2:

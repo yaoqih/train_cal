@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from collections import Counter
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fzed_shunting.domain.master_data import load_master_data
@@ -207,6 +208,64 @@ def test_candidate_search_sort_key_prefers_lower_soft_penalty_for_primitives():
     assert ordered == [low_penalty, high_penalty]
 
 
+def test_problem_type_to_intent_type_uses_new_business_intent_names():
+    from fzed_shunting.solver.move_candidates import problem_type_to_intent_type
+
+    assert problem_type_to_intent_type("DIRECT_GOAL_WINDOW") == "OPEN_GOAL_ACCESS"
+    assert problem_type_to_intent_type("BLOCKER_RELEASE") == "OPEN_SOURCE_ACCESS"
+    assert problem_type_to_intent_type("SEQUENCE_ADVANCE") == "ADVANCE_ORDER"
+    assert problem_type_to_intent_type("CAPACITY_RELEASE") == "RELIEVE_CAPACITY"
+
+
+def test_select_intent_request_candidates_keeps_primary_and_only_one_different_backup_lane():
+    from fzed_shunting.solver.move_candidates import (
+        IntentRequest,
+        MoveCandidate,
+        _select_intent_request_candidates,
+    )
+
+    def candidate(origin: str, target: str) -> MoveCandidate:
+        move = HookAction(
+            source_track="存1",
+            target_track=target,
+            vehicle_nos=["A1"],
+            path_tracks=["存1", target],
+            action_type="DETACH",
+        )
+        return MoveCandidate(
+            steps=(move,),
+            kind="structural",
+            reason="resource_release",
+            focus_tracks=(target,),
+            intent_type="OPEN_SOURCE_ACCESS",
+            intent_anchor="存1",
+            intent_target="预修",
+            staging_mode="NONE" if "direct" in origin else "USES_STAGING",
+            origin=origin,
+        )
+
+    request = IntentRequest(
+        intent_type="OPEN_SOURCE_ACCESS",
+        anchor_track="存1",
+        business_target="预修",
+        priority=10.0,
+    )
+    selected = _select_intent_request_candidates(
+        [
+            candidate("resource_release_direct_target", "预修"),
+            candidate("resource_release_direct_target_variant", "洗南"),
+            candidate("goal_frontier_source_opening", "调棚"),
+            candidate("route_release_frontier", "机北1"),
+        ],
+        intent_requests=(request,),
+    )
+
+    assert [item.origin for item in selected] == [
+        "resource_release_direct_target",
+        "goal_frontier_source_opening",
+    ]
+
+
 def test_candidate_search_sort_key_uses_debt_queue_hint_without_pruning_candidates():
     from types import SimpleNamespace
 
@@ -327,6 +386,8 @@ def test_candidate_search_sort_key_keeps_primitive_fallback_even_when_structural
     )
 
     assert {candidate.kind for candidate in ordered} == {"primitive", "structural"}
+
+
 
 
 def test_candidate_search_sort_key_uses_debt_queue_only_as_structural_tie_break():
@@ -1227,6 +1288,95 @@ def test_structural_selection_prefers_chain_macro_over_single_chain_steps():
     assert selected == (macro,)
 
 
+def test_structural_selection_keeps_direct_work_position_when_macro_has_same_focus_track():
+    from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _select_structural_candidates
+
+    def track_summary(track_name: str, pressure: float) -> DebtChainTrackSummary:
+        return DebtChainTrackSummary(
+            track_name=track_name,
+            cluster_pressure=pressure,
+            debt_kinds=(),
+            pending_vehicle_count=0,
+            blocking_prefix_count=0,
+            delayed_commitment_count=0,
+            capacity_release_length=0.0,
+            route_blocked_vehicle_count=0,
+            route_blocking_vehicle_count=0,
+            source_tracks=(),
+            target_tracks=(),
+            buffer_roles=(),
+        )
+
+    chain_summary = DebtChainSummary(
+        chain_count=1,
+        total_tracks=3,
+        max_chain_pressure=40.0,
+        chains=(
+            DebtChainComponent(
+                anchor_track="调棚",
+                track_names=("油", "调棚", "存5北"),
+                total_pressure=40.0,
+                order_debt_track_count=1,
+                route_blockage_track_count=1,
+                capacity_release_track_count=1,
+                delayed_commitment_count=0,
+                track_summaries=(
+                    track_summary("调棚", 24.0),
+                    track_summary("油", 10.0),
+                    track_summary("存5北", 6.0),
+                ),
+            ),
+        ),
+    )
+
+    macro = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="油",
+                target_track="调棚",
+                vehicle_nos=["A"],
+                path_tracks=["油", "调棚"],
+                action_type="DETACH",
+            ),
+            HookAction(
+                source_track="调棚",
+                target_track="存5北",
+                vehicle_nos=["B"],
+                path_tracks=["调棚", "存5北"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="chain_macro_调棚",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    direct = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存5北",
+                target_track="调棚",
+                vehicle_nos=["C"],
+                path_tracks=["存5北", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_free_fill",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+
+    selected = _select_structural_candidates(
+        [macro, direct],
+        limit=1,
+        debt_chain_summary=chain_summary,
+    )
+
+    assert selected == (direct,)
+
+
 def test_structural_selection_keeps_sequence_and_release_slots_on_same_chain():
     from fzed_shunting.solver.debt_chain import DebtChainComponent, DebtChainSummary, DebtChainTrackSummary
     from fzed_shunting.solver.move_candidates import MoveCandidate, _select_structural_candidates
@@ -1375,6 +1525,212 @@ def test_release_structural_candidate_ranking_prioritizes_route_and_resource_rel
         ("预修",),
         ("存4南",),
     ]
+
+
+def test_budget_release_generation_candidates_drops_weak_stage_target_when_same_source_has_stronger_release():
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _budget_release_generation_candidates,
+    )
+
+    direct = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存1", "预修"),
+        structural_reserve=True,
+        origin="resource_release_direct_target",
+    )
+    stage = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="机北1",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "机北1"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存1", "机北1"),
+        structural_reserve=True,
+        origin="resource_release_stage_target",
+    )
+
+    kept = _budget_release_generation_candidates([stage, direct])
+
+    assert [item.origin for item in kept] == ["resource_release_direct_target"]
+
+
+def test_budget_release_generation_candidates_drops_frontier_source_when_same_source_has_stronger_direct_release():
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _budget_release_generation_candidates,
+    )
+
+    frontier = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="调棚",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="goal_frontier_source_opening",
+        focus_tracks=("存1", "调棚"),
+        structural_reserve=True,
+        origin="goal_frontier_source_opening",
+    )
+    direct = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["V1"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存1", "预修"),
+        structural_reserve=True,
+        origin="resource_release_direct_target",
+    )
+
+    kept = _budget_release_generation_candidates([frontier, direct])
+
+    assert [item.origin for item in kept] == ["resource_release_direct_target"]
+
+
+def test_extend_same_track_structural_followup_candidate_builds_two_step_release(monkeypatch):
+    from fzed_shunting.solver import move_candidates
+    from fzed_shunting.solver.move_candidates import (
+        IntentRequest,
+        MoveCandidate,
+        ProblemDescriptor,
+        _extend_same_track_structural_followup_candidate,
+    )
+
+    base = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="预修",
+                vehicle_nos=["A"],
+                path_tracks=["存1", "预修"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存1", "预修"),
+        intent_type="OPEN_GOAL_ACCESS",
+        intent_anchor="存1",
+        intent_target="存1",
+        problem_type="DIRECT_GOAL_WINDOW",
+        problem_track="存1",
+        problem_stage="goal_window_primary",
+        structural_reserve=True,
+        origin="resource_release_direct_target",
+    )
+    followup = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="调棚",
+                vehicle_nos=["B"],
+                path_tracks=["存1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="resource_release",
+        focus_tracks=("存1", "调棚"),
+        structural_reserve=True,
+        origin="resource_release_direct_target",
+    )
+
+    monkeypatch.setattr(
+        move_candidates,
+        "_replay_noncarry_steps",
+        lambda **kwargs: SimpleNamespace(final_state=SimpleNamespace(track_sequences={}, loco_carry=())),
+    )
+    monkeypatch.setattr(
+        move_candidates,
+        "build_structural_intent",
+        lambda *args, **kwargs: SimpleNamespace(
+            resource_debts=(SimpleNamespace(kind="ROUTE_RELEASE", track_name="存1"),),
+            order_debts_by_track={},
+            buffer_leases=(),
+        ),
+    )
+    monkeypatch.setattr(
+        move_candidates,
+        "_build_resource_release_candidate",
+        lambda **kwargs: followup,
+    )
+    metrics = [
+        SimpleNamespace(
+            unfinished_count=6,
+            goal_track_blocker_count=4,
+            front_blocker_count=2,
+            capacity_overflow_track_count=1,
+            loco_carry_count=0,
+        ),
+        SimpleNamespace(
+            unfinished_count=3,
+            goal_track_blocker_count=2,
+            front_blocker_count=1,
+            capacity_overflow_track_count=0,
+            loco_carry_count=0,
+        ),
+    ]
+    monkeypatch.setattr(
+        move_candidates,
+        "compute_structural_metrics",
+        lambda *args, **kwargs: metrics.pop(0),
+    )
+
+    extended = _extend_same_track_structural_followup_candidate(
+        base,
+        followup_kind="ROUTE_RELEASE",
+        request=IntentRequest(
+            intent_type="OPEN_GOAL_ACCESS",
+            anchor_track="存1",
+            business_target="存1",
+            priority=10.0,
+        ),
+        problem=ProblemDescriptor(
+            problem_type="DIRECT_GOAL_WINDOW",
+            track_name="存1",
+            pressure=10.0,
+        ),
+        plan_input=SimpleNamespace(),
+        state=SimpleNamespace(),
+        route_oracle=SimpleNamespace(),
+        vehicle_by_no={},
+        delayed_target_pairs=set(),
+        intent=SimpleNamespace(buffer_leases=(), order_debts_by_track={}),
+    )
+
+    assert extended is not None
+    assert len(extended.steps) == 2
+    assert extended.problem_stage.endswith("_followup")
+
+
 
 
 def test_structural_candidates_can_be_generated_while_loco_carry_exists(monkeypatch):
@@ -1804,6 +2160,191 @@ def test_trim_candidate_holds_work_position_free_buffer_before_strict_window():
 
     assert trimmed is not None
     assert trimmed.steps == (prefix_attach, prefix_detach)
+
+
+def test_trim_candidate_keeps_work_position_free_fill_when_it_advances_pending_prefix():
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _trim_candidate_before_delayed_commitment,
+    )
+    from fzed_shunting.solver.structural_intent import (
+        DelayedCommitment,
+        OrderDebt,
+        StructuralIntent,
+    )
+
+    candidate = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存5北",
+                target_track="存5北",
+                vehicle_nos=["FREE_A", "FREE_B"],
+                path_tracks=["存5北"],
+                action_type="ATTACH",
+            ),
+            HookAction(
+                source_track="存5北",
+                target_track="调棚",
+                vehicle_nos=["FREE_A", "FREE_B"],
+                path_tracks=["存5北", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_free_fill",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+    )
+    intent = StructuralIntent(
+        committed_blocks_by_track={},
+        order_debts_by_track={
+            "调棚": OrderDebt(
+                track_name="调棚",
+                defect_count=1,
+                pending_vehicle_nos=("FREE_A", "FREE_B", "SPOT_A"),
+                blocking_prefix_vehicle_nos=("PAD",),
+                kind_counts=(("FREE", 2), ("SPOTTING", 1)),
+            )
+        },
+        resource_debts=(),
+        staging_buffers=(),
+        delayed_commitments=(
+            DelayedCommitment(
+                vehicle_no="FREE_A",
+                target_track="调棚",
+                reason="would_precede_unfinished_work_position_window",
+            ),
+            DelayedCommitment(
+                vehicle_no="FREE_B",
+                target_track="调棚",
+                reason="would_precede_unfinished_work_position_window",
+            ),
+            DelayedCommitment(
+                vehicle_no="SPOT_A",
+                target_track="调棚",
+                reason="work_position_window_not_ready",
+            ),
+        ),
+    )
+
+    trimmed = _trim_candidate_before_delayed_commitment(
+        candidate,
+        vehicle_by_no={},
+        intent=intent,
+    )
+
+    assert trimmed is not None
+    assert trimmed.steps == candidate.steps
+
+
+def test_resource_release_target_tracks_keep_delayed_target_for_pending_prefix_block():
+    from fzed_shunting.solver.move_candidates import _resource_release_target_tracks
+    from fzed_shunting.solver.structural_intent import OrderDebt
+
+    payload = {
+        "trackInfo": [
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "机北3", "trackDistance": 120.0},
+            {"trackName": "调棚", "trackDistance": 174.3},
+        ],
+        "vehicleInfo": [
+            _vehicle("FREE_A", "机北3", "调棚", order=1),
+            _vehicle("FREE_B", "机北3", "调棚", order=2),
+            _vehicle("SPOT_A", "存5南", "调棚", order=3, spotting="是"),
+        ],
+        "locoTrackName": "机库",
+    }
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    targets = _resource_release_target_tracks(
+        plan_input=normalized,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        block=["FREE_A", "FREE_B"],
+        source_track="机北3",
+        delayed_target_pairs={
+            ("FREE_A", "调棚"),
+            ("FREE_B", "调棚"),
+            ("SPOT_A", "调棚"),
+        },
+        order_debts_by_track={
+            "调棚": OrderDebt(
+                track_name="调棚",
+                defect_count=1,
+                pending_vehicle_nos=("FREE_B", "FREE_A", "SPOT_A"),
+                blocking_prefix_vehicle_nos=("PAD",),
+                kind_counts=(("FREE", 2), ("SPOTTING", 1)),
+            )
+        },
+    )
+
+    assert targets == ["调棚"]
+
+
+def test_build_staged_prefix_work_position_candidate_can_clear_target_blocking_prefix():
+    from types import SimpleNamespace
+
+    from fzed_shunting.solver.move_candidates import (
+        MoveCandidate,
+        _build_staged_prefix_work_position_candidate,
+    )
+
+    cleared_state = SimpleNamespace(loco_carry=(), track_sequences={})
+    final_state = SimpleNamespace(loco_carry=(), track_sequences={})
+
+    with patch(
+        "fzed_shunting.solver.move_candidates._compile_prefix_clearance_steps",
+        return_value=(
+            (
+                HookAction(
+                    source_track="调棚",
+                    target_track="机南",
+                    vehicle_nos=["BLOCK"],
+                    path_tracks=["调棚", "机南"],
+                    action_type="DETACH",
+                ),
+            ),
+            cleared_state,
+        ),
+    ), patch(
+        "fzed_shunting.solver.move_candidates._compile_staged_prefix_work_position_candidate",
+        return_value=MoveCandidate(
+            steps=(
+                HookAction(
+                    source_track="洗油北",
+                    target_track="调棚",
+                    vehicle_nos=["SPOT_A", "SPOT_B"],
+                    path_tracks=["洗油北", "调棚"],
+                    action_type="DETACH",
+                ),
+            ),
+            kind="structural",
+            reason="work_position_source_opening",
+            focus_tracks=("调棚",),
+            structural_reserve=True,
+            origin="work_position_source_opening_staged_split_prefix",
+        ),
+    ) as staged_builder, patch(
+        "fzed_shunting.solver.move_candidates.goal_is_satisfied",
+        return_value=True,
+    ):
+        candidate = _build_staged_prefix_work_position_candidate(
+            plan_input=SimpleNamespace(),
+            state=SimpleNamespace(),
+            route_oracle=SimpleNamespace(),
+            vehicle_by_no={"FREE_A": object(), "FREE_B": object()},
+            source_track="洗油北",
+            target_track="调棚",
+            protected_prefix=["FREE_A", "FREE_B"],
+            transfer_block=["SPOT_A", "SPOT_B"],
+            blocking_prefix=["BLOCK"],
+        )
+
+    assert candidate is not None
+    assert staged_builder.call_args.kwargs["blocking_prefix"] == ["BLOCK"]
 
 
 def test_move_candidates_protect_committed_goal_block_from_ordinary_churn(monkeypatch):
@@ -2464,7 +3005,9 @@ def test_generate_structural_candidates_avoids_duplicate_front_only_window_candi
             allow_chain_macros=False,
         )
 
-    assert candidates == (window_candidate,)
+    assert len(candidates) == 1
+    assert candidates[0].reason == window_candidate.reason
+    assert candidates[0].steps == window_candidate.steps
 
 
 def test_append_generation_candidate_prefers_goal_frontier_over_resource_dispatch_for_same_steps():
@@ -2533,6 +3076,40 @@ def test_append_generation_candidate_prefers_work_position_free_fill_over_resour
     _append_generation_candidate(candidates, direct_release)
 
     assert candidates == [free_fill]
+
+
+def test_append_generation_candidate_prefers_work_position_source_opening_over_goal_frontier():
+    from fzed_shunting.solver.move_candidates import MoveCandidate, _append_generation_candidate
+
+    source_opening = MoveCandidate(
+        steps=(
+            HookAction(
+                source_track="存1",
+                target_track="调棚",
+                vehicle_nos=["A1"],
+                path_tracks=["存1", "调棚"],
+                action_type="DETACH",
+            ),
+        ),
+        kind="structural",
+        reason="work_position_source_opening",
+        focus_tracks=("调棚",),
+        structural_reserve=True,
+        origin="work_position_source_opening",
+    )
+    goal_frontier = MoveCandidate(
+        steps=source_opening.steps,
+        kind="structural",
+        reason="goal_frontier_source_opening",
+        focus_tracks=("存1", "调棚"),
+        structural_reserve=True,
+        origin="goal_frontier_source_opening",
+    )
+
+    candidates = [source_opening]
+    _append_generation_candidate(candidates, goal_frontier)
+
+    assert candidates == [source_opening]
 
 
 def test_budget_release_generation_candidates_prefers_direct_over_goal_frontier_same_slot():
@@ -3569,18 +4146,78 @@ def test_resource_release_dispatch_preserves_source_reaccess_for_remaining_prefi
     )
 
     assert candidate is not None
+    assert len(candidate.steps) == 6
     assert any(
         step.action_type == "DETACH"
-        and step.target_track == "存4南"
-        and step.vehicle_nos == ["1655769", "1662867"]
+        and step.target_track == "预修"
+        and step.vehicle_nos == ["5265641", "1577445"]
         for step in candidate.steps
     )
-    assert not any(
+    assert any(
         step.action_type == "DETACH"
-        and step.target_track in {"机北1", "机南"}
-        and step.vehicle_nos == ["1655769", "1662867"]
+        and step.target_track == "存1"
+        and step.vehicle_nos == ["4921844"]
         for step in candidate.steps
     )
+
+
+def test_group_dispatch_candidate_keeps_minimal_valid_prefix():
+    from fzed_shunting.solver.move_candidates import _build_group_dispatch_candidate
+
+    def fake_attach_detach_steps(*, target_track, block, **_kwargs):
+        return [
+            HookAction(
+                source_track="存5北",
+                target_track=target_track,
+                vehicle_nos=list(block),
+                path_tracks=["存5北", target_track],
+                action_type="DETACH",
+            )
+        ]
+
+    def fake_replay_candidate_steps(*, steps, **_kwargs):
+        return SimpleNamespace(
+            steps=tuple(steps),
+            final_state=SimpleNamespace(loco_carry=(), track_sequences={}),
+        )
+
+    with patch(
+        "fzed_shunting.solver.move_candidates._build_carried_prefix_dispatch_candidate",
+        return_value=None,
+    ), patch(
+        "fzed_shunting.solver.move_candidates._prefix_group_can_detach_to_target",
+        return_value=True,
+    ), patch(
+        "fzed_shunting.solver.move_candidates._attach_detach_steps",
+        side_effect=fake_attach_detach_steps,
+    ), patch(
+        "fzed_shunting.solver.move_candidates.replay_candidate_steps",
+        side_effect=fake_replay_candidate_steps,
+    ), patch(
+        "fzed_shunting.solver.move_candidates._source_tail_after_group_needs_access",
+        return_value=False,
+    ), patch(
+        "fzed_shunting.solver.move_candidates._loco_can_access_track",
+        return_value=True,
+    ):
+        candidate = _build_group_dispatch_candidate(
+            plan_input=SimpleNamespace(),
+            state=SimpleNamespace(track_sequences={"存5北": ["A", "B", "C"]}),
+            route_oracle=SimpleNamespace(),
+            vehicle_by_no={},
+            groups=[
+                ("修1", ["A"]),
+                ("修2", ["B"]),
+                ("修3", ["C"]),
+            ],
+            block=["A", "B", "C"],
+            source_track="存5北",
+            reason="resource_release",
+            focus_tracks=("存5北",),
+        )
+
+    assert candidate is not None
+    assert [step.target_track for step in candidate.steps] == ["修1", "修2"]
 
 
 def test_carried_prefix_dispatch_stages_direct_group_when_preferred_route_is_blocked(monkeypatch):
@@ -9477,3 +10114,58 @@ def test_generate_real_hook_moves_skips_detach_when_full_carry_exceeds_route_lim
         and tuple(move.vehicle_nos) == ("DETACH_FULL_1",)
         for move in moves
     )
+
+
+def test_resource_release_gateway_clear_direct_target_candidate_clears_single_blocker_then_directs_batch():
+    from fzed_shunting.solver.move_candidates import (
+        _build_resource_release_gateway_clear_direct_target_candidate,
+    )
+
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "预修", "trackDistance": 208.5},
+            {"trackName": "调棚", "trackDistance": 82.2},
+            {"trackName": "调北", "trackDistance": 40.0},
+            {"trackName": "渡4", "trackDistance": 40.6},
+            {"trackName": "机北2", "trackDistance": 55.7},
+            {"trackName": "存1", "trackDistance": 113.0},
+            {"trackName": "渡5", "trackDistance": 40.6},
+            {"trackName": "渡6", "trackDistance": 45.5},
+            {"trackName": "渡7", "trackDistance": 41.5},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            *[
+                {
+                    **_vehicle(f"BATCH_{index}", "预修", "调棚", order=index + 1),
+                    "targetMode": "SNAPSHOT",
+                }
+                for index in range(8)
+            ],
+            {
+                **_vehicle("GATEWAY", "调北", "存1", order=1),
+                "targetMode": "SNAPSHOT",
+            },
+        ],
+        "locoTrackName": "预修",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+    state = build_initial_state(normalized)
+    route_oracle = RouteOracle(master)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+
+    candidate = _build_resource_release_gateway_clear_direct_target_candidate(
+        plan_input=normalized,
+        state=state,
+        route_oracle=route_oracle,
+        vehicle_by_no=vehicle_by_no,
+        block=[f"BATCH_{index}" for index in range(8)],
+        source_track="预修",
+    )
+
+    assert candidate is not None
+    assert [step.target_track for step in candidate.steps if step.action_type == "DETACH"] == [
+        "存1",
+        "调棚",
+    ]

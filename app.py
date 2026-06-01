@@ -32,6 +32,7 @@ from fzed_shunting.solver.profile import (
     validation_time_budget_ms,
 )
 from fzed_shunting.tools.segmented_routes_svg import load_segmented_physical_routes
+from fzed_shunting.workflow.l7_closed_topology_mode import is_l7_closed_topology_mode
 
 
 MASTER_DIR = Path(__file__).resolve().parent / "data" / "master"
@@ -518,7 +519,7 @@ def _render_workflow_demo(
 
 
 def _is_workflow_payload(payload: dict) -> bool:
-    return isinstance(payload.get("workflowStages"), list)
+    return isinstance(payload.get("workflowStages"), list) or is_l7_closed_topology_mode(payload)
 
 
 def _render_step(view, step_index: int, *, vehicle_display_metadata: dict[str, dict[str, str]] | None = None):

@@ -46,6 +46,8 @@ from fzed_shunting.solver.partial_selection import (
 from fzed_shunting.solver.validation_recovery import solve_with_validation_recovery_result
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state
+from fzed_shunting.workflow.l7_closed_topology_mode import OPERATION_MODE_L7_CLOSED_TOPOLOGY
+from fzed_shunting.workflow.runner import WorkflowStageFailure, solve_workflow
 
 
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[1] / "data" / "master"
@@ -140,6 +142,27 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--diagnose-front-search-only",
+        dest="diagnose_front_search_only",
+        action="store_true",
+        default=False,
+        help="run with front candidate generation + ranking only",
+    )
+    parser.add_argument(
+        "--force-l7-closed-topology-workflow",
+        dest="force_l7_closed_topology_workflow",
+        action="store_true",
+        default=False,
+        help="wrap every scenario as L7_CLOSED_TOPOLOGY 4-stage workflow before solving",
+    )
+    parser.add_argument(
+        "--disable-validation-recovery",
+        dest="use_validation_recovery",
+        action="store_false",
+        default=True,
+        help="disable validation recovery and keep only the primary front-end search",
+    )
     parser.add_argument("--worker", action="store_true")
     return parser.parse_args()
 
@@ -158,9 +181,90 @@ def solve_one(
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
     improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+    diagnose_front_search_only: bool = False,
+    force_l7_closed_topology_workflow: bool = False,
+    use_validation_recovery: bool = True,
 ) -> dict[str, Any]:
     master = load_master_data(master_dir)
     payload = json.loads(scenario_path.read_text(encoding="utf-8"))
+    if force_l7_closed_topology_workflow:
+        workflow_payload = dict(payload)
+        workflow_payload["operationMode"] = OPERATION_MODE_L7_CLOSED_TOPOLOGY
+        started_at = perf_counter()
+        try:
+            workflow_result = solve_workflow(
+                master,
+                workflow_payload,
+                solver=solver,
+                heuristic_weight=heuristic_weight,
+                beam_width=beam_width,
+                time_budget_ms=time_budget_ms,
+                use_validation_recovery=use_validation_recovery,
+                diagnose_front_search_only=diagnose_front_search_only,
+            )
+            stage_views = [stage.view for stage in workflow_result.stages]
+            stage_valid = [bool(view.summary.is_valid) for view in stage_views]
+            stage_hooks = [int(view.summary.hook_count) for view in stage_views]
+            stage_errors = [list(view.verifier_errors) for view in stage_views]
+            return {
+                "scenario": scenario_path.name,
+                "solved": all(stage_valid),
+                "hook_count": sum(stage_hooks),
+                "is_complete": all(stage_valid),
+                "is_valid": all(stage_valid),
+                "verifier_errors": [error for errors in stage_errors for error in errors],
+                "is_proven_optimal": False,
+                "fallback_stage": (
+                    "workflow_front_only" if diagnose_front_search_only else "workflow"
+                ),
+                "expanded_nodes": None,
+                "generated_nodes": None,
+                "closed_nodes": None,
+                "elapsed_ms": round((perf_counter() - started_at) * 1000.0, 3),
+                "depot_earliness": None,
+                "depot_hook_count": None,
+                "capacity_warnings": [],
+                "debug_stats": {
+                    "workflow_mode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+                    "stage_names": [stage.name for stage in workflow_result.stages],
+                    "stage_valid": stage_valid,
+                    "stage_hook_counts": stage_hooks,
+                    "stage_errors": stage_errors,
+                },
+                "stage_count": workflow_result.stage_count,
+                "stage_hook_counts": stage_hooks,
+                "stage_valid": stage_valid,
+            }
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            workflow_debug_stats = {
+                "workflow_mode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+            }
+            if isinstance(exc, WorkflowStageFailure):
+                workflow_debug_stats.update({
+                    "completed_stage_names": list(exc.completed_stage_names),
+                    "completed_stage_count": len(exc.completed_stage_names),
+                    "failed_stage_name": exc.failed_stage_name,
+                    "failed_stage_index": exc.failed_stage_index,
+                    "total_stage_count": exc.total_stage_count,
+                    "workflow_progress_log": [
+                        f"completed:{name}" for name in exc.completed_stage_names
+                    ] + [
+                        f"failed:{exc.failed_stage_name}"
+                    ],
+                    "failed_stage_cause": exc.cause_message,
+                    "failed_stage_input_summary": dict(exc.stage_input_summary or {}),
+                })
+            return {
+                "scenario": scenario_path.name,
+                "solved": False,
+                "error": error,
+                "error_category": _classify_solve_error(error),
+                "retryable": False,
+                "capacity_warnings": [],
+                "debug_stats": workflow_debug_stats,
+                "stage_count": 4,
+            }
     normalized = normalize_plan_input(payload, master)
     initial = build_initial_state(normalized)
     debug_stats: dict[str, Any] = {}
@@ -181,6 +285,7 @@ def solve_one(
                 enable_depot_late_scheduling=enable_depot_late_scheduling,
                 primary_first_beam=primary_first_beam,
                 improve_pathological_success=improve_pathological_success,
+                diagnose_front_search_only=diagnose_front_search_only,
             )
         else:
             result = _solve_with_primary_first_result(
@@ -198,6 +303,7 @@ def solve_one(
                     near_goal_partial_resume_max_final_heuristic
                 ),
                 primary_first_beam=primary_first_beam,
+                diagnose_front_search_only=diagnose_front_search_only,
             )
         debug_stats = result.debug_stats or debug_stats
         if not result.is_complete:
@@ -291,6 +397,7 @@ def _solve_with_primary_first_result(
     enable_depot_late_scheduling: bool,
     near_goal_partial_resume_max_final_heuristic: int | None,
     primary_first_beam: bool,
+    diagnose_front_search_only: bool,
 ) -> SolverResult:
     common_kwargs = dict(
         master=master,
@@ -299,6 +406,7 @@ def _solve_with_primary_first_result(
         heuristic_weight=heuristic_weight,
         enable_anytime_fallback=enable_anytime_fallback,
         enable_depot_late_scheduling=enable_depot_late_scheduling,
+        diagnose_front_search_only=diagnose_front_search_only,
     )
     if near_goal_partial_resume_max_final_heuristic is not None:
         common_kwargs["near_goal_partial_resume_max_final_heuristic"] = (
@@ -368,6 +476,7 @@ def _solve_with_worker_recovery_result(
     enable_depot_late_scheduling: bool,
     primary_first_beam: bool,
     improve_pathological_success: bool,
+    diagnose_front_search_only: bool,
 ) -> SolverResult:
     def solve_result_fn(
         plan_input,
@@ -397,6 +506,7 @@ def _solve_with_worker_recovery_result(
                 near_goal_partial_resume_max_final_heuristic
             ),
             primary_first_beam=primary_first_beam,
+            diagnose_front_search_only=diagnose_front_search_only,
         )
 
     result = solve_with_validation_recovery_result(
@@ -467,6 +577,9 @@ def _build_worker_command(
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
     improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+    diagnose_front_search_only: bool = False,
+    force_l7_closed_topology_workflow: bool = False,
+    use_validation_recovery: bool = True,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -500,6 +613,12 @@ def _build_worker_command(
         cmd.append("--enable-worker-recovery")
     if not improve_pathological_success:
         cmd.append("--disable-improve-pathological-success")
+    if diagnose_front_search_only:
+        cmd.append("--diagnose-front-search-only")
+    if force_l7_closed_topology_workflow:
+        cmd.append("--force-l7-closed-topology-workflow")
+    if not use_validation_recovery:
+        cmd.append("--disable-validation-recovery")
     return cmd
 
 
@@ -518,6 +637,9 @@ def _run_scenario_subprocess(
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
     improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+    diagnose_front_search_only: bool = False,
+    force_l7_closed_topology_workflow: bool = False,
+    use_validation_recovery: bool = True,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     effective_timeout_seconds = _effective_worker_timeout_seconds(
@@ -541,6 +663,9 @@ def _run_scenario_subprocess(
         primary_first_beam=primary_first_beam,
         enable_worker_recovery=enable_worker_recovery,
         improve_pathological_success=improve_pathological_success,
+        diagnose_front_search_only=diagnose_front_search_only,
+        force_l7_closed_topology_workflow=force_l7_closed_topology_workflow,
+        use_validation_recovery=use_validation_recovery,
     )
     process = subprocess.Popen(
         cmd,
@@ -631,6 +756,9 @@ def run_parallel_scenarios(
     primary_first_beam: bool = False,
     enable_worker_recovery: bool = False,
     improve_pathological_success: bool = VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+    diagnose_front_search_only: bool = False,
+    force_l7_closed_topology_workflow: bool = False,
+    use_validation_recovery: bool = True,
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -652,6 +780,9 @@ def run_parallel_scenarios(
                 primary_first_beam=primary_first_beam,
                 enable_worker_recovery=enable_worker_recovery,
                 improve_pathological_success=improve_pathological_success,
+                diagnose_front_search_only=diagnose_front_search_only,
+                force_l7_closed_topology_workflow=force_l7_closed_topology_workflow,
+                use_validation_recovery=use_validation_recovery,
             )
             for scenario_path in scenario_paths
         ]
@@ -1393,6 +1524,9 @@ def _run_worker(args: argparse.Namespace) -> None:
             "improve_pathological_success",
             VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
         ),
+        diagnose_front_search_only=getattr(args, "diagnose_front_search_only", False),
+        force_l7_closed_topology_workflow=getattr(args, "force_l7_closed_topology_workflow", False),
+        use_validation_recovery=getattr(args, "use_validation_recovery", True),
     )
     print(json.dumps(result, ensure_ascii=False))
 
@@ -1425,6 +1559,9 @@ def main() -> None:
     enable_depot_late_scheduling = getattr(args, "enable_depot_late_scheduling", True)
     primary_first_beam = getattr(args, "primary_first_beam", False)
     enable_worker_recovery = getattr(args, "enable_worker_recovery", False)
+    diagnose_front_search_only = getattr(args, "diagnose_front_search_only", False)
+    force_l7_closed_topology_workflow = getattr(args, "force_l7_closed_topology_workflow", False)
+    use_validation_recovery = getattr(args, "use_validation_recovery", True)
     if time_budget_ms is None:
         time_budget_ms = validation_time_budget_ms(args.timeout_seconds)
     deadline_at = None
@@ -1459,28 +1596,32 @@ def main() -> None:
             "improve_pathological_success",
             VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
         ),
+        diagnose_front_search_only=diagnose_front_search_only,
+        force_l7_closed_topology_workflow=force_l7_closed_topology_workflow,
+        use_validation_recovery=use_validation_recovery,
     )
-    results = recover_no_solution_results(
-        master_dir=args.master_dir,
-        scenario_paths=scenario_paths,
-        solver=args.solver,
-        beam_width=args.beam_width,
-        heuristic_weight=args.heuristic_weight,
-        timeout_seconds=args.timeout_seconds,
-        max_workers=args.max_workers,
-        retry_no_solution_beam_width=retry_no_solution_beam_width,
-        initial_results=results,
-        time_budget_ms=time_budget_ms,
-        enable_anytime_fallback=enable_anytime_fallback,
-        enable_depot_late_scheduling=enable_depot_late_scheduling,
-        enable_worker_recovery=enable_worker_recovery,
-        improve_pathological_success=getattr(
-            args,
-            "improve_pathological_success",
-            VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
-        ),
-        deadline_at=deadline_at,
-    )
+    if use_validation_recovery and not force_l7_closed_topology_workflow:
+        results = recover_no_solution_results(
+            master_dir=args.master_dir,
+            scenario_paths=scenario_paths,
+            solver=args.solver,
+            beam_width=args.beam_width,
+            heuristic_weight=args.heuristic_weight,
+            timeout_seconds=args.timeout_seconds,
+            max_workers=args.max_workers,
+            retry_no_solution_beam_width=retry_no_solution_beam_width,
+            initial_results=results,
+            time_budget_ms=time_budget_ms,
+            enable_anytime_fallback=enable_anytime_fallback,
+            enable_depot_late_scheduling=enable_depot_late_scheduling,
+            enable_worker_recovery=enable_worker_recovery,
+            improve_pathological_success=getattr(
+                args,
+                "improve_pathological_success",
+                VALIDATION_DEFAULT_IMPROVE_PATHOLOGICAL_SUCCESS,
+            ),
+            deadline_at=deadline_at,
+        )
     solved_cases = sum(1 for result in results if result.get("solved"))
     unsolved_cases = len(results) - solved_cases
     summary = {
@@ -1496,6 +1637,9 @@ def main() -> None:
         ),
         "primary_first_beam": primary_first_beam,
         "enable_worker_recovery": enable_worker_recovery,
+        "diagnose_front_search_only": diagnose_front_search_only,
+        "force_l7_closed_topology_workflow": force_l7_closed_topology_workflow,
+        "use_validation_recovery": use_validation_recovery,
         "validation_mode": args.validation_mode,
         "retry_no_solution_beam_width": retry_no_solution_beam_width,
         "scenario_count": len(results),

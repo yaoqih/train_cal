@@ -49,6 +49,8 @@ class NormalizedPlanInput(BaseModel):
     loco_track_name: str
     yard_mode: str
     single_end_track_names: frozenset[str] = Field(default_factory=frozenset)
+    workflow_stage_name: str = ""
+    stage_policy: dict[str, object] = Field(default_factory=dict)
 
 
 WORK_AREA_DEFAULTS = {
@@ -137,6 +139,14 @@ SHORT_REPAIR_TARGET_ALIASES = {
     "修4": "修4",
 }
 
+SOURCE_TRACK_ALIASES = {
+    **SHORT_REPAIR_TARGET_ALIASES,
+    "修1库内": "修1",
+    "修2库内": "修2",
+    "修3库内": "修3",
+    "修4库内": "修4",
+}
+
 VALID_IS_SPOTTING_LITERALS = {"", "否", "是", "迎检"}
 FORBIDDEN_FINAL_AREA_CODES = {"机库:WEIGH"}
 REMOVED_WORK_AREA_CODES = {
@@ -181,16 +191,17 @@ def normalize_plan_input(
     vehicles: list[NormalizedVehicle] = []
     seen_orders: set[tuple[str, int]] = set()
     for raw in payload.get("vehicleInfo", []):
+        source_track_name = _canonical_source_track(raw["trackName"])
         order = int(raw["order"])
-        order_key = (raw["trackName"], order)
+        order_key = (source_track_name, order)
         if order_key in seen_orders:
             raise InputValidationError(
-                f"Duplicate order on track {raw['trackName']}: {order}"
+                f"Duplicate order on track {source_track_name}: {order}"
             )
         seen_orders.add(order_key)
-        if raw["trackName"] not in master.tracks:
+        if source_track_name not in master.tracks:
             raise InputValidationError(f"Unknown source track: {raw['trackName']}")
-        source_track = master.tracks[raw["trackName"]]
+        source_track = master.tracks[source_track_name]
         if source_track.track_type == "RUNNING":
             raise InputValidationError(
                 f"Running track cannot be source track: {raw['trackName']}"
@@ -202,7 +213,7 @@ def normalize_plan_input(
         )
         vehicles.append(
             NormalizedVehicle(
-                current_track=raw["trackName"],
+                current_track=source_track_name,
                 order=order,
                 vehicle_model=raw["vehicleModel"],
                 vehicle_no=raw["vehicleNo"],
@@ -224,6 +235,8 @@ def normalize_plan_input(
         single_end_track_names=frozenset(
             code for code, track in master.tracks.items() if len(track.connection_nodes) == 1
         ),
+        workflow_stage_name=str(payload.get("workflowStageName") or ""),
+        stage_policy=dict(payload.get("stagePolicy") or {}),
     )
 
 
@@ -509,6 +522,18 @@ def _normalize_explicit_goal(
             ),
             "INSPECTION" if inspection_enabled else "NORMAL",
         )
+    if explicit_mode == "WORK_POSITION":
+        if explicit_spot_code is None:
+            raise InputValidationError("WORK_POSITION goal requires targetSpotCode")
+        return (
+            _work_position_goal(
+                target_track,
+                "EXACT_NORTH_RANK",
+                target_rank=_parse_work_position_rank(explicit_spot_code),
+                target_source=explicit_source,
+            ),
+            "INSPECTION" if inspection_enabled else "NORMAL",
+        )
     raise InputValidationError(f"Unsupported explicit targetMode: {explicit_mode}")
 
 
@@ -594,6 +619,10 @@ def _normalize_snapshot_goal(
 
 def _canonical_target_track(target_track: str) -> str:
     return SHORT_REPAIR_TARGET_ALIASES.get(target_track, target_track)
+
+
+def _canonical_source_track(track_name: str) -> str:
+    return SOURCE_TRACK_ALIASES.get(track_name, track_name)
 
 
 def _area_track(area_code: str, fallback_track: str) -> str:

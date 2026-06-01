@@ -169,3 +169,41 @@ def test_replay_candidate_steps_rejects_large_non_cun4bei_close_door_first_hook(
         steps=steps,
         route_oracle=RouteOracle(master),
     ) is None
+
+
+def test_replay_candidate_steps_rejects_close_door_first_when_heavy_in_same_hook():
+    master = load_master_data(DATA_DIR)
+    normalized = normalize_plan_input(
+        {
+            "trackInfo": [
+                {"trackName": "机库", "trackDistance": 71.6},
+                {"trackName": "存5北", "trackDistance": 367.0},
+                {"trackName": "存3", "trackDistance": 258.5},
+            ],
+            "vehicleInfo": [
+                _vehicle("CD01", "存5北", "存3", order=1, attributes="关门车"),
+                _vehicle("HV01", "存5北", "存3", order=2, attributes="重车"),
+            ],
+            "locoTrackName": "机库",
+        },
+        master,
+    )
+    state = build_initial_state(normalized)
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+    steps = [
+        HookAction(
+            source_track="存5北",
+            target_track="存5北",
+            vehicle_nos=["CD01", "HV01"],
+            path_tracks=["存5北"],
+            action_type="ATTACH",
+        ),
+    ]
+
+    assert replay_candidate_steps(
+        plan_input=normalized,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+        steps=steps,
+        route_oracle=RouteOracle(master),
+    ) is None

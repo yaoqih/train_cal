@@ -82,7 +82,7 @@ def test_route_oracle_rejects_l1_length_overflow():
     )
 
     assert result.is_valid is False
-    assert any("190" in error for error in result.errors)
+    assert any("193" in error for error in result.errors)
 
 
 def test_route_oracle_rejects_loaded_loco_access_l1_length_overflow():
@@ -96,7 +96,7 @@ def test_route_oracle_rejects_loaded_loco_access_l1_length_overflow():
     )
 
     assert result.is_valid is False
-    assert any("190" in error for error in result.errors)
+    assert any("193" in error for error in result.errors)
 
 
 def test_route_oracle_uses_master_topology_for_custom_tracks():

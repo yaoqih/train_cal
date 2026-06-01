@@ -56,6 +56,22 @@ class MasterData(BaseModel):
     business_rules: BusinessRules = Field(default_factory=BusinessRules)
 
 
+def clone_master_with_blocked_branches(
+    master: MasterData,
+    blocked_branches: list[str] | tuple[str, ...] | set[str],
+) -> MasterData:
+    if not blocked_branches:
+        return master
+    cloned = master.model_copy(deep=True)
+    blocked = {str(branch) for branch in blocked_branches}
+    for branch in blocked:
+        route = cloned.physical_routes.get(branch)
+        if route is None:
+            continue
+        route.status = "阶段封锁"
+    return cloned
+
+
 def _load_json(path: Path) -> list[dict]:
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)

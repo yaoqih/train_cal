@@ -259,8 +259,8 @@ class RouteOracle:
             if physical_route.status != "已确认":
                 errors.append(f"Route branch {branch} 状态为{physical_route.status}")
 
-        if route.uses_l1 and train_length_m > 190:
-            errors.append("Train length exceeds 190m limit when passing L1 branch")
+        if route.uses_l1 and train_length_m > 193:
+            errors.append("Train length exceeds 193m limit when passing L1 branch")
 
         reverse_branch_codes: list[str] = []
         required_reverse_clearance_m = train_length_m + self.master.business_rules.loco_length_m

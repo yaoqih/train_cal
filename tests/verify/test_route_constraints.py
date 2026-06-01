@@ -310,7 +310,7 @@ def test_verifier_rejects_l1_overflow_route():
     )
 
     assert report.is_valid is False
-    assert any("190" in error for error in report.errors)
+    assert any("193" in error for error in report.errors)
 
 
 def test_verifier_rejects_interference_when_intermediate_track_is_occupied():

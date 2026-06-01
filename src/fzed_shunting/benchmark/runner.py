@@ -12,6 +12,7 @@ from fzed_shunting.solver.astar_solver import solve_with_simple_astar_result
 from fzed_shunting.verify.plan_verifier import verify_plan
 from fzed_shunting.verify.replay import build_initial_state, replay_plan
 from fzed_shunting.workflow.runner import solve_workflow
+from fzed_shunting.workflow.l7_closed_topology_mode import is_l7_closed_topology_mode
 
 
 DEFAULT_MASTER_DIR = Path(__file__).resolve().parents[3] / "data" / "master"
@@ -319,7 +320,7 @@ def _solve_suite_payload(
         return {
             "scenario_type": "workflow",
             "solver": solver,
-            "vehicle_count": len(payload.get("initialVehicleInfo", [])),
+            "vehicle_count": len(payload.get("initialVehicleInfo") or payload.get("vehicleInfo") or []),
             "stage_count": result.stage_count,
             "hook_count": sum(stage["hookCount"] for stage in stage_payloads),
             "stages": stage_payloads,
@@ -391,8 +392,8 @@ def _build_suite_error_result(
         return {
             "scenario_type": "workflow",
             "solver": solver,
-            "vehicle_count": len(payload.get("initialVehicleInfo", [])),
-            "stage_count": len(payload.get("workflowStages", [])),
+            "vehicle_count": len(payload.get("initialVehicleInfo") or payload.get("vehicleInfo") or []),
+            "stage_count": len(payload.get("workflowStages") or []),
             "hook_count": 0,
             "stages": [],
             "hook_plan": [],
@@ -417,7 +418,7 @@ def _build_suite_error_result(
 
 def _is_workflow_payload(payload: dict) -> bool:
     workflow_stages = payload.get("workflowStages")
-    return isinstance(workflow_stages, list)
+    return isinstance(workflow_stages, list) or is_l7_closed_topology_mode(payload)
 
 
 def _build_hook_remark(validation) -> str:

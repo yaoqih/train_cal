@@ -157,6 +157,61 @@ def test_build_demo_view_model_defaults_match_validation_runner_profile(monkeypa
     assert captured["enable_depot_late_scheduling"] is False
 
 
+def test_build_demo_view_model_can_skip_validation_recovery(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "VIEW_FRONT_ONLY",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存5北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "locoTrackName": "机库",
+    }
+
+    def fail_recovery(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("validation recovery should not run")
+
+    captured = {}
+
+    def fake_solve(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        return SolverResult(
+            plan=[],
+            expanded_nodes=0,
+            generated_nodes=0,
+            closed_nodes=0,
+            elapsed_ms=0.0,
+            is_complete=True,
+            fallback_stage="beam",
+        )
+
+    monkeypatch.setattr(view_model_module, "solve_with_validation_recovery_result", fail_recovery)
+    monkeypatch.setattr(view_model_module, "solve_with_simple_astar_result", fake_solve)
+
+    view = build_demo_view_model(
+        master,
+        payload,
+        use_validation_recovery=False,
+        diagnose_front_search_only=True,
+    )
+
+    assert view.summary.hook_count == 0
+    assert captured["enable_anytime_fallback"] is False
+    assert captured["diagnose_front_search_only"] is True
+
+
 def test_build_demo_view_model_retries_beam_like_validation_runner(monkeypatch):
     master = load_master_data(DATA_DIR)
     payload = {

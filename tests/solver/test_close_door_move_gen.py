@@ -137,3 +137,18 @@ def test_close_door_not_going_to_4bei_small_block_not_rejected():
         track_sequences={}, loco_track_name="机库", weighed_vehicle_nos=set(), spot_assignments={}
     )
     assert _violates_close_door_hook_rule(["CD1"], "存1", vehicle_by_no, state) is False
+
+
+def test_close_door_first_rejected_when_same_hook_contains_heavy_vehicle():
+    from unittest.mock import MagicMock
+
+    close_door = MagicMock(is_close_door=True, is_heavy=False)
+    close_door.goal = MagicMock(target_mode="TRACK", target_track="存1", allowed_target_tracks=["存1"])
+    heavy = MagicMock(is_close_door=False, is_heavy=True)
+    heavy.goal = close_door.goal
+    vehicle_by_no = {"CD1": close_door, "H1": heavy}
+    state = ReplayState(
+        track_sequences={}, loco_track_name="机库", weighed_vehicle_nos=set(), spot_assignments={}
+    )
+
+    assert _violates_close_door_hook_rule(["CD1", "H1"], "存1", vehicle_by_no, state) is True

@@ -452,11 +452,20 @@ def _resource_debts(
     for track_name, fact in sorted(capacity_plan.facts_by_track.items()):
         if fact.release_pressure_length <= 1e-9:
             continue
+        actionable_prefix = _capacity_release_actionable_prefix(
+            track_name=track_name,
+            vehicle_nos=list(fact.front_release_vehicle_nos),
+            state=state,
+            plan_input=plan_input,
+            vehicle_by_no=vehicle_by_no,
+        )
+        if not actionable_prefix:
+            continue
         debts.append(
             ResourceDebt(
                 kind="CAPACITY_RELEASE",
                 track_name=track_name,
-                vehicle_nos=tuple(fact.front_release_vehicle_nos),
+                vehicle_nos=tuple(actionable_prefix),
                 pressure=float(fact.release_pressure_length),
             )
         )
@@ -483,6 +492,76 @@ def _resource_debts(
         )
     debts.extend(_exact_spot_release_debts(plan_input=plan_input, state=state))
     return tuple(debts)
+
+
+def _capacity_release_actionable_prefix(
+    *,
+    track_name: str,
+    vehicle_nos: list[str],
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> list[str]:
+    if not vehicle_nos:
+        return []
+    groups: list[tuple[tuple[str, str], list[str]]] = []
+    for vehicle_no in vehicle_nos:
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            break
+        key = _capacity_release_prefix_key(
+            track_name=track_name,
+            vehicle=vehicle,
+            state=state,
+            plan_input=plan_input,
+        )
+        if not groups or groups[-1][0] != key:
+            groups.append((key, [vehicle_no]))
+        else:
+            groups[-1][1].append(vehicle_no)
+    if not groups:
+        return []
+    prefix: list[str] = []
+    seen_actionable = False
+    actionable_key: tuple[str, str] | None = None
+    for key, group in groups:
+        kind, _target = key
+        prefix.extend(group)
+        if not seen_actionable:
+            if kind == "KEEP":
+                continue
+            seen_actionable = True
+            actionable_key = key
+            continue
+        if key != actionable_key:
+            del prefix[-len(group):]
+            break
+    return prefix if seen_actionable else vehicle_nos
+
+
+def _capacity_release_prefix_key(
+    *,
+    track_name: str,
+    vehicle: NormalizedVehicle,
+    state: ReplayState,
+    plan_input: NormalizedPlanInput,
+) -> tuple[str, str]:
+    if goal_is_satisfied(
+        vehicle,
+        track_name=track_name,
+        state=state,
+        plan_input=plan_input,
+    ) and track_name in vehicle.goal.preferred_target_tracks:
+        return ("KEEP", track_name)
+    preferred_targets = [
+        target for target in vehicle.goal.preferred_target_tracks if target != track_name
+    ]
+    if len(preferred_targets) == 1:
+        return ("TARGET", preferred_targets[0])
+    targets = [target for target in vehicle.goal.allowed_target_tracks if target != track_name]
+    if len(targets) == 1:
+        return ("TARGET", targets[0])
+    return ("BUFFER", "")
 
 
 def _front_clearance_prefix(

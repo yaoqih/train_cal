@@ -1,0 +1,1501 @@
+{
+  "startStatus": [
+    {
+      "line": "老预修",
+      "position": 1,
+      "type": "C70E",
+      "no": "1851493",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 2,
+      "type": "C70E",
+      "no": "1755963",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 3,
+      "type": "C70E",
+      "no": "1764356",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 4,
+      "type": "C70",
+      "no": "1578386",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 5,
+      "type": "C70EH",
+      "no": "1519988",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 6,
+      "type": "C70EH",
+      "no": "1519012",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 7,
+      "type": "C64K",
+      "no": "4961622",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 8,
+      "type": "C70",
+      "no": "1607053",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 9,
+      "type": "C70",
+      "no": "1604078",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "老预修",
+      "position": 10,
+      "type": "C70",
+      "no": "1603612",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "喷漆库",
+      "position": 1,
+      "type": "P64AK",
+      "no": "3451811",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "机走预修",
+      "position": 1,
+      "type": "P70",
+      "no": "3803904",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "机走预修",
+      "position": 2,
+      "type": "P64GK",
+      "no": "3468919",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "机走预修",
+      "position": 3,
+      "type": "P64GK",
+      "no": "3462265",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 1,
+      "type": "C70",
+      "no": "1571060",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 2,
+      "type": "C70EH",
+      "no": "1527832",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 3,
+      "type": "C70E",
+      "no": "1750897",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 4,
+      "type": "C70E",
+      "no": "1846787",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 5,
+      "type": "C70EH",
+      "no": "1519747",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 6,
+      "type": "C70E",
+      "no": "1722592",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 7,
+      "type": "C70",
+      "no": "1572668",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 8,
+      "type": "P64AK",
+      "no": "3425590",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 9,
+      "type": "P64AK",
+      "no": "3432161",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "调梁库",
+      "position": 10,
+      "type": "P64GK",
+      "no": "3467913",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修1库内",
+      "position": 1,
+      "type": "C70EH",
+      "no": "1527776",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修1库内",
+      "position": 2,
+      "type": "C70EH",
+      "no": "1528315",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修1库内",
+      "position": 3,
+      "type": "C70E",
+      "no": "1715425",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修1库内",
+      "position": 4,
+      "type": "C64K",
+      "no": "4862911",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修1库内",
+      "position": 5,
+      "type": "C70",
+      "no": "1610307",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修2库内",
+      "position": 1,
+      "type": "C70EH",
+      "no": "1519856",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修2库内",
+      "position": 2,
+      "type": "C70EH",
+      "no": "1517089",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修2库内",
+      "position": 3,
+      "type": "C64K",
+      "no": "4974854",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修2库内",
+      "position": 4,
+      "type": "C70",
+      "no": "1655446",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修2库内",
+      "position": 5,
+      "type": "P64AK",
+      "no": "3450035",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "卸轮线",
+      "position": 1,
+      "type": "C64K",
+      "no": "4872388",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "卸轮线",
+      "position": 2,
+      "type": "C64H",
+      "no": "4206309",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 2,
+      "type": "X70",
+      "no": "5241879",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 3,
+      "type": "C70",
+      "no": "1609575",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 4,
+      "type": "C70",
+      "no": "1609236",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 5,
+      "type": "C70",
+      "no": "1608168",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 6,
+      "type": "NX70",
+      "no": "5460824",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 7,
+      "type": "NX70A",
+      "no": "5484423",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 8,
+      "type": "C62BK",
+      "no": "4639021",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存1线",
+      "position": 9,
+      "type": "C64K",
+      "no": "4836112",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 5,
+      "type": "P64AK",
+      "no": "3450444",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 6,
+      "type": "P64GK",
+      "no": "3460049",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 7,
+      "type": "P64GK",
+      "no": "3461212",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 8,
+      "type": "P64GK",
+      "no": "3467687",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 9,
+      "type": "P70",
+      "no": "3822822",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 10,
+      "type": "P64AK",
+      "no": "3480160",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 11,
+      "type": "P64AK",
+      "no": "3428264",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存3线",
+      "position": 12,
+      "type": "P70",
+      "no": "3809715",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 1,
+      "type": "C64H",
+      "no": "4206343",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 2,
+      "type": "C70E",
+      "no": "1750738",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 3,
+      "type": "C70E",
+      "no": "1843960",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 4,
+      "type": "C70E",
+      "no": "1844145",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 5,
+      "type": "C70",
+      "no": "1578515",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 6,
+      "type": "GQ70",
+      "no": "6603583",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 7,
+      "type": "GQ70",
+      "no": "6612481",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 8,
+      "type": "GQ70",
+      "no": "6615779",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 9,
+      "type": "X70",
+      "no": "5234396",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 10,
+      "type": "X70",
+      "no": "5233483",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 11,
+      "type": "C64H",
+      "no": "4206282",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 12,
+      "type": "C70E",
+      "no": "1844148",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 13,
+      "type": "C70",
+      "no": "1575821",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 14,
+      "type": "C70",
+      "no": "1664748",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 15,
+      "type": "C70H",
+      "no": "1502929",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线北",
+      "position": 16,
+      "type": "C64K",
+      "no": "4870333",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 24,
+      "type": "C70EH",
+      "no": "1519932",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 25,
+      "type": "C70E",
+      "no": "1764460",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 26,
+      "type": "C70H",
+      "no": "1503055",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 27,
+      "type": "C70E",
+      "no": "1750597",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 28,
+      "type": "C70E",
+      "no": "1750854",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 29,
+      "type": "C64K",
+      "no": "4940654",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 30,
+      "type": "C70E",
+      "no": "1756872",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 31,
+      "type": "C70E",
+      "no": "1840640",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存5线南",
+      "position": 32,
+      "type": "C70",
+      "no": "1574244",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "抛丸线",
+      "position": 1,
+      "type": "C70",
+      "no": "1610459",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "洗罐线",
+      "position": 1,
+      "type": "C70E",
+      "no": "1846944",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "洗罐线",
+      "position": 2,
+      "type": "C70E",
+      "no": "1755838",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "洗罐线",
+      "position": 3,
+      "type": "C70E",
+      "no": "1750864",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "洗罐线",
+      "position": 4,
+      "type": "C70E",
+      "no": "1853749",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "洗罐线",
+      "position": 5,
+      "type": "C64K",
+      "no": "4871870",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库外",
+      "position": 6,
+      "type": "C70",
+      "no": "1608193",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库内",
+      "position": 1,
+      "type": "X6K",
+      "no": "5221811",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库内",
+      "position": 2,
+      "type": "C70E",
+      "no": "1748919",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库内",
+      "position": 3,
+      "type": "C70E",
+      "no": "1839548",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库内",
+      "position": 4,
+      "type": "C70E",
+      "no": "1750710",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修3库内",
+      "position": 5,
+      "type": "C70E",
+      "no": "1847059",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修4库内",
+      "position": 1,
+      "type": "GQ70",
+      "no": "6613496",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修4库内",
+      "position": 2,
+      "type": "C70E",
+      "no": "1847080",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修4库内",
+      "position": 3,
+      "type": "C64K",
+      "no": "4868522",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修4库内",
+      "position": 4,
+      "type": "C70E",
+      "no": "1749017",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "修4库内",
+      "position": 5,
+      "type": "C64K",
+      "no": "4961734",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    },
+    {
+      "line": "存2线",
+      "position": 9,
+      "type": "C70",
+      "no": "1604084",
+      "length": 11,
+      "isHeavy": false,
+      "isWeigh": false
+    }
+  ],
+  "endStatus": [
+    {
+      "no": "1502929",
+      "line": "老预修",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4870333",
+      "line": "老预修",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4206343",
+      "line": "老预修",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750738",
+      "line": "老预修",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1843960",
+      "line": "老预修",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1844145",
+      "line": "老预修",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1578515",
+      "line": "老预修",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1607053",
+      "line": "老预修",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1608168",
+      "line": "老预修",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1603612",
+      "line": "老预修",
+      "position": 10,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3803904",
+      "line": "喷漆库",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3468919",
+      "line": "喷漆库",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3462265",
+      "line": "喷漆库",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1604084",
+      "line": "机库线",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1571060",
+      "line": "机库线",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1527832",
+      "line": "机库线",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750897",
+      "line": "机库线",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1846787",
+      "line": "机库线",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5234396",
+      "line": "调梁库",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5233483",
+      "line": "调梁库",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4206282",
+      "line": "调梁库",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1844148",
+      "line": "调梁库",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1575821",
+      "line": "调梁库",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1664748",
+      "line": "调梁库",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1604078",
+      "line": "调梁库",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3425590",
+      "line": "调梁库",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3432161",
+      "line": "调梁库",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3467913",
+      "line": "调梁库",
+      "position": 10,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1764356",
+      "line": "修1库内",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1578386",
+      "line": "修1库内",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1519988",
+      "line": "修1库内",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1519012",
+      "line": "修1库内",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4961622",
+      "line": "修1库内",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1519856",
+      "line": "修2库内",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1517089",
+      "line": "修2库内",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4974854",
+      "line": "修2库内",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1655446",
+      "line": "修2库内",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3450035",
+      "line": "修2库内",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4872388",
+      "line": "卸轮线",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4206309",
+      "line": "卸轮线",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1610307",
+      "line": "存1线",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5460824",
+      "line": "存1线",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5484423",
+      "line": "存1线",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4639021",
+      "line": "存1线",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4836112",
+      "line": "存1线",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3450444",
+      "line": "存3线",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3460049",
+      "line": "存3线",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3461212",
+      "line": "存3线",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3467687",
+      "line": "存3线",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3822822",
+      "line": "存3线",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3480160",
+      "line": "存3线",
+      "position": 10,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3428264",
+      "line": "存3线",
+      "position": 11,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3809715",
+      "line": "存3线",
+      "position": 12,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1519932",
+      "line": "存5线南",
+      "position": 24,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1764460",
+      "line": "存5线南",
+      "position": 25,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1503055",
+      "line": "存5线南",
+      "position": 26,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750597",
+      "line": "存5线南",
+      "position": 27,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750854",
+      "line": "存5线南",
+      "position": 28,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4940654",
+      "line": "存5线南",
+      "position": 29,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1756872",
+      "line": "存5线南",
+      "position": 30,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1840640",
+      "line": "存5线南",
+      "position": 31,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1574244",
+      "line": "存5线南",
+      "position": 32,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5241879",
+      "line": "抛丸线",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "6603583",
+      "line": "洗罐线",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "6612481",
+      "line": "洗罐线",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "6615779",
+      "line": "洗罐线",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "3451811",
+      "line": "修3库外",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1846944",
+      "line": "修3库内",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1755838",
+      "line": "修3库内",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750864",
+      "line": "修3库内",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1853749",
+      "line": "修3库内",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4871870",
+      "line": "修3库内",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1519747",
+      "line": "修4库内",
+      "position": 1,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1722592",
+      "line": "修4库内",
+      "position": 2,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1572668",
+      "line": "修4库内",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1851493",
+      "line": "修4库内",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1755963",
+      "line": "修4库内",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1610459",
+      "line": "存2线",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1609575",
+      "line": "存2线",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1609236",
+      "line": "存2线",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1527776",
+      "line": "存4线",
+      "position": 3,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1528315",
+      "line": "存4线",
+      "position": 4,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1715425",
+      "line": "存4线",
+      "position": 5,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4862911",
+      "line": "存4线",
+      "position": 6,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "6613496",
+      "line": "存4线",
+      "position": 7,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1847080",
+      "line": "存4线",
+      "position": 8,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4868522",
+      "line": "存4线",
+      "position": 9,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1749017",
+      "line": "存4线",
+      "position": 10,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "4961734",
+      "line": "存4线",
+      "position": 11,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1608193",
+      "line": "存4线",
+      "position": 12,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "5221811",
+      "line": "存4线",
+      "position": 13,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1748919",
+      "line": "存4线",
+      "position": 14,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1839548",
+      "line": "存4线",
+      "position": 15,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1750710",
+      "line": "存4线",
+      "position": 16,
+      "isForceTargetPosition": true
+    },
+    {
+      "no": "1847059",
+      "line": "存4线",
+      "position": 17,
+      "isForceTargetPosition": true
+    }
+  ],
+  "terminalLines": [
+    {
+      "line": "老预修",
+      "maxPosition": 10
+    },
+    {
+      "line": "喷漆库",
+      "maxPosition": 3
+    },
+    {
+      "line": "机库线",
+      "maxPosition": 5
+    },
+    {
+      "line": "调梁库",
+      "maxPosition": 10
+    },
+    {
+      "line": "修1库内",
+      "maxPosition": 9
+    },
+    {
+      "line": "修2库内",
+      "maxPosition": 9
+    },
+    {
+      "line": "卸轮线",
+      "maxPosition": 2
+    },
+    {
+      "line": "存1线",
+      "maxPosition": 9
+    },
+    {
+      "line": "存3线",
+      "maxPosition": 12
+    },
+    {
+      "line": "存5线南",
+      "maxPosition": 32
+    },
+    {
+      "line": "抛丸线",
+      "maxPosition": 1
+    },
+    {
+      "line": "洗罐线",
+      "maxPosition": 5
+    },
+    {
+      "line": "修3库外",
+      "maxPosition": 9
+    },
+    {
+      "line": "修3库内",
+      "maxPosition": 9
+    },
+    {
+      "line": "修4库内",
+      "maxPosition": 9
+    },
+    {
+      "line": "存2线",
+      "maxPosition": 9
+    },
+    {
+      "line": "存4线",
+      "maxPosition": 17
+    }
+  ]
+}
