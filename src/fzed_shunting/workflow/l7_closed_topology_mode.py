@@ -204,6 +204,7 @@ class Phase1Plan:
     buffer_assignment: dict[str, str]
     target_rank_by_vehicle: dict[str, int]
     goal_overrides: dict[str, tuple[str, str]]
+    wave_plans: tuple["Phase1WavePlan", ...]
     diagnostics: dict[str, Any]
 
 
@@ -234,6 +235,10 @@ class Phase1Block:
     released_finish_vehicle_count: int
     required_predecessor_ids: tuple[str, ...]
     layout_role: str
+    topology_zone: str
+    throat_group: str
+    pressure_gain: int
+    coupling_degree: int
 
 
 @dataclass(frozen=True)
@@ -262,6 +267,18 @@ class Phase1BackbonePlan:
 class Phase1FinishPlan:
     selected_block_ids: tuple[str, ...]
     goal_overrides: dict[str, tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class Phase1WavePlan:
+    wave_name: str
+    wave_role: str
+    selected_block_ids: tuple[str, ...]
+    selected_vehicle_nos: frozenset[str]
+    buffer_assignment: dict[str, str]
+    goal_overrides: dict[str, tuple[str, str]]
+    target_rank_by_vehicle: dict[str, int]
+    diagnostics: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -441,6 +458,14 @@ def build_l7_closed_topology_workflow_payload(
                     "packageTargetRanks": dict(stage_plan.phase1_plan.target_rank_by_vehicle),
                     "layoutTargetRanks": dict(stage_plan.phase1_plan.target_rank_by_vehicle),
                     "deferredVehicleNos": sorted(stage_plan.phase1_plan.deferred_vehicle_nos),
+                    "phase1WavePlans": [
+                        _phase1_wave_stage_policy(
+                            wave_plan,
+                            stage_plan=stage_plan,
+                            vehicle_facts=vehicle_facts,
+                        )
+                        for wave_plan in stage_plan.phase1_plan.wave_plans
+                    ],
                     "phase1Diagnostics": dict(stage_plan.phase1_plan.diagnostics),
                 },
                 "vehicleGoals": [
@@ -723,15 +748,10 @@ def _build_phase1_plan(
         reachable_depot_set=reachable_depot_set,
         master=master,
     )
-    finish_plan = _solve_phase1_finish_plan(
-        source_plans=source_plans,
-        backbone_plan=backbone_plan,
-    )
-    finish_goal_overrides = _materialize_phase1_finish_goal_overrides(
+    wave_plans, finish_plan, finish_goal_overrides = _build_phase1_wave_plans(
         facts_list=facts_list,
         source_plans=source_plans,
-        finish_plan=finish_plan,
-        buffer_assignment=backbone_plan.selected_buffer_assignment,
+        backbone_plan=backbone_plan,
         master=master,
     )
     deferred_vehicle_nos = frozenset(
@@ -762,6 +782,7 @@ def _build_phase1_plan(
         buffer_assignment=dict(backbone_plan.selected_buffer_assignment),
         target_rank_by_vehicle=dict(backbone_plan.target_rank_by_vehicle),
         goal_overrides=dict(finish_goal_overrides),
+        wave_plans=wave_plans,
         diagnostics=dict(diagnostics),
     )
 
@@ -2738,6 +2759,10 @@ def _build_single_source_track_blocks(
                 released_finish_vehicle_count=block.released_finish_vehicle_count,
                 required_predecessor_ids=tuple(predecessor_ids),
                 layout_role=layout_role,
+                topology_zone=block.topology_zone,
+                throat_group=block.throat_group,
+                pressure_gain=block.pressure_gain,
+                coupling_degree=block.coupling_degree,
             )
         )
         predecessor_ids.append(block.block_id)
@@ -2852,7 +2877,104 @@ def _make_phase1_block(
         released_finish_vehicle_count=len(future_finish),
         required_predecessor_ids=tuple(),
         layout_role="cleanup",
+        topology_zone=_phase1_topology_zone(source_track),
+        throat_group=_phase1_block_throat_group(
+            source_track=source_track,
+            target_track=target_track,
+            final_family=final_family,
+        ),
+        pressure_gain=_phase1_block_pressure_gain(
+            source_track=source_track,
+            target_track=target_track,
+            future_depot_count=len(future_depot),
+            member_count=len(members),
+        ),
+        coupling_degree=_phase1_block_coupling_degree(
+            source_track=source_track,
+            target_track=target_track,
+            uses_buffer=uses_buffer,
+        ),
     )
+
+
+def _phase1_topology_zone(track_name: str) -> str:
+    if track_name in {"存5北", "存5南"}:
+        return "receiving"
+    if track_name in {"存1", "存2", "存3", "调北", "洗北"}:
+        return "yard"
+    if track_name in {"预修", "机棚"}:
+        return "pre_repair"
+    if track_name in {"调棚", "洗南", "油", "抛", "轮"}:
+        return "functional"
+    if track_name in {"机南", "机北1", "机北2", "机北3", "存4北", "存4南"}:
+        return "buffer"
+    return "other"
+
+
+def _phase1_throat_group(track_name: str) -> str:
+    if track_name in {"机南", "机棚", "预修", "洗北", "洗南", "油", "机北1", "机北2", "机北3"}:
+        return "G_L8"
+    if track_name in {"调北", "调棚", "机库"}:
+        return "G_L7"
+    if track_name in {"存5北", "存5南", "存4北", "存4南", "存1", "存2", "存3"}:
+        return "G_STORAGE"
+    if track_name in {"抛", "轮"}:
+        return "G_L15"
+    return "G_OTHER"
+
+
+def _phase1_block_throat_group(
+    *,
+    source_track: str,
+    target_track: str | None,
+    final_family: str,
+) -> str:
+    source_group = _phase1_throat_group(source_track)
+    if target_track is None:
+        if final_family == "轮":
+            return "G_L15"
+        return source_group
+    target_group = _phase1_throat_group(target_track)
+    if source_group == target_group:
+        return source_group
+    return f"{source_group}->{target_group}"
+
+
+def _phase1_block_pressure_gain(
+    *,
+    source_track: str,
+    target_track: str | None,
+    future_depot_count: int,
+    member_count: int,
+) -> int:
+    zone = _phase1_topology_zone(source_track)
+    zone_base = {
+        "receiving": 18,
+        "functional": 14,
+        "pre_repair": 12,
+        "yard": 10,
+        "buffer": 8,
+        "other": 6,
+    }.get(zone, 6)
+    direct_finish_bonus = 4 if target_track is not None else 0
+    return zone_base + future_depot_count * 4 + member_count + direct_finish_bonus
+
+
+def _phase1_block_coupling_degree(
+    *,
+    source_track: str,
+    target_track: str | None,
+    uses_buffer: bool,
+) -> int:
+    source_group = _phase1_throat_group(source_track)
+    target_group = _phase1_throat_group(target_track) if target_track is not None else source_group
+    if uses_buffer:
+        return 3
+    if source_group == target_group:
+        return 1
+    if "G_OTHER" in {source_group, target_group}:
+        return 2
+    return 3
 
 
 def _phase1_source_plan_priority(
@@ -3453,11 +3575,108 @@ def _build_phase1_target_ranks_from_blocks(
     return result
 
 
-def _solve_phase1_finish_plan(
+def _build_phase1_wave_plans(
+    *,
+    facts_list: list[VehicleStageFacts],
+    source_plans: list[SourceTrackPlan],
+    backbone_plan: Phase1BackbonePlan,
+    master: MasterData,
+) -> tuple[tuple[Phase1WavePlan, ...], Phase1FinishPlan, dict[str, tuple[str, str]]]:
+    wave_a_added_ids = _phase1_wave_a_block_ids(
+        source_plans=source_plans,
+        backbone_plan=backbone_plan,
+    )
+    wave_b_added_ids = _phase1_wave_b_block_ids(
+        source_plans=source_plans,
+        already_selected_ids=wave_a_added_ids,
+    )
+    wave_c_added_ids = _phase1_wave_c_block_ids(
+        source_plans=source_plans,
+        already_selected_ids=wave_a_added_ids + wave_b_added_ids,
+    )
+    wave_definitions = [
+        ("wave_a_backbone", "backbone", wave_a_added_ids),
+        ("wave_b_pressure_relief", "pressure_relief", wave_b_added_ids),
+        ("wave_c_cleanup", "cleanup", wave_c_added_ids),
+    ]
+    cumulative_ids: list[str] = []
+    wave_plans: list[Phase1WavePlan] = []
+    final_goal_overrides: dict[str, tuple[str, str]] = {}
+    for wave_name, wave_role, added_ids in wave_definitions:
+        cumulative_ids.extend(added_ids)
+        cumulative_selected_ids = tuple(dict.fromkeys(cumulative_ids))
+        finish_plan = Phase1FinishPlan(
+            selected_block_ids=cumulative_selected_ids,
+            goal_overrides={},
+        )
+        goal_overrides = _materialize_phase1_finish_goal_overrides(
+            facts_list=facts_list,
+            source_plans=source_plans,
+            finish_plan=finish_plan,
+            buffer_assignment=backbone_plan.selected_buffer_assignment,
+            master=master,
+        )
+        wave_buffer_assignment = _phase1_wave_buffer_assignment(
+            source_plans=source_plans,
+            selected_block_ids=frozenset(cumulative_selected_ids),
+            buffer_assignment=backbone_plan.selected_buffer_assignment,
+        )
+        wave_target_ranks = _build_phase1_target_ranks_from_blocks(
+            source_plans=source_plans,
+            selected_block_ids=frozenset(cumulative_selected_ids),
+            buffer_assignment=wave_buffer_assignment,
+        )
+        wave_selected_vehicle_nos = frozenset(set(wave_buffer_assignment) | set(goal_overrides))
+        final_goal_overrides = goal_overrides
+        wave_plans.append(
+            Phase1WavePlan(
+                wave_name=wave_name,
+                wave_role=wave_role,
+                selected_block_ids=cumulative_selected_ids,
+                selected_vehicle_nos=wave_selected_vehicle_nos,
+                buffer_assignment=wave_buffer_assignment,
+                goal_overrides=dict(goal_overrides),
+                target_rank_by_vehicle=wave_target_ranks,
+                diagnostics=_build_phase1_wave_diagnostics(
+                    source_plans=source_plans,
+                    wave_name=wave_name,
+                    wave_role=wave_role,
+                    added_block_ids=tuple(added_ids),
+                    cumulative_block_ids=finish_plan.selected_block_ids,
+                ),
+            )
+        )
+    merged_finish_plan = Phase1FinishPlan(
+        selected_block_ids=tuple(dict.fromkeys(cumulative_ids)),
+        goal_overrides={},
+    )
+    return tuple(wave_plans), merged_finish_plan, final_goal_overrides
+
+
+def _phase1_wave_buffer_assignment(
+    *,
+    source_plans: list[SourceTrackPlan],
+    selected_block_ids: frozenset[str],
+    buffer_assignment: dict[str, str],
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for plan in source_plans:
+        for block in plan.blocks:
+            if block.block_id not in selected_block_ids or not block.uses_buffer:
+                continue
+            target_track = buffer_assignment.get(block.vehicle_nos[0])
+            if target_track is None:
+                continue
+            for vehicle_no in block.vehicle_nos:
+                result[vehicle_no] = target_track
+    return result
+
+
+def _phase1_wave_a_block_ids(
     *,
     source_plans: list[SourceTrackPlan],
     backbone_plan: Phase1BackbonePlan,
-) -> Phase1FinishPlan:
+) -> tuple[str, ...]:
     selected_ids: list[str] = []
     selected_backbone = set(backbone_plan.selected_block_ids)
     selected_backbone_sources = set(backbone_plan.selected_source_tracks)
@@ -3471,11 +3690,167 @@ def _solve_phase1_finish_plan(
                 selected_ids.append(block.block_id)
             elif block.block_type in {"prefix_clear", "tail_finish"} and block.source_track in selected_backbone_sources:
                 selected_ids.append(block.block_id)
-            else:
-                continue
-    return Phase1FinishPlan(
-        selected_block_ids=tuple(dict.fromkeys(selected_ids)),
-        goal_overrides={},
+    return tuple(dict.fromkeys(selected_ids))
+
+
+def _phase1_wave_b_block_ids(
+    *,
+    source_plans: list[SourceTrackPlan],
+    already_selected_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    candidates = sorted(
+        [
+            block
+            for plan in source_plans
+            for block in plan.blocks
+            if (
+                not block.uses_buffer
+                and block.target_track is not None
+                and block.block_type in {"prefix_clear", "tail_finish"}
+                and block.block_id not in set(already_selected_ids)
+            )
+        ],
+        key=_phase1_pressure_relief_order,
+    )
+    selected_ids: list[str] = []
+    selected_set = set(already_selected_ids)
+    per_source_count: Counter[str] = Counter()
+    per_throat_count: Counter[str] = Counter()
+    for block in candidates:
+        if block.pressure_gain < 14:
+            continue
+        if per_source_count[block.source_track] >= 2:
+            continue
+        if per_throat_count[block.throat_group] >= 3:
+            continue
+        if not _phase1_backbone_predecessors_ready(
+            block=block,
+            block_by_id=block_by_id,
+            selected_block_ids=selected_set,
+        ):
+            continue
+        selected_ids.append(block.block_id)
+        selected_set.add(block.block_id)
+        per_source_count[block.source_track] += 1
+        per_throat_count[block.throat_group] += 1
+        if len(selected_ids) >= 8:
+            break
+    return tuple(selected_ids)
+
+
+def _phase1_wave_c_block_ids(
+    *,
+    source_plans: list[SourceTrackPlan],
+    already_selected_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    candidates = sorted(
+        [
+            block
+            for plan in source_plans
+            for block in plan.blocks
+            if (
+                not block.uses_buffer
+                and block.target_track is not None
+                and block.block_type in {"prefix_clear", "tail_finish"}
+                and block.block_id not in set(already_selected_ids)
+            )
+        ],
+        key=_phase1_cleanup_wave_order,
+    )
+    selected_ids: list[str] = []
+    selected_set = set(already_selected_ids)
+    per_source_count: Counter[str] = Counter()
+    for block in candidates:
+        if block.coupling_degree >= 3 and block.pressure_gain < 18:
+            continue
+        if per_source_count[block.source_track] >= 2:
+            continue
+        if not _phase1_backbone_predecessors_ready(
+            block=block,
+            block_by_id=block_by_id,
+            selected_block_ids=selected_set,
+        ):
+            continue
+        selected_ids.append(block.block_id)
+        selected_set.add(block.block_id)
+        per_source_count[block.source_track] += 1
+        if len(selected_ids) >= 8:
+            break
+    return tuple(selected_ids)
+
+
+def _build_phase1_wave_diagnostics(
+    *,
+    source_plans: list[SourceTrackPlan],
+    wave_name: str,
+    wave_role: str,
+    added_block_ids: tuple[str, ...],
+    cumulative_block_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    added_blocks = [block_by_id[block_id] for block_id in added_block_ids if block_id in block_by_id]
+    cumulative_blocks = [block_by_id[block_id] for block_id in cumulative_block_ids if block_id in block_by_id]
+    return {
+        "waveName": wave_name,
+        "waveRole": wave_role,
+        "addedBlockIds": list(added_block_ids),
+        "addedBlockCount": len(added_blocks),
+        "addedVehicleCount": sum(len(block.vehicle_nos) for block in added_blocks),
+        "addedSourceTracks": sorted({block.source_track for block in added_blocks}),
+        "addedThroatGroups": dict(sorted(Counter(block.throat_group for block in added_blocks).items())),
+        "cumulativeBlockCount": len(cumulative_blocks),
+        "cumulativeVehicleCount": sum(len(block.vehicle_nos) for block in cumulative_blocks),
+    }
+
+
+def _phase1_optional_finish_order(block: Phase1Block) -> tuple[Any, ...]:
+    return (
+        0 if block.source_track in WASH_CONFLICT_TRACKS else 1,
+        0 if block.source_track in {"调棚", "预修", "调北", "抛"} else 1,
+        _phase1_local_source_priority(block.source_track),
+        0 if block.block_type == "prefix_clear" and block.released_depot_vehicle_count > 0 else 1,
+        0 if block.block_type == "tail_finish" else 1,
+        block.phase3_rank_key,
+        block.source_order_start,
+        block.block_id,
+    )
+
+
+def _phase1_pressure_relief_order(block: Phase1Block) -> tuple[Any, ...]:
+    return (
+        -block.pressure_gain,
+        block.coupling_degree,
+        0 if block.topology_zone == "receiving" else 1,
+        0 if block.throat_group in {"G_STORAGE", "G_L7"} else 1,
+        _phase1_local_source_priority(block.source_track),
+        block.phase3_rank_key,
+        block.source_order_start,
+        block.block_id,
+    )
+
+
+def _phase1_cleanup_wave_order(block: Phase1Block) -> tuple[Any, ...]:
+    return (
+        block.coupling_degree,
+        -block.pressure_gain,
+        _phase1_local_source_priority(block.source_track),
+        block.phase3_rank_key,
+        block.source_order_start,
+        block.block_id,
     )
 
 
@@ -6145,6 +6520,46 @@ def _phase1_goal(
         return _stage_track_goal(
             facts.vehicle_no,
             phase1.buffer_assignment[facts.vehicle_no],
+            "PHASE1_BACKBONE_PLACE",
+        )
+    return _hold_current_track_goal(facts)
+
+
+def _phase1_wave_stage_policy(
+    wave_plan: Phase1WavePlan,
+    *,
+    stage_plan: TopologyStagePlan,
+    vehicle_facts: list[VehicleStageFacts],
+) -> dict[str, Any]:
+    return {
+        "waveName": wave_plan.wave_name,
+        "waveRole": wave_plan.wave_role,
+        "packageAssignments": dict(wave_plan.buffer_assignment),
+        "layoutAssignments": dict(wave_plan.buffer_assignment),
+        "packageTargetRanks": dict(wave_plan.target_rank_by_vehicle),
+        "layoutTargetRanks": dict(wave_plan.target_rank_by_vehicle),
+        "vehicleGoals": [
+            _phase1_wave_goal(facts, wave_plan=wave_plan, stage_plan=stage_plan)
+            for facts in vehicle_facts
+        ],
+        "waveDiagnostics": dict(wave_plan.diagnostics),
+    }
+
+
+def _phase1_wave_goal(
+    facts: VehicleStageFacts,
+    *,
+    wave_plan: Phase1WavePlan,
+    stage_plan: TopologyStagePlan,
+) -> dict[str, Any]:
+    goal_override = wave_plan.goal_overrides.get(facts.vehicle_no)
+    if goal_override is not None:
+        target_track, source = goal_override
+        return _stage_track_goal(facts.vehicle_no, target_track, source)
+    if facts.vehicle_no in wave_plan.selected_vehicle_nos:
+        return _stage_track_goal(
+            facts.vehicle_no,
+            wave_plan.buffer_assignment[facts.vehicle_no],
             "PHASE1_BACKBONE_PLACE",
         )
     return _hold_current_track_goal(facts)

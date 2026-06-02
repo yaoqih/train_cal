@@ -131,17 +131,34 @@ def solve_workflow(
                         allow_internal_loco_tracks=True,
                     )
                 )
-            view = build_demo_view_model(
-                stage_master,
-                stage_payload,
-                solver=solver,
-                heuristic_weight=heuristic_weight,
-                beam_width=beam_width,
-                time_budget_ms=time_budget_ms,
-                initial_state_override=current_state,
-                use_validation_recovery=use_validation_recovery,
-                diagnose_front_search_only=diagnose_front_search_only,
-            )
+            if _is_phase1_wave_stage(stage):
+                view, current_vehicle_info, current_state = _solve_phase1_wave_stage(
+                    stage_master=stage_master,
+                    track_info=track_info,
+                    vehicle_meta=vehicle_meta,
+                    stage=stage,
+                    stage_payload=stage_payload,
+                    current_vehicle_info=current_vehicle_info,
+                    current_state=current_state,
+                    solver=solver,
+                    heuristic_weight=heuristic_weight,
+                    beam_width=beam_width,
+                    time_budget_ms=time_budget_ms,
+                    use_validation_recovery=use_validation_recovery,
+                    diagnose_front_search_only=diagnose_front_search_only,
+                )
+            else:
+                view = build_demo_view_model(
+                    stage_master,
+                    stage_payload,
+                    solver=solver,
+                    heuristic_weight=heuristic_weight,
+                    beam_width=beam_width,
+                    time_budget_ms=time_budget_ms,
+                    initial_state_override=current_state,
+                    use_validation_recovery=use_validation_recovery,
+                    diagnose_front_search_only=diagnose_front_search_only,
+                )
             stages.append(
                 WorkflowStageResult(
                     name=stage_name,
@@ -150,16 +167,17 @@ def solve_workflow(
                     view=view,
                 )
             )
-            current_vehicle_info = _next_vehicle_info(
-                stage_payload=stage_payload,
-                stage_view=view,
-            )
-            current_state = ReplayState.model_validate({
-                "track_sequences": view.steps[-1].track_sequences,
-                "loco_track_name": view.steps[-1].loco_track_name,
-                "weighed_vehicle_nos": set(view.steps[-1].weighed_vehicle_nos),
-                "spot_assignments": view.steps[-1].spot_assignments,
-            })
+            if not _is_phase1_wave_stage(stage):
+                current_vehicle_info = _next_vehicle_info(
+                    stage_payload=stage_payload,
+                    stage_view=view,
+                )
+                current_state = ReplayState.model_validate({
+                    "track_sequences": view.steps[-1].track_sequences,
+                    "loco_track_name": view.steps[-1].loco_track_name,
+                    "weighed_vehicle_nos": set(view.steps[-1].weighed_vehicle_nos),
+                    "spot_assignments": view.steps[-1].spot_assignments,
+                })
             for item in current_vehicle_info:
                 vehicle_meta[item["vehicleNo"]]["trackName"] = item["trackName"]
                 vehicle_meta[item["vehicleNo"]]["order"] = item["order"]
@@ -182,6 +200,213 @@ def solve_workflow(
         stage_count=len(stages),
         stages=stages,
     )
+
+
+def _is_phase1_wave_stage(stage: dict[str, Any]) -> bool:
+    stage_policy = dict(stage.get("stagePolicy") or {})
+    return (
+        str(stage_policy.get("stageMode") or "") == "PHASE1_PRE_REPAIR_BUFFERING"
+        and bool(stage_policy.get("phase1WavePlans"))
+    )
+
+
+def _solve_phase1_wave_stage(
+    *,
+    stage_master: MasterData,
+    track_info: list[dict],
+    vehicle_meta: dict[str, dict],
+    stage: dict[str, Any],
+    stage_payload: dict[str, Any],
+    current_vehicle_info: list[dict[str, Any]],
+    current_state: ReplayState,
+    solver: str,
+    heuristic_weight: float,
+    beam_width: int | None,
+    time_budget_ms: float | None,
+    use_validation_recovery: bool,
+    diagnose_front_search_only: bool,
+):
+    from fzed_shunting.demo.view_model import (
+        DemoHook,
+        DemoSummary,
+        DemoViewModel,
+        build_demo_view_model,
+    )
+
+    wave_plans = list((stage.get("stagePolicy") or {}).get("phase1WavePlans") or [])
+    if not wave_plans:
+        raise ValueError("phase1WavePlans must be non-empty for wave stage solve")
+    wave_weights = [0.52, 0.30, 0.18]
+    working_vehicle_info = [dict(item) for item in current_vehicle_info]
+    working_state = current_state
+    wave_views: list[DemoViewModel] = []
+    for index, wave_plan in enumerate(wave_plans):
+        sub_stage_policy = dict(stage.get("stagePolicy") or {})
+        sub_stage_policy.update({
+            "packageAssignments": dict(wave_plan.get("packageAssignments") or {}),
+            "layoutAssignments": dict(wave_plan.get("layoutAssignments") or {}),
+            "packageTargetRanks": dict(wave_plan.get("packageTargetRanks") or {}),
+            "layoutTargetRanks": dict(wave_plan.get("layoutTargetRanks") or {}),
+            "phase1WaveActiveName": str(wave_plan.get("waveName") or f"wave_{index + 1}"),
+            "phase1WaveDiagnostics": dict(wave_plan.get("waveDiagnostics") or {}),
+        })
+        sub_stage = {
+            "name": str(stage.get("name", "phase1")),
+            "description": str(stage.get("description", "")),
+            "routePolicy": dict(stage.get("routePolicy") or {}),
+            "stagePolicy": sub_stage_policy,
+            "vehicleGoals": list(wave_plan.get("vehicleGoals") or []),
+        }
+        sub_stage_payload = _build_stage_payload(
+            track_info=track_info,
+            current_vehicle_info=working_vehicle_info,
+            vehicle_meta=vehicle_meta,
+            stage=sub_stage,
+            loco_track_name=working_state.loco_track_name,
+        )
+        sub_time_budget_ms = None
+        if time_budget_ms is not None:
+            weight = wave_weights[index] if index < len(wave_weights) else wave_weights[-1]
+            sub_time_budget_ms = max(5_000.0, float(time_budget_ms) * weight)
+        view = build_demo_view_model(
+            stage_master,
+            sub_stage_payload,
+            solver=solver,
+            heuristic_weight=heuristic_weight,
+            beam_width=beam_width,
+            time_budget_ms=sub_time_budget_ms,
+            initial_state_override=working_state,
+            use_validation_recovery=use_validation_recovery,
+            diagnose_front_search_only=diagnose_front_search_only,
+        )
+        wave_views.append(view)
+        working_vehicle_info = _next_vehicle_info(
+            stage_payload=sub_stage_payload,
+            stage_view=view,
+        )
+        working_state = ReplayState.model_validate({
+            "track_sequences": view.steps[-1].track_sequences,
+            "loco_track_name": view.steps[-1].loco_track_name,
+            "weighed_vehicle_nos": set(view.steps[-1].weighed_vehicle_nos),
+            "spot_assignments": view.steps[-1].spot_assignments,
+        })
+    final_view = wave_views[-1]
+    merged_hooks: list[DemoHook] = []
+    merged_steps = []
+    merged_verifier_errors: list[str] = []
+    merged_failed_hook_nos: list[int] = []
+    hook_offset = 0
+    step_index = 0
+    is_valid = True
+    for wave_view in wave_views:
+        renumbered_hook_nos: dict[int, int] = {}
+        for hook in list(getattr(wave_view, "hook_plan", []) or []):
+            new_hook_no = hook_offset + hook.hook_no
+            renumbered_hook_nos[hook.hook_no] = new_hook_no
+            if hasattr(hook, "model_copy"):
+                merged_hooks.append(hook.model_copy(update={"hook_no": new_hook_no}))
+            else:
+                merged_hooks.append(DemoHook.model_validate({
+                    "hook_no": new_hook_no,
+                    "action_type": hook.action_type,
+                    "source_track": hook.source_track,
+                    "target_track": hook.target_track,
+                    "vehicle_count": hook.vehicle_count,
+                    "vehicle_nos": list(getattr(hook, "vehicle_nos", []) or []),
+                    "path_tracks": list(getattr(hook, "path_tracks", []) or []),
+                    "branch_codes": list(getattr(hook, "branch_codes", []) or []),
+                    "route_length_m": getattr(hook, "route_length_m", None),
+                    "reverse_branch_codes": list(getattr(hook, "reverse_branch_codes", []) or []),
+                    "required_reverse_clearance_m": getattr(hook, "required_reverse_clearance_m", None),
+                    "remark": getattr(hook, "remark", ""),
+                }))
+        hook_offset = len(merged_hooks)
+        step_start = 0 if step_index == 0 else 1
+        for raw_step in list(getattr(wave_view, "steps", []) or [])[step_start:]:
+            hook = getattr(raw_step, "hook", None)
+            remapped_hook = (
+                None
+                if hook is None
+                else hook.model_copy(update={"hook_no": renumbered_hook_nos.get(hook.hook_no, hook.hook_no)})
+                if hasattr(hook, "model_copy")
+                else DemoHook.model_validate({
+                    "hook_no": renumbered_hook_nos.get(getattr(hook, "hook_no", 0), getattr(hook, "hook_no", 0)),
+                    "action_type": getattr(hook, "action_type", ""),
+                    "source_track": getattr(hook, "source_track", ""),
+                    "target_track": getattr(hook, "target_track", ""),
+                    "vehicle_count": getattr(hook, "vehicle_count", 0),
+                    "vehicle_nos": list(getattr(hook, "vehicle_nos", []) or []),
+                    "path_tracks": list(getattr(hook, "path_tracks", []) or []),
+                    "branch_codes": list(getattr(hook, "branch_codes", []) or []),
+                    "route_length_m": getattr(hook, "route_length_m", None),
+                    "reverse_branch_codes": list(getattr(hook, "reverse_branch_codes", []) or []),
+                    "required_reverse_clearance_m": getattr(hook, "required_reverse_clearance_m", None),
+                    "remark": getattr(hook, "remark", ""),
+                })
+            )
+            if hasattr(raw_step, "model_copy"):
+                merged_steps.append(
+                    raw_step.model_copy(
+                        update={
+                            "step_index": step_index,
+                            "hook": remapped_hook,
+                        }
+                    )
+                )
+            else:
+                merged_steps.append(
+                    {
+                        "step_index": step_index,
+                        "hook": remapped_hook,
+                        "loco_track_name": getattr(raw_step, "loco_track_name", ""),
+                        "loco_carry_vehicle_nos": list(getattr(raw_step, "loco_carry_vehicle_nos", []) or []),
+                        "changed_tracks": list(getattr(raw_step, "changed_tracks", []) or []),
+                        "track_sequences": dict(getattr(raw_step, "track_sequences", {}) or {}),
+                        "weighed_vehicle_nos": list(getattr(raw_step, "weighed_vehicle_nos", []) or []),
+                        "spot_assignments": dict(getattr(raw_step, "spot_assignments", {}) or {}),
+                        "work_position_assignments": dict(getattr(raw_step, "work_position_assignments", {}) or {}),
+                        "verifier_errors": list(getattr(raw_step, "verifier_errors", []) or []),
+                        "track_map": getattr(raw_step, "track_map", {}),
+                        "topology_graph": getattr(raw_step, "topology_graph", {}),
+                        "transition_frames": list(getattr(raw_step, "transition_frames", []) or []),
+                    }
+                )
+            step_index += 1
+        merged_verifier_errors.extend(list(getattr(wave_view, "verifier_errors", []) or []))
+        merged_failed_hook_nos.extend(
+            renumbered_hook_nos.get(hook_no, hook_no)
+            for hook_no in list(getattr(wave_view, "failed_hook_nos", []) or [])
+        )
+        is_valid = is_valid and bool(getattr(wave_view.summary, "is_valid", True))
+    merged_summary = DemoSummary(
+        hook_count=len(merged_hooks),
+        vehicle_count=int(getattr(final_view.summary, "vehicle_count", len(working_vehicle_info))),
+        is_valid=is_valid,
+        error_count=len(merged_verifier_errors),
+        final_tracks=list(getattr(final_view.summary, "final_tracks", [])),
+        weighed_vehicle_count=int(getattr(final_view.summary, "weighed_vehicle_count", 0)),
+        assigned_spot_count=int(getattr(final_view.summary, "assigned_spot_count", 0)),
+        assigned_work_position_count=int(getattr(final_view.summary, "assigned_work_position_count", 0)),
+    )
+    return (
+        DemoViewModel(
+            summary=merged_summary,
+            verifier_errors=merged_verifier_errors,
+            hook_plan=merged_hooks,
+            steps=merged_steps,
+            final_spot_assignments=dict(getattr(final_view, "final_spot_assignments", {}) or {}),
+            final_work_position_assignments=dict(getattr(final_view, "final_work_position_assignments", {}) or {}),
+            failed_hook_nos=sorted(dict.fromkeys(merged_failed_hook_nos)),
+            track_map=getattr(final_view, "track_map", {}),
+            topology_graph=getattr(final_view, "topology_graph", {}),
+            comparison_summary=getattr(final_view, "comparison_summary", None),
+            vehicle_target_tracks=dict(getattr(final_view, "vehicle_target_tracks", {}) or {}),
+        ),
+        working_vehicle_info,
+        working_state,
+    )
+
+
 def _build_stage_payload(
     *,
     track_info: list[dict],

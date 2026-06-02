@@ -368,7 +368,7 @@ def test_phase1_applies_backbone_budget_before_full_compile():
     assert diagnostics["budgetHitReasons"]
 
 
-def test_phase1_skips_low_yield_storage_source_with_heavy_prefix_clear():
+def test_phase1_keeps_low_yield_storage_source_out_of_backbone_but_still_finishes_direct_tail():
     master = load_master_data(DATA_DIR)
     payload = {
         "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
@@ -394,6 +394,12 @@ def test_phase1_skips_low_yield_storage_source_with_heavy_prefix_clear():
     assert goals["D2"]["targetSource"] == "PHASE1_BACKBONE_PLACE"
     assert goals["D3"]["targetSource"] == "PHASE1_BACKBONE_PLACE"
     assert goals["D1"]["targetSource"] == "STAGE_HOLD"
+    assert goals["B1"]["targetSource"] == "PHASE1_LOCAL_FINISH"
+    assert goals["B1"]["targetTrack"] == "存1"
+    assert goals["B2"]["targetSource"] == "PHASE1_LOCAL_FINISH"
+    assert goals["B2"]["targetTrack"] == "存1"
+    assert goals["B3"]["targetSource"] == "PHASE1_LOCAL_FINISH"
+    assert goals["B3"]["targetTrack"] == "存2"
     source_summaries = {
         row["sourceTrack"]: row
         for row in diagnostics["sourceOpenSummaries"]
@@ -403,6 +409,7 @@ def test_phase1_skips_low_yield_storage_source_with_heavy_prefix_clear():
     assert source_summaries["存5北"]["admissionDecision"] == "deferred"
     assert source_summaries["存5北"]["rejectionReason"] == "weak_source"
     assert diagnostics["budgetHitReasons"]["weak_source"] >= 1
+    assert diagnostics["selectedCleanupBySource"]["存5北"]["requiredLocalFinishCount"] == 2
 
 
 def test_phase1_block_layout_preserves_full_compile_without_source_mixing():
@@ -639,9 +646,12 @@ def test_solve_workflow_auto_expands_l7_mode_and_applies_stage_route_overlay(mon
     assert result.stage_count == 4
     assert seen_stage_names == [
         "phase1_pre_repair_buffering",
+        "phase1_pre_repair_buffering",
+        "phase1_pre_repair_buffering",
         "phase2_depot_area_marshalling",
         "phase3_ji_to_depot_allocation",
         "final_exact_settle_and_cleanup",
     ]
-    assert seen_branch_status == ["阶段封锁", "已确认", "已确认", "已确认"]
+    assert seen_branch_status == ["阶段封锁", "阶段封锁", "阶段封锁", "已确认", "已确认", "已确认"]
     assert result.stages[0].input_payload["stagePolicy"]["stageMode"] == "PHASE1_PRE_REPAIR_BUFFERING"
+    assert len(result.stages[0].input_payload["stagePolicy"]["phase1WavePlans"]) == 3
