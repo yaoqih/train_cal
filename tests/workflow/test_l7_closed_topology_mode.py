@@ -278,6 +278,45 @@ def test_phase1_caps_heavy_vehicle_package_size():
     assert [package["vehicleNos"] for package in heavy_packages] == [["H1", "H2"], ["H3"]]
     assert all("heavy_cap" in package["reasonTags"] for package in heavy_packages)
     assert all(package["executionLayer"] == "L1_BACKBONE" for package in heavy_packages)
+    assert all(package["selected"] for package in heavy_packages)
+    assert len({package["bufferTrack"] for package in heavy_packages}) == 1
+
+
+def test_phase1_block_layout_compiles_same_source_across_minimal_tracks():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="预修", order="1", vehicle_no="P1", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="2", vehicle_no="P2", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="3", vehicle_no="P3", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="4", vehicle_no="P4", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="5", vehicle_no="P5", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="6", vehicle_no="P6", target_track="修1", vehicle_length=13.0),
+            _vehicle(track_name="预修", order="7", vehicle_no="P7", target_track="修1", vehicle_length=13.0),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    diagnostics = workflow_payload["workflowStages"][0]["stagePolicy"]["phase1Diagnostics"]
+    heavy_packages = [
+        package
+        for package in diagnostics["taskPackages"]
+        if package["usesBuffer"]
+    ]
+    selected_packages = [package for package in heavy_packages if package["selected"]]
+    selected_tracks = {
+        package["bufferTrack"]
+        for package in selected_packages
+    }
+
+    assert diagnostics["depotCompiledVehicleCount"] == 7
+    assert diagnostics["depotDemandVehicleCount"] == 7
+    assert len(selected_packages) == 3
+    assert selected_tracks == {"机南", "机棚"}
+    assert all(package["sourceTrack"] == "预修" for package in selected_packages)
 
 
 def test_phase1_skips_optional_close_door_cun4_move_from_main_backbone():
@@ -364,6 +403,47 @@ def test_phase1_skips_low_yield_storage_source_with_heavy_prefix_clear():
     assert source_summaries["存5北"]["admissionDecision"] == "deferred"
     assert source_summaries["存5北"]["rejectionReason"] == "weak_source"
     assert diagnostics["budgetHitReasons"]["weak_source"] >= 1
+
+
+def test_phase1_block_layout_preserves_full_compile_without_source_mixing():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="油", order="1", vehicle_no="Y1", target_track="修1"),
+            _vehicle(track_name="油", order="2", vehicle_no="Y2", target_track="修1"),
+            _vehicle(track_name="油", order="3", vehicle_no="Y3", target_track="修1"),
+            _vehicle(track_name="预修", order="1", vehicle_no="P1", target_track="修2"),
+            _vehicle(track_name="预修", order="2", vehicle_no="P2", target_track="修2"),
+            _vehicle(track_name="预修", order="3", vehicle_no="P3", target_track="修2"),
+            _vehicle(track_name="预修", order="4", vehicle_no="P4", target_track="修2"),
+            _vehicle(track_name="预修", order="5", vehicle_no="P5", target_track="修2"),
+            _vehicle(track_name="预修", order="6", vehicle_no="P6", target_track="修2"),
+            _vehicle(track_name="预修", order="7", vehicle_no="P7", target_track="修2"),
+            _vehicle(track_name="预修", order="8", vehicle_no="P8", target_track="修2"),
+            _vehicle(track_name="预修", order="9", vehicle_no="P9", target_track="修2"),
+            _vehicle(track_name="预修", order="10", vehicle_no="P10", target_track="修2"),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    diagnostics = workflow_payload["workflowStages"][0]["stagePolicy"]["phase1Diagnostics"]
+    goals = {
+        item["vehicleNo"]: item
+        for item in workflow_payload["workflowStages"][0]["vehicleGoals"]
+    }
+
+    assert diagnostics["depotDemandVehicleCount"] == 13
+    assert diagnostics["depotCompiledVehicleCount"] == 13
+    assert diagnostics["depotCompileRatio"] == 1.0
+    assert goals["P1"]["targetSource"] == "PHASE1_BACKBONE_PLACE"
+    assert goals["P10"]["targetSource"] == "PHASE1_BACKBONE_PLACE"
+    assert diagnostics["bufferSourceTracks"]["机棚"] == ["预修"]
+    assert diagnostics["bufferSourceTracks"]["机北1"] == ["预修"]
+    assert diagnostics["bufferSourceTracks"]["机北2"] == ["预修"]
+    assert diagnostics["bufferSourceTracks"]["机南"] == ["油"]
 
 
 def test_phase1_avoids_mixing_sources_on_same_buffer_when_empty_track_exists():

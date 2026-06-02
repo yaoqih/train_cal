@@ -62,6 +62,15 @@ PHASE1_USABLE_BUFFER_CAPACITY_M = {
     "机棚": 82.0,
     "机南": 60.0,
 }
+PHASE1_MAIN_BUFFER_TRACKS = ("机棚", "机南")
+PHASE1_SUPPORT_BUFFER_TRACKS = ("机北1", "机北2", "机北3")
+PHASE1_BUFFER_TRACK_ROLES = {
+    "机棚": "main",
+    "机南": "main",
+    "机北1": "support",
+    "机北2": "support",
+    "机北3": "special",
+}
 PHASE1_TEMP_PARKING_TRACKS = ("存1", "存2", "存3", "存5南", "存5北", "调北", "预修", "调棚")
 PHASE1_BLOCKER_BUCKET_WORK = "PHASE1_BLOCKER_BUCKET_WORK"
 PHASE1_BLOCKER_BUCKET_YARD = "PHASE1_BLOCKER_BUCKET_YARD"
@@ -199,6 +208,14 @@ class Phase1Plan:
 
 
 @dataclass(frozen=True)
+class Phase1LayoutTemplate:
+    template_name: str
+    tracks: tuple[str, ...]
+    preferred_open_order: tuple[str, ...]
+    support_tracks: frozenset[str]
+
+
+@dataclass(frozen=True)
 class Phase1Block:
     block_id: str
     source_track: str
@@ -216,6 +233,7 @@ class Phase1Block:
     released_depot_vehicle_count: int
     released_finish_vehicle_count: int
     required_predecessor_ids: tuple[str, ...]
+    layout_role: str
 
 
 @dataclass(frozen=True)
@@ -236,6 +254,8 @@ class Phase1BackbonePlan:
     reserved_buffer_by_track: dict[str, float]
     selected_buffer_assignment: dict[str, str]
     target_rank_by_vehicle: dict[str, int]
+    layout_template_name: str
+    opened_buffer_tracks: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -298,6 +318,11 @@ class Phase1LayoutPackage:
     complexity_cost: int
     source_chain_role: str
     is_required_for_backbone: bool
+    segment_role: str
+    source_segment_index: int
+    source_segment_count: int
+    source_total_vehicle_count: int
+    requires_previous_segment: bool
 
 
 @dataclass(frozen=True)
@@ -691,26 +716,53 @@ def _build_phase1_plan(
     facts_list: list[VehicleStageFacts],
     master: MasterData,
 ) -> Phase1Plan:
-    demand_summary = _build_phase1_demand_summary(facts_list=facts_list, master=master)
-    packages = _build_phase1_layout_packages(facts_list=facts_list, master=master)
-    layout = _solve_phase1_layout(
+    source_plans = _build_phase1_source_track_plans(facts_list)
+    reachable_depot_set = _build_phase1_reachable_depot_set(source_plans)
+    backbone_plan = _solve_phase1_backbone_plan(
+        source_plans=source_plans,
+        reachable_depot_set=reachable_depot_set,
+        master=master,
+    )
+    finish_plan = _solve_phase1_finish_plan(
+        source_plans=source_plans,
+        backbone_plan=backbone_plan,
+    )
+    finish_goal_overrides = _materialize_phase1_finish_goal_overrides(
         facts_list=facts_list,
-        demand_summary=demand_summary,
-        packages=packages,
+        source_plans=source_plans,
+        finish_plan=finish_plan,
+        buffer_assignment=backbone_plan.selected_buffer_assignment,
+        master=master,
+    )
+    deferred_vehicle_nos = frozenset(
+        vehicle_no
+        for vehicle_no in reachable_depot_set
+        if vehicle_no not in backbone_plan.selected_buffer_assignment
+    )
+    diagnostics = _build_phase1_block_diagnostics(
+        facts_list=facts_list,
+        source_plans=source_plans,
+        reachable_depot_set=reachable_depot_set,
+        backbone_plan=backbone_plan,
+        finish_plan=finish_plan,
+        deferred_vehicle_nos=deferred_vehicle_nos,
+        goal_overrides=finish_goal_overrides,
+        buffer_assignment=backbone_plan.selected_buffer_assignment,
+        target_rank_by_vehicle=backbone_plan.target_rank_by_vehicle,
         master=master,
     )
     selected_vehicle_nos = frozenset(
         vehicle_no
-        for vehicle_no, track_name in layout.buffer_assignment.items()
+        for vehicle_no, track_name in backbone_plan.selected_buffer_assignment.items()
         if track_name in JI_BUFFER_TRACKS
     )
     return Phase1Plan(
         selected_vehicle_nos=selected_vehicle_nos,
-        deferred_vehicle_nos=layout.deferred_vehicle_nos,
-        buffer_assignment=dict(layout.buffer_assignment),
-        target_rank_by_vehicle=dict(layout.target_rank_by_vehicle),
-        goal_overrides=dict(layout.goal_overrides),
-        diagnostics=dict(layout.diagnostics),
+        deferred_vehicle_nos=deferred_vehicle_nos,
+        buffer_assignment=dict(backbone_plan.selected_buffer_assignment),
+        target_rank_by_vehicle=dict(backbone_plan.target_rank_by_vehicle),
+        goal_overrides=dict(finish_goal_overrides),
+        diagnostics=dict(diagnostics),
     )
 
 
@@ -812,10 +864,28 @@ def _build_phase1_layout_packages(
         if current_chunk:
             chunks.append((current_signature or ("", "", ""), current_chunk))
         chain_id = f"CHAIN::{source_track}"
+        source_backbone_chunk_count = sum(
+            1
+            for signature, _ in chunks
+            if signature[0] == "depot_batch"
+        )
+        source_backbone_vehicle_count = sum(
+            len(chunk)
+            for signature, chunk in chunks
+            if signature[0] == "depot_batch"
+        )
+        backbone_chunk_index = 0
         for signature, chunk in chunks:
             package_kind, target_track, target_source = signature
             chunk_members = [facts for facts, *_ in chunk]
             uses_buffer = package_kind == "depot_batch"
+            if uses_buffer:
+                backbone_chunk_index += 1
+            segment_role = _phase1_backbone_segment_role(
+                uses_buffer=uses_buffer,
+                segment_index=backbone_chunk_index,
+                segment_count=source_backbone_chunk_count,
+            )
             final_family = chunk_members[0].final_family
             min_spot_priority = min(_final_spot_priority(item.final_target_spot) for item in chunk_members)
             reason_tags = tuple(
@@ -826,6 +896,7 @@ def _build_phase1_layout_packages(
                     }
                     | {
                         package_kind,
+                        segment_role,
                     }
                     | set(_phase1_special_reason_tags(chunk_members, target_track))
                 )
@@ -871,6 +942,11 @@ def _build_phase1_layout_packages(
                     ),
                     source_chain_role=source_chain_role,
                     is_required_for_backbone=execution_layer in {"L1_BACKBONE", "L2_REQUIRED_CLEAR"},
+                    segment_role=segment_role,
+                    source_segment_index=backbone_chunk_index if uses_buffer else 0,
+                    source_segment_count=source_backbone_chunk_count if uses_buffer else 0,
+                    source_total_vehicle_count=source_backbone_vehicle_count if uses_buffer else 0,
+                    requires_previous_segment=uses_buffer and backbone_chunk_index >= 2,
                 )
             )
             package_index += 1
@@ -929,6 +1005,21 @@ def _phase1_special_reason_tags(
     if target_track == "存4北" and any(item.is_close_door for item in members):
         tags.append("close_door_cun4_singleton")
     return tuple(tags)
+
+
+def _phase1_backbone_segment_role(
+    *,
+    uses_buffer: bool,
+    segment_index: int,
+    segment_count: int,
+) -> str:
+    if not uses_buffer:
+        return "cleanup"
+    if segment_count <= 1 or segment_index <= 1:
+        return "core"
+    if segment_index == 2:
+        return "follow"
+    return "tail"
 
 
 def _phase1_execution_layer(
@@ -1217,6 +1308,9 @@ def _phase1_primary_backbone_packages(
 ) -> tuple[Phase1LayoutPackage, ...]:
     if not backbone_packages:
         return ()
+    core_packages = tuple(package for package in backbone_packages if package.segment_role == "core")
+    if core_packages:
+        return core_packages
     packages_by_family: dict[str, list[Phase1LayoutPackage]] = defaultdict(list)
     for package in backbone_packages:
         packages_by_family[package.final_family].append(package)
@@ -1668,10 +1762,15 @@ def _solve_phase1_layout(
                     uses_buffer=False,
                     pressure_cut=package.pressure_cut,
                     reason_tags=package.reason_tags,
-                    execution_layer=package.execution_layer,
-                    complexity_cost=package.complexity_cost,
-                    source_chain_role=package.source_chain_role,
-                    is_required_for_backbone=package.is_required_for_backbone,
+                execution_layer=package.execution_layer,
+                complexity_cost=package.complexity_cost,
+                source_chain_role=package.source_chain_role,
+                is_required_for_backbone=package.is_required_for_backbone,
+                segment_role=package.segment_role,
+                source_segment_index=package.source_segment_index,
+                source_segment_count=package.source_segment_count,
+                source_total_vehicle_count=package.source_total_vehicle_count,
+                requires_previous_segment=package.requires_previous_segment,
                 )
             )
     target_rank_by_vehicle = _build_phase1_target_ranks_from_assignment(
@@ -1752,6 +1851,7 @@ def _assign_phase1_backbone_packages_globally(
         packages,
         key=lambda item: (
             slot_index_by_source.get(item.source_track, 99),
+            0 if item.segment_role == "core" else 1 if item.segment_role == "follow" else 2,
             _depot_topology_entry_priority(item.final_family),
             item.min_spot_priority,
             _phase1_source_chain_priority(item.source_chain_role),
@@ -1763,21 +1863,20 @@ def _assign_phase1_backbone_packages_globally(
         package.package_id: package.total_length_m + max(1.0, len(package.vehicle_nos) - 1)
         for package in ordered_packages
     }
-    packages_by_source: dict[str, list[Phase1LayoutPackage]] = defaultdict(list)
-    for package in ordered_packages:
-        packages_by_source[package.source_track].append(package)
-    primary_package_ids: set[str] = set()
-    for source_packages in packages_by_source.values():
-        primary_package = max(
-            source_packages,
-            key=lambda item: (
-                len(item.vehicle_nos),
-                required_length_by_package[item.package_id],
-                -item.source_order_start,
-                item.package_id,
-            ),
-        )
-        primary_package_ids.add(primary_package.package_id)
+    core_packages = [
+        package
+        for package in ordered_packages
+        if package.segment_role == "core" or not package.requires_previous_segment
+    ]
+    extension_packages = [
+        package
+        for package in ordered_packages
+        if package not in core_packages
+    ]
+    first_extension_required_by_source: dict[str, float] = {}
+    for package in extension_packages:
+        required = required_length_by_package[package.package_id]
+        first_extension_required_by_source.setdefault(package.source_track, required)
     best_score: tuple[int, int, int, int, int, int, float, int, int] | None = None
     best_assignment: dict[str, str] | None = None
 
@@ -1789,24 +1888,27 @@ def _assign_phase1_backbone_packages_globally(
         track_families: dict[str, set[str]],
     ) -> None:
         nonlocal best_score, best_assignment
-        if index >= len(ordered_packages):
-            selected_packages = [package for package in ordered_packages if package.package_id in assignment]
-            selected_package_ids = {package.package_id for package in selected_packages}
+        if index >= len(core_packages):
+            selected_packages = [package for package in core_packages if package.package_id in assignment]
             selected_vehicle_count = sum(len(package.vehicle_nos) for package in selected_packages)
-            selected_primary_vehicle_count = sum(
-                len(package.vehicle_nos)
-                for package in selected_packages
-                if package.package_id in primary_package_ids
-            )
             selected_length = round(sum(package.total_length_m for package in selected_packages), 1)
             used_tracks = {track for track in assignment.values()}
-            selected_source_count = len({package.source_track for package in selected_packages})
+            selected_source_tracks = {package.source_track for package in selected_packages}
+            extension_ready_count = sum(
+                1
+                for package in selected_packages
+                if (
+                    first_extension_required_by_source.get(package.source_track) is not None
+                    and remaining.get(assignment[package.package_id], 0.0)
+                    >= first_extension_required_by_source[package.source_track]
+                )
+            )
             split_source_penalty = sum(
                 max(
                     0,
                     sum(1 for package in selected_packages if package.source_track == source_track) - 1,
                 )
-                for source_track in {package.source_track for package in selected_packages}
+                for source_track in selected_source_tracks
             )
             source_mix_penalty = sum(
                 max(0, len(track_sources[track]) - 1)
@@ -1823,12 +1925,12 @@ def _assign_phase1_backbone_packages_globally(
                 for package in selected_packages
             )
             score = (
-                selected_primary_vehicle_count,
-                -selected_source_count,
+                selected_vehicle_count,
+                extension_ready_count,
                 -source_mix_penalty,
                 -len(used_tracks),
                 -split_source_penalty,
-                selected_vehicle_count,
+                -len(selected_source_tracks),
                 selected_length,
                 -family_mix_penalty,
                 -preference_penalty,
@@ -1838,18 +1940,14 @@ def _assign_phase1_backbone_packages_globally(
                 best_assignment = dict(assignment)
             return
 
-        package = ordered_packages[index]
-        remaining_primary_possible = sum(
+        package = core_packages[index]
+        remaining_vehicle_possible = sum(len(item.vehicle_nos) for item in core_packages[index:])
+        selected_vehicle_now = sum(
             len(item.vehicle_nos)
-            for item in ordered_packages[index:]
-            if item.package_id in primary_package_ids
+            for item in core_packages[:index]
+            if item.package_id in assignment
         )
-        selected_primary_now = sum(
-            len(item.vehicle_nos)
-            for item in ordered_packages[:index]
-            if item.package_id in assignment and item.package_id in primary_package_ids
-        )
-        if best_score is not None and selected_primary_now + remaining_primary_possible < best_score[0]:
+        if best_score is not None and selected_vehicle_now + remaining_vehicle_possible < best_score[0]:
             return
 
         required = required_length_by_package[package.package_id]
@@ -1861,6 +1959,13 @@ def _assign_phase1_backbone_packages_globally(
         preferred_order = {track: idx for idx, track in enumerate(package.buffer_preference)}
         feasible_tracks.sort(
             key=lambda track: (
+                0
+                if (
+                    first_extension_required_by_source.get(package.source_track) is not None
+                    and remaining.get(track, 0.0) - required
+                    >= first_extension_required_by_source[package.source_track]
+                )
+                else 1,
                 0 if track_sources[track] == {package.source_track} else 1,
                 0 if track_families[track] == {package.final_family} else 1 if not track_families[track] else 2,
                 0 if not track_sources[track] else 1,
@@ -1895,7 +2000,44 @@ def _assign_phase1_backbone_packages_globally(
         {track: set() for track in JI_BUFFER_TRACKS},
         {track: set() for track in JI_BUFFER_TRACKS},
     )
-    assignment = best_assignment or {}
+    assignment = dict(best_assignment or {})
+    remaining_after_core = dict(remaining_buffer)
+    track_sources = {track: set() for track in JI_BUFFER_TRACKS}
+    track_families = {track: set() for track in JI_BUFFER_TRACKS}
+    selected_segment_indexes_by_source: dict[str, set[int]] = defaultdict(set)
+    source_package_tracks: dict[str, set[str]] = defaultdict(set)
+    for package in core_packages:
+        target_track = assignment.get(package.package_id)
+        if target_track is None:
+            continue
+        remaining_after_core[target_track] -= required_length_by_package[package.package_id]
+        track_sources[target_track].add(package.source_track)
+        track_families[target_track].add(package.final_family)
+        selected_segment_indexes_by_source[package.source_track].add(package.source_segment_index)
+        source_package_tracks[package.source_track].add(target_track)
+    for package in extension_packages:
+        if package.source_track not in selected_segment_indexes_by_source:
+            continue
+        if package.requires_previous_segment and (
+            package.source_segment_index - 1 not in selected_segment_indexes_by_source[package.source_track]
+        ):
+            continue
+        target_track = _choose_phase1_extension_track_for_package(
+            package=package,
+            remaining_buffer=remaining_after_core,
+            track_sources=track_sources,
+            track_families=track_families,
+            required_length_by_package=required_length_by_package,
+            source_package_tracks=source_package_tracks,
+        )
+        if target_track is None:
+            continue
+        assignment[package.package_id] = target_track
+        remaining_after_core[target_track] -= required_length_by_package[package.package_id]
+        track_sources[target_track].add(package.source_track)
+        track_families[target_track].add(package.final_family)
+        selected_segment_indexes_by_source[package.source_track].add(package.source_segment_index)
+        source_package_tracks[package.source_track].add(target_track)
     selected: list[Phase1LayoutPackage] = []
     dropped: list[Phase1LayoutPackage] = []
     for package in ordered_packages:
@@ -1925,9 +2067,47 @@ def _assign_phase1_backbone_packages_globally(
                 complexity_cost=package.complexity_cost,
                 source_chain_role=package.source_chain_role,
                 is_required_for_backbone=package.is_required_for_backbone,
+                segment_role=package.segment_role,
+                source_segment_index=package.source_segment_index,
+                source_segment_count=package.source_segment_count,
+                source_total_vehicle_count=package.source_total_vehicle_count,
+                requires_previous_segment=package.requires_previous_segment,
             )
         )
     return tuple(selected), tuple(dropped)
+
+
+def _choose_phase1_extension_track_for_package(
+    *,
+    package: Phase1LayoutPackage,
+    remaining_buffer: dict[str, float],
+    track_sources: dict[str, set[str]],
+    track_families: dict[str, set[str]],
+    required_length_by_package: dict[str, float],
+    source_package_tracks: dict[str, set[str]],
+) -> str | None:
+    required = required_length_by_package[package.package_id]
+    source_tracks = source_package_tracks.get(package.source_track, set())
+    feasible = [
+        track
+        for track in source_tracks
+        if remaining_buffer.get(track, 0.0) >= required
+    ]
+    if not feasible:
+        return None
+    preferred_order = {track: idx for idx, track in enumerate(package.buffer_preference)}
+
+    def sort_key(track: str) -> tuple[int, int, float, str]:
+        family_penalty = 0 if not track_families[track] or track_families[track] == {package.final_family} else 1
+        return (
+            family_penalty,
+            preferred_order.get(track, len(package.buffer_preference) + 10),
+            -remaining_buffer.get(track, 0.0),
+            track,
+        )
+
+    ordered = sorted(feasible, key=sort_key)
+    return ordered[0] if ordered else None
 
 
 def _phase1_budget_allows_package(
@@ -2338,6 +2518,11 @@ def _build_phase1_layout_diagnostics(
                 "complexityCost": package.complexity_cost,
                 "sourceChainRole": package.source_chain_role,
                 "isRequiredForBackbone": package.is_required_for_backbone,
+                "segmentRole": package.segment_role,
+                "sourceSegmentIndex": package.source_segment_index,
+                "sourceSegmentCount": package.source_segment_count,
+                "sourceTotalVehicleCount": package.source_total_vehicle_count,
+                "requiresPreviousSegment": package.requires_previous_segment,
                 "selected": (
                     package.vehicle_nos[0] in buffer_assignment
                     if package.uses_buffer
@@ -2418,6 +2603,7 @@ def _build_single_source_track_blocks(
 ) -> tuple[list[Phase1Block], int]:
     depot_seen = False
     hard_blocked_before_depot = False
+    needs_bridge_prefix = False
     staged: list[tuple[str, VehicleStageFacts]] = []
     future_depot_suffix: list[bool] = [False] * len(ordered_members)
     future_has_depot = False
@@ -2429,6 +2615,7 @@ def _build_single_source_track_blocks(
         local_target = _phase1_local_finish_target_track(facts)
         if local_target is not None:
             staged.append(("local", facts))
+            needs_bridge_prefix = True
             continue
         front_evict_target = (
             _phase1_front_evict_target_track(source_track=source_track, facts=facts)
@@ -2437,9 +2624,10 @@ def _build_single_source_track_blocks(
         )
         if front_evict_target is not None:
             staged.append(("local", facts))
+            needs_bridge_prefix = True
             continue
         if _is_phase1_candidate(facts):
-            block_kind = "bridge" if not depot_seen else "depot"
+            block_kind = "bridge" if not depot_seen and needs_bridge_prefix else "depot"
             staged.append((block_kind, facts))
             depot_seen = True
             continue
@@ -2447,6 +2635,7 @@ def _build_single_source_track_blocks(
             staged.append(("blocked", facts))
         else:
             hard_blocked_before_depot = True
+            needs_bridge_prefix = True
             staged.append(("blocked", facts))
     blocks: list[Phase1Block] = []
     chunk_members: list[VehicleStageFacts] = []
@@ -2524,7 +2713,12 @@ def _build_single_source_track_blocks(
         block_index += 1
     with_predecessors: list[Phase1Block] = []
     predecessor_ids: list[str] = []
+    source_buffer_block_index = 0
     for block in blocks:
+        layout_role = "cleanup"
+        if block.uses_buffer:
+            source_buffer_block_index += 1
+            layout_role = "core" if source_buffer_block_index == 1 else "spill"
         with_predecessors.append(
             Phase1Block(
                 block_id=block.block_id,
@@ -2543,6 +2737,7 @@ def _build_single_source_track_blocks(
                 released_depot_vehicle_count=block.released_depot_vehicle_count,
                 released_finish_vehicle_count=block.released_finish_vehicle_count,
                 required_predecessor_ids=tuple(predecessor_ids),
+                layout_role=layout_role,
             )
         )
         predecessor_ids.append(block.block_id)
@@ -2603,7 +2798,11 @@ def _make_phase1_block(
     if kind == "local":
         target_track = _phase1_local_finish_target_track(members[0])
         target_source = None
-        if target_track is None:
+        if source_track in {"存4北", "存4南"} and target_track is None:
+            target_source = "PHASE1_CLEAR_CUN4"
+        elif source_track in JI_BUFFER_TRACKS and target_track is None:
+            target_source = "PHASE1_CLEAR_JI"
+        elif target_track is None:
             target_source = _phase1_blocker_bucket_target_source(
                 facts=members[0],
                 source_track=source_track,
@@ -2652,6 +2851,7 @@ def _make_phase1_block(
         released_depot_vehicle_count=len(future_depot),
         released_finish_vehicle_count=len(future_finish),
         required_predecessor_ids=tuple(),
+        layout_role="cleanup",
     )
 
 
@@ -2681,111 +2881,225 @@ def _build_phase1_reachable_depot_set(
     )
 
 
-def _solve_phase1_backbone_plan(
+def _phase1_backbone_templates(
     *,
     source_plans: list[SourceTrackPlan],
-    reachable_depot_set: frozenset[str],
-    master: MasterData,
-) -> Phase1BackbonePlan:
-    del reachable_depot_set
-    reserved_buffer = {
-        track: round(
-            min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]),
-            1,
-        )
-        for track in JI_BUFFER_TRACKS
-    }
-    buffer_blocks = [
-        block
+) -> tuple[Phase1LayoutTemplate, ...]:
+    has_wheel = any(
+        block.final_family == "轮"
         for plan in source_plans
         for block in plan.blocks
-        if block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"}
+        if block.uses_buffer
+    )
+    templates = [
+        Phase1LayoutTemplate(
+            template_name="main_pair",
+            tracks=("机棚", "机南"),
+            preferred_open_order=("机棚", "机南"),
+            support_tracks=frozenset(),
+        ),
+        Phase1LayoutTemplate(
+            template_name="main_plus_jibei1",
+            tracks=("机棚", "机南", "机北1"),
+            preferred_open_order=("机棚", "机南", "机北1"),
+            support_tracks=frozenset({"机北1"}),
+        ),
+        Phase1LayoutTemplate(
+            template_name="main_plus_jibei2",
+            tracks=("机棚", "机南", "机北2"),
+            preferred_open_order=("机棚", "机南", "机北2"),
+            support_tracks=frozenset({"机北2"}),
+        ),
+        Phase1LayoutTemplate(
+            template_name="main_plus_jibei1_jibei2",
+            tracks=("机棚", "机南", "机北1", "机北2"),
+            preferred_open_order=("机棚", "机南", "机北1", "机北2"),
+            support_tracks=frozenset({"机北1", "机北2"}),
+        ),
     ]
-    ordered_blocks = sorted(
-        buffer_blocks,
-        key=lambda block: (
-            0 if block.block_type == "bridge_to_depot" else 1,
-            -len(block.vehicle_nos),
-            block.phase3_rank_key,
-            -block.released_depot_vehicle_count,
-            block.source_track,
-            block.block_id,
+    if has_wheel:
+        templates.append(
+            Phase1LayoutTemplate(
+                template_name="main_plus_jibei3",
+                tracks=("机棚", "机南", "机北3"),
+                preferred_open_order=("机棚", "机南", "机北3"),
+                support_tracks=frozenset({"机北3"}),
+            )
+        )
+        templates.append(
+            Phase1LayoutTemplate(
+                template_name="main_plus_jibei1_jibei3",
+                tracks=("机棚", "机南", "机北1", "机北3"),
+                preferred_open_order=("机棚", "机南", "机北1", "机北3"),
+                support_tracks=frozenset({"机北1", "机北3"}),
+            )
+        )
+    return tuple(templates)
+
+
+def _phase1_block_assignment_order(block: Phase1Block, source_priority: tuple[int, ...]) -> tuple[Any, ...]:
+    return (
+        0 if block.layout_role == "core" else 1,
+        0 if block.block_type == "bridge_to_depot" else 1,
+        -block.released_depot_vehicle_count,
+        -len(block.vehicle_nos),
+        source_priority,
+        block.phase3_rank_key,
+        block.source_track,
+        block.block_id,
+    )
+
+
+def _phase1_template_track_candidates(
+    *,
+    block: Phase1Block,
+    template: Phase1LayoutTemplate,
+    remaining: dict[str, float],
+    source_tracks: dict[str, set[str]],
+    track_sources: dict[str, set[str]],
+    track_families: dict[str, set[str]],
+) -> list[str]:
+    source_used_tracks = source_tracks.get(block.source_track, set())
+    existing_source_tracks = [
+        track for track in template.tracks
+        if track in source_used_tracks and _phase1_block_fits_buffer(block, track, remaining)
+    ]
+    if block.layout_role == "spill" and existing_source_tracks:
+        reusable = sorted(
+            existing_source_tracks,
+            key=lambda track: (
+                0 if track_families[track] == {block.final_family} else 1 if not track_families[track] else 2,
+                template.preferred_open_order.index(track),
+                -remaining[track],
+                track,
+            ),
+        )
+    else:
+        reusable = []
+
+    feasible = [
+        track
+        for track in template.tracks
+        if _phase1_block_fits_buffer(block, track, remaining)
+        and (
+            block.layout_role == "core"
+            or not source_used_tracks
+            or (
+                len(source_used_tracks) == 1
+                and PHASE1_BUFFER_TRACK_ROLES.get(track) in {"main", "support"}
+            )
+            or (
+                len(source_used_tracks) == 2
+                and track in template.support_tracks
+            )
+        )
+    ]
+    if not feasible:
+        return reusable
+    ordered = sorted(
+        feasible,
+        key=lambda track: (
+            0 if block.final_family == "轮" and track == "机北3" else 1,
+            0 if track in source_used_tracks else 1,
+            0 if PHASE1_BUFFER_TRACK_ROLES.get(track) == "main" else 1,
+            0 if track_families[track] == {block.final_family} else 1 if not track_families[track] else 2,
+            0 if not track_sources[track] else 1,
+            template.preferred_open_order.index(track),
+            -remaining[track],
+            track,
         ),
     )
-    block_by_id = {block.block_id: block for block in ordered_blocks}
-    if len(ordered_blocks) > 8:
-        return _solve_phase1_backbone_plan_greedily(
+    return list(dict.fromkeys(reusable + ordered))
+
+
+def _phase1_template_assignment_score(
+    *,
+    ordered_blocks: list[Phase1Block],
+    assignment: dict[str, str],
+    template: Phase1LayoutTemplate,
+) -> tuple[int, int, int, int, int, int, int, int, int]:
+    selected_blocks = [block for block in ordered_blocks if block.block_id in assignment]
+    source_tracks: dict[str, set[str]] = defaultdict(set)
+    family_tracks: dict[str, set[str]] = defaultdict(set)
+    track_sources: dict[str, set[str]] = defaultdict(set)
+    for block in selected_blocks:
+        track = assignment[block.block_id]
+        source_tracks[block.source_track].add(track)
+        family_tracks[block.final_family].add(track)
+        track_sources[track].add(block.source_track)
+    opened_tracks = {assignment[block.block_id] for block in selected_blocks}
+    source_split_count = sum(max(0, len(tracks) - 1) for tracks in source_tracks.values())
+    family_split_count = sum(max(0, len(tracks) - 1) for tracks in family_tracks.values())
+    support_track_count = sum(1 for track in opened_tracks if track in template.support_tracks)
+    spill_block_count = sum(1 for block in selected_blocks if block.layout_role == "spill")
+    source_mix_penalty = sum(max(0, len(sources) - 1) for sources in track_sources.values())
+    core_vehicle_count = sum(len(block.vehicle_nos) for block in selected_blocks if block.layout_role == "core")
+    total_vehicle_count = sum(len(block.vehicle_nos) for block in selected_blocks)
+    preference_penalty = sum(
+        block.buffer_preference.index(assignment[block.block_id])
+        if assignment[block.block_id] in block.buffer_preference
+        else len(block.buffer_preference) + 5
+        for block in selected_blocks
+    )
+    return (
+        core_vehicle_count,
+        total_vehicle_count,
+        -source_mix_penalty,
+        -support_track_count,
+        -len(opened_tracks),
+        -source_split_count,
+        -family_split_count,
+        -spill_block_count,
+        -preference_penalty,
+    )
+
+
+def _solve_phase1_template_backbone_plan(
+    *,
+    source_plans: list[SourceTrackPlan],
+    reserved_buffer: dict[str, float],
+    template: Phase1LayoutTemplate,
+) -> Phase1BackbonePlan:
+    ordered_blocks = sorted(
+        [
+            block
+            for plan in source_plans
+            for block in plan.blocks
+            if block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"}
+        ],
+        key=lambda block: _phase1_block_assignment_order(
+            block,
+            next(plan.source_priority_score for plan in source_plans if plan.source_track == block.source_track),
+        ),
+    )
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    if len(ordered_blocks) > 12:
+        return _solve_phase1_template_backbone_plan_greedily(
             source_plans=source_plans,
             reserved_buffer=reserved_buffer,
+            template=template,
         )
     best_score: tuple[int, int, int, int, int, int, int, int, int] | None = None
     best_assignment: dict[str, str] | None = None
-    remaining_vehicle_suffix = [0] * (len(ordered_blocks) + 1)
-    remaining_bridge_suffix = [0] * (len(ordered_blocks) + 1)
-    for index in range(len(ordered_blocks) - 1, -1, -1):
-        block = ordered_blocks[index]
-        remaining_vehicle_suffix[index] = remaining_vehicle_suffix[index + 1] + len(block.vehicle_nos)
-        remaining_bridge_suffix[index] = remaining_bridge_suffix[index + 1] + (
-            len(block.vehicle_nos) if block.block_type == "bridge_to_depot" else 0
-        )
 
     def dfs(
         index: int,
         remaining: dict[str, float],
         assignment: dict[str, str],
+        source_tracks: dict[str, set[str]],
         track_sources: dict[str, set[str]],
         track_families: dict[str, set[str]],
     ) -> None:
         nonlocal best_score, best_assignment
-        current_vehicle_count = sum(len(block_by_id[block_id].vehicle_nos) for block_id in assignment)
-        current_bridge_vehicle_count = sum(
-            len(block_by_id[block_id].vehicle_nos)
-            for block_id in assignment
-            if block_by_id[block_id].block_type == "bridge_to_depot"
-        )
-        if best_score is not None:
-            max_possible_vehicle_count = current_vehicle_count + remaining_vehicle_suffix[index]
-            if max_possible_vehicle_count < best_score[0]:
-                return
-            if max_possible_vehicle_count == best_score[0]:
-                max_possible_bridge_vehicle_count = current_bridge_vehicle_count + remaining_bridge_suffix[index]
-                if max_possible_bridge_vehicle_count < best_score[1]:
-                    return
         if index >= len(ordered_blocks):
-            selected_blocks = [block for block in ordered_blocks if block.block_id in assignment]
-            selected_sources = {block.source_track for block in selected_blocks}
-            used_tracks = {track for track in assignment.values()}
-            selected_vehicle_count = current_vehicle_count
-            selected_bridge_vehicle_count = current_bridge_vehicle_count
-            source_mix_penalty = sum(max(0, len(track_sources[track]) - 1) for track in used_tracks)
-            family_mix_penalty = sum(max(0, len(track_families[track]) - 1) for track in used_tracks)
-            split_source_penalty = sum(
-                max(0, sum(1 for block in selected_blocks if block.source_track == source_track) - 1)
-                for source_track in selected_sources
-            )
-            phase3_branch_penalty = sum(
-                max(
-                    0,
-                    len({assignment[block.block_id] for block in selected_blocks if block.final_family == family}) - 1,
-                )
-                for family in {block.final_family for block in selected_blocks}
-            )
-            preference_penalty = sum(
-                block.buffer_preference.index(assignment[block.block_id])
-                if assignment[block.block_id] in block.buffer_preference
-                else len(block.buffer_preference) + 5
-                for block in selected_blocks
-            )
-            score = (
-                selected_vehicle_count,
-                selected_bridge_vehicle_count,
-                -len(selected_sources),
-                -source_mix_penalty,
-                -phase3_branch_penalty,
-                -family_mix_penalty,
-                -split_source_penalty,
-                -len(used_tracks),
-                -preference_penalty,
+            score = _phase1_template_assignment_score(
+                ordered_blocks=ordered_blocks,
+                assignment=assignment,
+                template=template,
             )
             if best_score is None or score > best_score:
                 best_score = score
@@ -2793,40 +3107,43 @@ def _solve_phase1_backbone_plan(
             return
 
         block = ordered_blocks[index]
-        required = _phase1_buffer_required_length(block)
-        feasible_tracks = [
-            track
-            for track in block.buffer_preference
-            if remaining.get(track, 0.0) >= required
-        ]
-        feasible_tracks.sort(
-            key=lambda track: (
-                0 if track_sources[track] == {block.source_track} else 1,
-                0 if not track_sources[track] else 1,
-                0 if track_families[track] == {block.final_family} else 1 if not track_families[track] else 2,
-                block.buffer_preference.index(track),
-                -remaining[track],
-                track,
-            )
-        )
-        for track in feasible_tracks:
+        if not _phase1_backbone_predecessors_ready(
+            block=block,
+            block_by_id=block_by_id,
+            selected_block_ids=set(assignment),
+        ):
+            dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
+            return
+
+        for track in _phase1_template_track_candidates(
+            block=block,
+            template=template,
+            remaining=remaining,
+            source_tracks=source_tracks,
+            track_sources=track_sources,
+            track_families=track_families,
+        ):
             next_remaining = dict(remaining)
-            next_remaining[track] -= required
+            next_remaining[track] -= _phase1_buffer_required_length(block)
             next_assignment = dict(assignment)
             next_assignment[block.block_id] = track
+            next_source_tracks = {name: set(values) for name, values in source_tracks.items()}
+            next_source_tracks.setdefault(block.source_track, set()).add(track)
             next_track_sources = {name: set(values) for name, values in track_sources.items()}
             next_track_sources[track].add(block.source_track)
             next_track_families = {name: set(values) for name, values in track_families.items()}
             next_track_families[track].add(block.final_family)
-            dfs(index + 1, next_remaining, next_assignment, next_track_sources, next_track_families)
-        dfs(index + 1, remaining, assignment, track_sources, track_families)
+            dfs(index + 1, next_remaining, next_assignment, next_source_tracks, next_track_sources, next_track_families)
+
+        dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
 
     dfs(
         0,
-        dict(reserved_buffer),
+        {track: reserved_buffer[track] for track in template.tracks},
         {},
-        {track: set() for track in JI_BUFFER_TRACKS},
-        {track: set() for track in JI_BUFFER_TRACKS},
+        {},
+        {track: set() for track in template.tracks},
+        {track: set() for track in template.tracks},
     )
     assignment_by_block = best_assignment or {}
     selected_block_ids: list[str] = []
@@ -2851,13 +3168,102 @@ def _solve_phase1_backbone_plan(
         selected_block_ids=frozenset(selected_block_ids),
         buffer_assignment=assignment,
     )
+    opened_tracks = tuple(
+        track for track in template.preferred_open_order
+        if track in {assignment_by_block[block_id] for block_id in assignment_by_block}
+    )
     return Phase1BackbonePlan(
         selected_block_ids=tuple(selected_block_ids),
         selected_source_tracks=tuple(selected_source_tracks),
         reserved_buffer_by_track=reserved_buffer,
         selected_buffer_assignment=assignment,
         target_rank_by_vehicle=target_rank_by_vehicle,
+        layout_template_name=template.template_name,
+        opened_buffer_tracks=opened_tracks,
     )
+
+
+def _solve_phase1_backbone_plan(
+    *,
+    source_plans: list[SourceTrackPlan],
+    reachable_depot_set: frozenset[str],
+    master: MasterData,
+) -> Phase1BackbonePlan:
+    del reachable_depot_set
+    admitted_buffer_sources: list[str] = []
+    active_hot_sources: set[str] = set()
+    active_storage_sources: set[str] = set()
+    admitted_source_plans: list[SourceTrackPlan] = []
+    for plan in source_plans:
+        has_buffer = any(block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"} for block in plan.blocks)
+        if not has_buffer:
+            admitted_source_plans.append(plan)
+            continue
+        source_role = _phase1_source_chain_role(source_track=plan.source_track)
+        opening_gain_units = sum(len(block.vehicle_nos) * 2 for block in plan.blocks if block.uses_buffer)
+        opening_cost_units = sum(
+            1 if block.uses_buffer else len(block.vehicle_nos)
+            for block in plan.blocks
+            if block.block_type in {"bridge_to_depot", "depot_batch", "prefix_clear", "tail_finish", "clear_cun4"}
+        )
+        opening_score = opening_gain_units - opening_cost_units
+        if _phase1_is_storage_source_role(source_role) and opening_score <= 0:
+            continue
+        next_hot_sources = set(active_hot_sources)
+        next_storage_sources = set(active_storage_sources)
+        if _phase1_is_hot_source_role(source_role):
+            next_hot_sources.add(plan.source_track)
+        elif _phase1_is_storage_source_role(source_role):
+            next_storage_sources.add(plan.source_track)
+        if len(next_hot_sources) > PHASE1_MAX_ACTIVE_HOT_SOURCE_TRACKS:
+            continue
+        if len(next_storage_sources) > PHASE1_MAX_ACTIVE_STORAGE_SOURCE_TRACKS:
+            continue
+        admitted_buffer_sources.append(plan.source_track)
+        active_hot_sources = next_hot_sources
+        active_storage_sources = next_storage_sources
+        admitted_source_plans.append(plan)
+    reserved_buffer = {
+        track: round(
+            min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]),
+            1,
+        )
+        for track in JI_BUFFER_TRACKS
+    }
+    templates = _phase1_backbone_templates(source_plans=admitted_source_plans)
+    template_plans = [
+        _solve_phase1_template_backbone_plan(
+            source_plans=admitted_source_plans,
+            reserved_buffer=reserved_buffer,
+            template=template,
+        )
+        for template in templates
+    ]
+    best_plan = max(
+        template_plans,
+        key=lambda plan: _phase1_template_assignment_score(
+            ordered_blocks=[
+                block
+                for source_plan in admitted_source_plans
+                for block in source_plan.blocks
+                if block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"}
+            ],
+            assignment={
+                block_id: plan.selected_buffer_assignment[vehicle_no]
+                for block_id, vehicle_no in (
+                    (
+                        block.block_id,
+                        block.vehicle_nos[0],
+                    )
+                    for source_plan in admitted_source_plans
+                    for block in source_plan.blocks
+                    if block.block_id in set(plan.selected_block_ids) and block.uses_buffer
+                )
+            },
+            template=next(template for template in templates if template.template_name == plan.layout_template_name),
+        ),
+    )
+    return best_plan
 
 
 def _build_phase1_buffer_budget(master: MasterData) -> dict[str, float]:
@@ -2870,16 +3276,17 @@ def _build_phase1_buffer_budget(master: MasterData) -> dict[str, float]:
     }
 
 
-def _solve_phase1_backbone_plan_greedily(
+def _solve_phase1_template_backbone_plan_greedily(
     *,
     source_plans: list[SourceTrackPlan],
     reserved_buffer: dict[str, float],
+    template: Phase1LayoutTemplate,
 ) -> Phase1BackbonePlan:
-    remaining = dict(reserved_buffer)
+    remaining = {track: reserved_buffer[track] for track in template.tracks}
     selected_block_ids: list[str] = []
     selected_source_tracks: list[str] = []
     assignment: dict[str, str] = {}
-    preferred_track_by_source: dict[str, str] = {}
+    source_tracks: dict[str, set[str]] = defaultdict(set)
     block_by_id = {
         block.block_id: block
         for plan in source_plans
@@ -2891,8 +3298,9 @@ def _solve_phase1_backbone_plan_greedily(
             source_plans=source_plans,
             block_by_id=block_by_id,
             selected_block_ids=selected_set,
-            preferred_track_by_source=preferred_track_by_source,
             remaining=remaining,
+            template=template,
+            source_tracks=source_tracks,
         )
         if next_choice is None:
             break
@@ -2907,7 +3315,7 @@ def _solve_phase1_backbone_plan_greedily(
             selected_block_ids.append(predecessor_id)
         selected_set.add(block.block_id)
         selected_block_ids.append(block.block_id)
-        preferred_track_by_source[block.source_track] = target_track
+        source_tracks[block.source_track].add(target_track)
         remaining[target_track] -= _phase1_buffer_required_length(block)
         for vehicle_no in block.vehicle_nos:
             assignment[vehicle_no] = target_track
@@ -2922,6 +3330,10 @@ def _solve_phase1_backbone_plan_greedily(
         reserved_buffer_by_track=reserved_buffer,
         selected_buffer_assignment=assignment,
         target_rank_by_vehicle=target_rank_by_vehicle,
+        layout_template_name=template.template_name,
+        opened_buffer_tracks=tuple(
+            track for track in template.preferred_open_order if track in set(assignment.values())
+        ),
     )
 
 
@@ -2938,37 +3350,18 @@ def _phase1_buffer_required_length(block: Phase1Block) -> float:
     return block.total_length_m + max(1.0, len(block.vehicle_nos) - 1)
 
 
-def _choose_buffer_track_for_block(
-    block: Phase1Block,
-    remaining: dict[str, float],
-) -> str | None:
-    feasible = [
-        track
-        for track in block.buffer_preference
-        if _phase1_block_fits_buffer(block, track, remaining)
-    ]
-    if not feasible:
-        return None
-    required = _phase1_buffer_required_length(block)
-    feasible.sort(
-        key=lambda track: (
-            block.buffer_preference.index(track),
-            remaining[track] - required,
-            track,
-        )
-    )
-    return feasible[0]
-
-
 def _choose_next_phase1_backbone_block(
     *,
     source_plans: list[SourceTrackPlan],
     block_by_id: dict[str, Phase1Block],
     selected_block_ids: set[str],
-    preferred_track_by_source: dict[str, str],
     remaining: dict[str, float],
+    template: Phase1LayoutTemplate,
+    source_tracks: dict[str, set[str]],
 ) -> tuple[SourceTrackPlan, Phase1Block, str] | None:
     candidates: list[tuple[tuple[Any, ...], SourceTrackPlan, Phase1Block, str]] = []
+    track_sources: dict[str, set[str]] = defaultdict(set)
+    track_families: dict[str, set[str]] = defaultdict(set)
     for plan in source_plans:
         for block in plan.blocks:
             if block.block_id in selected_block_ids:
@@ -2981,26 +3374,31 @@ def _choose_next_phase1_backbone_block(
                 selected_block_ids=selected_block_ids,
             ):
                 continue
-            target_track = preferred_track_by_source.get(block.source_track)
-            if target_track is None or not _phase1_block_fits_buffer(block, target_track, remaining):
-                target_track = _choose_buffer_track_for_block(block, remaining)
-            if target_track is None:
-                continue
-            candidates.append((
-                (
-                    0 if block.block_type == "bridge_to_depot" else 1,
-                    -block.released_depot_vehicle_count,
-                    -len(block.vehicle_nos),
-                    plan.source_priority_score,
-                    block.total_length_m,
-                    block.phase3_rank_key,
-                    block.source_track,
-                    block.block_id,
-                ),
-                plan,
-                block,
-                target_track,
-            ))
+            for target_track in _phase1_template_track_candidates(
+                block=block,
+                template=template,
+                remaining=remaining,
+                source_tracks=source_tracks,
+                track_sources=track_sources,
+                track_families=track_families,
+            )[:2]:
+                candidates.append((
+                    (
+                        0 if block.layout_role == "core" else 1,
+                        0 if target_track in source_tracks.get(block.source_track, set()) else 1,
+                        0 if target_track not in template.support_tracks else 1,
+                        0 if block.block_type == "bridge_to_depot" else 1,
+                        -block.released_depot_vehicle_count,
+                        -len(block.vehicle_nos),
+                        plan.source_priority_score,
+                        block.phase3_rank_key,
+                        block.source_track,
+                        block.block_id,
+                    ),
+                    plan,
+                    block,
+                    target_track,
+                ))
     if not candidates:
         return None
     candidates.sort(key=lambda item: item[0])
@@ -3015,7 +3413,9 @@ def _phase1_backbone_predecessors_ready(
     selected_block_ids: set[str],
 ) -> bool:
     for predecessor_id in block.required_predecessor_ids:
-        predecessor = block_by_id[predecessor_id]
+        predecessor = block_by_id.get(predecessor_id)
+        if predecessor is None:
+            continue
         if predecessor.uses_buffer and predecessor_id not in selected_block_ids:
             return False
     return True
@@ -3059,23 +3459,93 @@ def _solve_phase1_finish_plan(
     backbone_plan: Phase1BackbonePlan,
 ) -> Phase1FinishPlan:
     selected_ids: list[str] = []
-    goal_overrides: dict[str, tuple[str, str]] = {}
     selected_backbone = set(backbone_plan.selected_block_ids)
+    selected_backbone_sources = set(backbone_plan.selected_source_tracks)
     for plan in source_plans:
         for block in plan.blocks:
             if block.block_id in selected_backbone and not block.uses_buffer:
                 selected_ids.append(block.block_id)
-            elif block.block_type in {"clear_cun4", "prefix_clear", "tail_finish"}:
+            elif block.block_type == "clear_cun4":
+                selected_ids.append(block.block_id)
+            elif block.target_source == "PHASE1_CLEAR_JI":
+                selected_ids.append(block.block_id)
+            elif block.block_type in {"prefix_clear", "tail_finish"} and block.source_track in selected_backbone_sources:
                 selected_ids.append(block.block_id)
             else:
                 continue
-            if block.target_track is not None:
-                for vehicle_no in block.vehicle_nos:
-                    goal_overrides.setdefault(vehicle_no, (block.target_track, block.target_source))
     return Phase1FinishPlan(
         selected_block_ids=tuple(dict.fromkeys(selected_ids)),
-        goal_overrides=goal_overrides,
+        goal_overrides={},
     )
+
+
+def _materialize_phase1_finish_goal_overrides(
+    *,
+    facts_list: list[VehicleStageFacts],
+    source_plans: list[SourceTrackPlan],
+    finish_plan: Phase1FinishPlan,
+    buffer_assignment: dict[str, str],
+    master: MasterData,
+) -> dict[str, tuple[str, str]]:
+    selected_finish_ids = set(finish_plan.selected_block_ids)
+    selected_finish_blocks = [
+        block
+        for plan in source_plans
+        for block in plan.blocks
+        if block.block_id in selected_finish_ids and not block.uses_buffer
+    ]
+    goal_overrides: dict[str, tuple[str, str]] = {}
+    temp_packages: list[Phase1LayoutPackage] = []
+    for block in selected_finish_blocks:
+        if block.target_track is not None:
+            for vehicle_no in block.vehicle_nos:
+                goal_overrides[vehicle_no] = (block.target_track, block.target_source)
+            continue
+        temp_packages.append(
+            Phase1LayoutPackage(
+                package_id=block.block_id,
+                chain_id=f"CHAIN::{block.source_track}",
+                package_kind="temp_repark",
+                source_track=block.source_track,
+                vehicle_nos=block.vehicle_nos,
+                total_length_m=block.total_length_m,
+                target_track="",
+                target_source=block.target_source,
+                final_family=block.final_family,
+                min_spot_priority=999,
+                source_order_start=block.source_order_start,
+                source_order_end=block.source_order_end,
+                buffer_preference=tuple(),
+                uses_buffer=False,
+                pressure_cut=_phase1_block_pressure_cut({
+                    "blockType": block.block_type,
+                    "sourceTrack": block.source_track,
+                }),
+                reason_tags=tuple(),
+                execution_layer="L2_REQUIRED_CLEAR",
+                complexity_cost=max(1, len(block.vehicle_nos)),
+                source_chain_role=_phase1_source_chain_role(source_track=block.source_track),
+                is_required_for_backbone=True,
+                segment_role="cleanup",
+                source_segment_index=0,
+                source_segment_count=0,
+                source_total_vehicle_count=0,
+                requires_previous_segment=False,
+            )
+        )
+    temp_assignments = _assign_phase1_temp_targets(
+        facts_list=facts_list,
+        packages=temp_packages,
+        buffer_assignment=buffer_assignment,
+        master=master,
+    )
+    for package in temp_packages:
+        target_track = temp_assignments.get(package.package_id)
+        if target_track is None:
+            continue
+        for vehicle_no in package.vehicle_nos:
+            goal_overrides[vehicle_no] = (target_track, package.target_source)
+    return goal_overrides
 
 
 def _build_phase1_block_diagnostics(
@@ -3092,6 +3562,7 @@ def _build_phase1_block_diagnostics(
     master: MasterData,
 ) -> dict[str, Any]:
     all_blocks = [block for plan in source_plans for block in plan.blocks]
+    facts_by_vehicle = {facts.vehicle_no: facts for facts in facts_list}
     block_by_id = {block.block_id: block for block in all_blocks}
     selected_backbone = [block_by_id[block_id] for block_id in backbone_plan.selected_block_ids]
     selected_finish = [block_by_id[block_id] for block_id in finish_plan.selected_block_ids]
@@ -3151,6 +3622,7 @@ def _build_phase1_block_diagnostics(
             "releasedDepotVehicleCount": block.released_depot_vehicle_count,
             "releasedFinishVehicleCount": block.released_finish_vehicle_count,
             "requiredPredecessorIds": list(block.required_predecessor_ids),
+            "layoutRole": block.layout_role,
             "selectedBackbone": block.block_id in backbone_plan.selected_block_ids,
             "selectedFinish": block.block_id in finish_plan.selected_block_ids,
             "bufferTrack": (
@@ -3161,6 +3633,45 @@ def _build_phase1_block_diagnostics(
         }
         for block in all_blocks
     ]
+    source_summary_projection = []
+    for plan in source_plans:
+        backbone_blocks = [block for block in plan.blocks if block.uses_buffer]
+        cleanup_blocks = [block for block in plan.blocks if not block.uses_buffer]
+        opening_gain_units = sum(len(block.vehicle_nos) * 2 for block in backbone_blocks)
+        opening_cost_units = len(backbone_blocks) + sum(len(block.vehicle_nos) for block in cleanup_blocks)
+        opening_score = opening_gain_units - opening_cost_units
+        selected_for_backbone = any(
+            block.block_id in backbone_plan.selected_block_ids and block.uses_buffer
+            for block in plan.blocks
+        )
+        source_summary_projection.append(
+            {
+                "sourceTrack": plan.source_track,
+                "sourceChainRole": _phase1_source_chain_role(source_track=plan.source_track),
+                "backbonePackageCount": len(backbone_blocks),
+                "backboneVehicleCount": sum(len(block.vehicle_nos) for block in backbone_blocks),
+                "requiredCleanupPackageCount": len(cleanup_blocks),
+                "requiredCleanupVehicleCount": sum(len(block.vehicle_nos) for block in cleanup_blocks),
+                "optionalCleanupPackageCount": 0,
+                "openingCostUnits": opening_cost_units,
+                "openingGainUnits": opening_gain_units,
+                "openingScore": opening_score,
+                "primaryPackageIds": [block.block_id for block in backbone_blocks[:1]],
+                "primaryVehicleCount": len(backbone_blocks[0].vehicle_nos) if backbone_blocks else 0,
+                "primaryRequiredLengthM": (
+                    _phase1_buffer_required_length(backbone_blocks[0]) if backbone_blocks else 0.0
+                ),
+                "admissionTier": "core" if opening_score > 0 else "weak",
+                "selectedForBackbone": selected_for_backbone,
+                "admissionDecision": "primary" if selected_for_backbone else "deferred",
+                "slotIndex": (
+                    selected_all_source_tracks.index(plan.source_track) + 1
+                    if plan.source_track in selected_all_source_tracks
+                    else None
+                ),
+                "rejectionReason": None if selected_for_backbone else ("weak_source" if opening_score <= 0 else "backbone_slot_limit"),
+            }
+        )
     source_plan_projection = [
         {
             "sourceTrack": plan.source_track,
@@ -3231,14 +3742,213 @@ def _build_phase1_block_diagnostics(
         track = buffer_assignment.get(block.vehicle_nos[0])
         if track is not None:
             buffer_block_order[track].append(block.block_id)
+    selected_temp_tracks_by_source: dict[str, list[str]] = defaultdict(list)
+    selected_cleanup_by_source: dict[str, dict[str, int]] = {}
+    for block in selected_finish:
+        source_row = selected_cleanup_by_source.setdefault(
+            block.source_track,
+            {
+                "requiredLocalFinishCount": 0,
+                "requiredTempReparkCount": 0,
+                "optionalLocalFinishCount": 0,
+                "optionalTempReparkCount": 0,
+            },
+        )
+        resolved_target_track = goal_overrides.get(block.vehicle_nos[0], (block.target_track, block.target_source))[0]
+        if resolved_target_track is not None and block.target_source in {
+            "PHASE1_BLOCKER_BUCKET_WORK",
+            "PHASE1_BLOCKER_BUCKET_YARD",
+            "PHASE1_CLEAR_JI",
+        }:
+            source_row["requiredTempReparkCount"] += 1
+            selected_temp_tracks_by_source[block.source_track].append(resolved_target_track)
+        else:
+            source_row["requiredLocalFinishCount"] += 1
     task_package_projection = []
     for block in block_projection:
+        block_facts = [facts_by_vehicle[vehicle_no] for vehicle_no in block["vehicleNos"] if vehicle_no in facts_by_vehicle]
+        target_source = str(block["targetSource"])
+        package_kind = (
+            "depot_batch"
+            if block["usesBuffer"]
+            else "local_finish"
+            if target_source not in {PHASE1_BLOCKER_BUCKET_WORK, PHASE1_BLOCKER_BUCKET_YARD, "PHASE1_CLEAR_JI"}
+            else "temp_repark"
+        )
+        special_tags = set()
+        if any(facts.need_weigh for facts in block_facts):
+            special_tags.add("need_weigh_singleton")
+        if any(facts.is_heavy for facts in block_facts):
+            special_tags.add("heavy_cap")
+        if any(facts.is_close_door for facts in block_facts) and any(
+            facts.final_target_track == "存4北" for facts in block_facts
+        ):
+            special_tags.add("close_door_cun4_singleton")
+        source_chain_role = _phase1_source_chain_role(source_track=str(block["sourceTrack"]))
         block_copy = dict(block)
         block_copy["packageId"] = block["blockId"]
-        block_copy["selected"] = bool(block["selectedBackbone"] or block["selectedFinish"])
+        block_copy["chainId"] = f"CHAIN::{block['sourceTrack']}"
+        block_copy["packageKind"] = package_kind
         block_copy["pressureCut"] = _phase1_block_pressure_cut(block_copy)
+        block_copy["reasonTags"] = sorted(
+            special_tags
+            | {str(block["blockType"]), str(block_copy["pressureCut"])}
+        )
+        block_copy["executionLayer"] = "L1_BACKBONE" if block["usesBuffer"] else "L2_REQUIRED_CLEAR"
+        block_copy["complexityCost"] = max(1, len(block["vehicleNos"]))
+        block_copy["sourceChainRole"] = source_chain_role
+        block_copy["isRequiredForBackbone"] = True
+        block_copy["segmentRole"] = "core" if block["usesBuffer"] else "cleanup"
+        block_copy["sourceSegmentIndex"] = 1
+        block_copy["sourceSegmentCount"] = 1
+        block_copy["sourceTotalVehicleCount"] = len(block["vehicleNos"])
+        block_copy["requiresPreviousSegment"] = False
+        block_copy["selected"] = bool(block["selectedBackbone"] or block["selectedFinish"])
         task_package_projection.append(block_copy)
+    depot_compiled_vehicle_nos = sorted(vehicle_no for vehicle_no in reachable_depot_set if vehicle_no in buffer_assignment)
+    cun4_vehicle_nos = frozenset(
+        facts.vehicle_no
+        for facts in facts_list
+        if facts.current_track in {"存4北", "存4南"}
+    )
+    cun4_cleared_vehicle_nos = sorted(
+        facts.vehicle_no
+        for facts in facts_list
+        if facts.current_track in {"存4北", "存4南"}
+        and (facts.vehicle_no in goal_overrides or facts.vehicle_no in buffer_assignment)
+    )
+    ji_non_depot_vehicle_nos = frozenset(
+        facts.vehicle_no
+        for facts in facts_list
+        if facts.current_track in JI_BUFFER_TRACKS and not facts.needs_depot_batch
+    )
+    ji_cleared_vehicle_nos = sorted(
+        facts.vehicle_no
+        for facts in facts_list
+        if facts.current_track in JI_BUFFER_TRACKS and not facts.needs_depot_batch and facts.vehicle_no in goal_overrides
+    )
+    selected_layer_counts = Counter(
+        "L1_BACKBONE" if block.uses_buffer else "L2_REQUIRED_CLEAR"
+        for block in selected_backbone + selected_finish
+    )
+    budget_hit_reasons = Counter(
+        str(summary["rejectionReason"])
+        for summary in source_summary_projection
+        if summary["rejectionReason"]
+    )
+    selected_hot_source_tracks = sorted(
+        source_track
+        for source_track in selected_all_source_tracks
+        if _phase1_is_hot_source_role(_phase1_source_chain_role(source_track=source_track))
+    )
+    selected_storage_source_tracks = sorted(
+        source_track
+        for source_track in selected_all_source_tracks
+        if _phase1_is_storage_source_role(_phase1_source_chain_role(source_track=source_track))
+    )
+    mixed_buffer_track_count = sum(
+        1
+        for track in JI_BUFFER_TRACKS
+        if len({
+            block.source_track
+            for block in selected_buffer_blocks
+            if buffer_assignment.get(block.vehicle_nos[0]) == track
+        }) >= 2
+    )
     return {
+        "selectedPackageIds": [block.block_id for block in selected_backbone + selected_finish],
+        "selectedChainIds": sorted({f"CHAIN::{block.source_track}" for block in selected_backbone + selected_finish}),
+        "selectedPackageCount": len({block.block_id for block in selected_backbone + selected_finish}),
+        "selectedPackageSourceTracks": selected_all_source_tracks,
+        "selectedVehicleNos": sorted(selected_buffer_vehicle_nos),
+        "selectedVehicleCount": len(selected_buffer_vehicle_nos),
+        "selectedLocalVehicleNos": sorted(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
+        "selectedLocalVehicleCount": len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
+        "activeVehicleCount": len(selected_buffer_vehicle_nos) + len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
+        "backboneVehicleCount": len(selected_buffer_vehicle_nos),
+        "cleanupVehicleCount": len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
+        "selectedSourceTrackCount": len(selected_all_source_tracks),
+        "selectedSourceTracks": selected_all_source_tracks,
+        "admittedSourceTracks": selected_all_source_tracks,
+        "primaryBackboneSourceTracks": sorted({block.source_track for block in selected_backbone if block.uses_buffer}),
+        "elasticBackboneSourceTracks": [],
+        "companionBackboneSourceTracks": [],
+        "deferredBackboneSourceTracks": sorted(
+            plan.source_track
+            for plan in source_plans
+            if plan.source_track not in {block.source_track for block in selected_backbone if block.uses_buffer}
+            and plan.reachable_depot_vehicle_nos
+        ),
+        "selectedHotSourceTrackCount": len(selected_hot_source_tracks),
+        "selectedHotSourceTracks": selected_hot_source_tracks,
+        "selectedStorageSourceTrackCount": len(selected_storage_source_tracks),
+        "selectedStorageSourceTracks": selected_storage_source_tracks,
+        "optionalCleanupPackageCount": 0,
+        "selectedExecutionLayerCounts": dict(sorted(selected_layer_counts.items())),
+        "selectedCleanupBySource": dict(sorted(selected_cleanup_by_source.items())),
+        "selectedTempTracksBySource": {
+            source_track: sorted(dict.fromkeys(tracks))
+            for source_track, tracks in sorted(selected_temp_tracks_by_source.items())
+        },
+        "budgetHitReasons": dict(sorted(budget_hit_reasons.items())),
+        "sourceOpenSummaries": source_summary_projection,
+        "selectedTotalLengthM": round(sum(facts.vehicle_length for facts in facts_list if facts.vehicle_no in selected_buffer_vehicle_nos), 1),
+        "depotDemandVehicleCount": len(reachable_depot_set),
+        "depotDemandTotalLengthM": round(
+            sum(facts.vehicle_length for facts in facts_list if facts.vehicle_no in reachable_depot_set),
+            1,
+        ),
+        "depotCompiledVehicleCount": len(depot_compiled_vehicle_nos),
+        "depotCompiledVehicleNos": depot_compiled_vehicle_nos,
+        "depotCompileRatio": round(
+            len(depot_compiled_vehicle_nos) / len(reachable_depot_set),
+            4,
+        ) if reachable_depot_set else 1.0,
+        "uncompiledDepotVehicleNos": sorted(reachable_depot_set - set(buffer_assignment)),
+        "cun4VehicleCount": len(cun4_vehicle_nos),
+        "cun4ClearedVehicleCount": len(cun4_cleared_vehicle_nos),
+        "cun4ClearedVehicleNos": cun4_cleared_vehicle_nos,
+        "cun4ClearRatio": round(len(cun4_cleared_vehicle_nos) / len(cun4_vehicle_nos), 4) if cun4_vehicle_nos else 1.0,
+        "remainingCun4VehicleNos": sorted(cun4_vehicle_nos - set(cun4_cleared_vehicle_nos)),
+        "jiNonDepotVehicleCount": len(ji_non_depot_vehicle_nos),
+        "jiNonDepotClearedVehicleCount": len(ji_cleared_vehicle_nos),
+        "jiNonDepotClearedVehicleNos": ji_cleared_vehicle_nos,
+        "jiPurityRatio": round(len(ji_cleared_vehicle_nos) / len(ji_non_depot_vehicle_nos), 4) if ji_non_depot_vehicle_nos else 1.0,
+        "remainingJiNonDepotVehicleNos": sorted(ji_non_depot_vehicle_nos - set(ji_cleared_vehicle_nos)),
+        "jiCapacityTotalM": round(
+            sum(min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]) for track in JI_BUFFER_TRACKS),
+            1,
+        ),
+        "jiOverflowM": round(
+            max(
+                0.0,
+                sum(facts.vehicle_length for facts in facts_list if facts.vehicle_no in reachable_depot_set)
+                - sum(min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]) for track in JI_BUFFER_TRACKS),
+            ),
+            1,
+        ),
+        "bufferRequiredLengthsM": {
+            track: round(
+                sum(
+                    _phase1_buffer_required_length(block)
+                    for block in selected_buffer_blocks
+                    if buffer_assignment.get(block.vehicle_nos[0]) == track
+                ),
+                1,
+            )
+            for track in JI_BUFFER_TRACKS
+            if any(buffer_assignment.get(block.vehicle_nos[0]) == track for block in selected_buffer_blocks)
+        },
+        "bufferSourceTracks": {
+            track: sorted({
+                block.source_track
+                for block in selected_buffer_blocks
+                if buffer_assignment.get(block.vehicle_nos[0]) == track
+            })
+            for track in JI_BUFFER_TRACKS
+            if any(buffer_assignment.get(block.vehicle_nos[0]) == track for block in selected_buffer_blocks)
+        },
+        "mixedBufferTrackCount": mixed_buffer_track_count,
         "cun4Cleared": not cun4_pending,
         "cun4PendingVehicleNos": sorted(cun4_pending),
         "reachableDepotVehicleCount": len(reachable_depot_set),
@@ -3286,16 +3996,34 @@ def _build_phase1_block_diagnostics(
             selected_buffer_blocks=selected_buffer_blocks,
             buffer_assignment=buffer_assignment,
         ),
-        "selectedVehicleNos": sorted(selected_buffer_vehicle_nos),
-        "selectedVehicleCount": len(selected_buffer_vehicle_nos),
-        "selectedLocalVehicleNos": sorted(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
-        "selectedLocalVehicleCount": len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
+        "layoutTemplateName": backbone_plan.layout_template_name,
+        "openedBufferTrackCount": len(backbone_plan.opened_buffer_tracks),
+        "openedBufferTracks": list(backbone_plan.opened_buffer_tracks),
+        "mainBufferTrackCount": sum(1 for track in backbone_plan.opened_buffer_tracks if PHASE1_BUFFER_TRACK_ROLES.get(track) == "main"),
+        "supportBufferTrackCount": sum(1 for track in backbone_plan.opened_buffer_tracks if PHASE1_BUFFER_TRACK_ROLES.get(track) != "main"),
+        "sourceSplitCount": sum(
+            max(0, len({
+                buffer_assignment.get(block.vehicle_nos[0])
+                for block in selected_buffer_blocks
+                if block.source_track == source_track and buffer_assignment.get(block.vehicle_nos[0]) is not None
+            }) - 1)
+            for source_track in {block.source_track for block in selected_buffer_blocks}
+        ),
+        "familySplitCount": sum(
+            max(0, len({
+                buffer_assignment.get(block.vehicle_nos[0])
+                for block in selected_buffer_blocks
+                if block.final_family == family and buffer_assignment.get(block.vehicle_nos[0]) is not None
+            }) - 1)
+            for family in {block.final_family for block in selected_buffer_blocks}
+        ),
+        "spillBlockCount": sum(1 for block in selected_buffer_blocks if block.layout_role == "spill"),
+        "highConflictTrackUsageCount": sum(1 for track in backbone_plan.opened_buffer_tracks if track in {"机北1", "机北3"}),
         "deferredVehicleNos": sorted(deferred_vehicle_nos),
         "hiddenVehicleNos": hidden_vehicle_nos,
         "releasedVehicleNos": released_vehicle_nos,
         "selectedOpeningPlanIds": sorted(opened_source_tracks),
         "openingReleasedVehicleCount": len(released_vehicle_nos),
-        "selectedPackageCount": len(backbone_plan.selected_block_ids),
         "primaryPackageIds": [
             block.block_id
             for block in selected_backbone
@@ -3305,7 +4033,7 @@ def _build_phase1_block_diagnostics(
         "bufferAssignments": dict(sorted(buffer_assignment.items())),
         "bufferBlockOrder": dict(buffer_block_order),
         "bufferCapacityM": {
-            track: round(float(master.tracks[track].effective_length_m), 1)
+            track: round(min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]), 1)
             for track in JI_BUFFER_TRACKS
         },
         "localFinishPlanCount": len(local_finish_plans),
@@ -3313,11 +4041,8 @@ def _build_phase1_block_diagnostics(
         "trackFacts": source_plan_projection,
         "sourceTrackPlans": source_plan_projection,
         "phase1Blocks": block_projection,
-        "selectedPackageIds": list(backbone_plan.selected_block_ids),
-        "selectedPackageSourceTracks": selected_all_source_tracks,
         "taskPackages": task_package_projection,
         "packageEdges": package_edges,
-        "selectedChainIds": selected_all_source_tracks,
     }
 
 
@@ -4685,14 +5410,31 @@ def _phase1_local_finish_target_track(facts: VehicleStageFacts) -> str | None:
     if facts.is_depot_area_vehicle:
         return None
     if facts.current_track in {"存4北", "存4南"} and not facts.is_cun4bei_final:
-        return _phase1_cun4_clear_target_track(facts.current_track)
+        if (
+            not facts.needs_depot_batch
+            and facts.final_target_track not in {"存4北", "存4南"}
+            and facts.final_target_track not in DEPOT_TARGET_TRACKS
+            and facts.final_target_track not in DEPOT_OUTER_TRACKS
+            and facts.final_target_track != facts.current_track
+        ):
+            return facts.final_target_track
+        return None
     if facts.current_track in JI_BUFFER_TRACKS and not facts.needs_depot_batch:
-        return _phase1_non_depot_ji_evict_track(facts)
+        if (
+            facts.final_target_track not in {"存4北", "存4南"}
+            and facts.final_target_track not in DEPOT_TARGET_TRACKS
+            and facts.final_target_track not in DEPOT_OUTER_TRACKS
+            and facts.final_target_track != facts.current_track
+        ):
+            return facts.final_target_track
+        return None
     if (
         not facts.needs_depot_batch
         and facts.final_target_track not in DEPOT_TARGET_TRACKS
         and facts.final_target_track not in DEPOT_OUTER_TRACKS
     ):
+        if facts.is_close_door and facts.final_target_track == "存4北":
+            return None
         if facts.final_target_track == facts.current_track:
             return None
         return facts.final_target_track
