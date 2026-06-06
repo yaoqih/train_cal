@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
+from fzed_shunting.domain.hook_constraints import (
+    close_door_first_for_large_rear_consist,
+    validate_hook_vehicle_group,
+)
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.state import _apply_move
@@ -39,6 +42,7 @@ def replay_candidate_steps(
                 return None
             if _step_violates_close_door_front_rule(
                 step=step,
+                state=next_state,
                 vehicle_by_no=vehicle_by_no,
             ):
                 return None
@@ -84,12 +88,21 @@ def _step_violates_hook_vehicle_group(
 def _step_violates_close_door_front_rule(
     *,
     step: HookAction,
+    state: ReplayState,
     vehicle_by_no: dict[str, NormalizedVehicle],
 ) -> bool:
-    if step.target_track == "存4北" or len(step.vehicle_nos) <= 10:
+    if step.target_track == "存4北":
         return False
-    first_vehicle = vehicle_by_no.get(step.vehicle_nos[0])
-    return bool(first_vehicle and first_vehicle.is_close_door)
+    rear_vehicle_count = (
+        len(state.loco_carry) + len(step.vehicle_nos)
+        if step.action_type == "ATTACH"
+        else max(len(state.loco_carry), len(step.vehicle_nos))
+    )
+    return close_door_first_for_large_rear_consist(
+        step.vehicle_nos,
+        vehicle_by_no=vehicle_by_no,
+        rear_vehicle_count=rear_vehicle_count,
+    )
 
 
 def _step_is_route_legal(

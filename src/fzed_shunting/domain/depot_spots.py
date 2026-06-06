@@ -78,6 +78,8 @@ def allocate_spots_for_block(
 
     taken_spots = set(occupied_spot_assignments.values())
     allocations: dict[str, str] = {}
+    vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in vehicles}
+    min_slot_no: int | None = None
     for vehicle in vehicles:
         # Only vehicles that actually need a spot participate in allocation.
         # Non-spot vehicles riding along (e.g. a blocker cadet coming to 机库
@@ -89,7 +91,17 @@ def allocate_spots_for_block(
             target_track,
             yard_mode,
             reserved_spot_codes=reserved_spot_codes,
+            occupied_spot_assignments={**occupied_spot_assignments, **allocations},
+            vehicle_by_no=vehicle_by_no,
         )
+        if not candidate_spots:
+            return None
+        if is_depot_inner_track(target_track) and min_slot_no is not None:
+            candidate_spots = [
+                spot_code
+                for spot_code in candidate_spots
+                if (_spot_slot_no(spot_code) or 0) >= min_slot_no
+            ]
         if not candidate_spots:
             return None
         chosen = next(
@@ -103,6 +115,10 @@ def allocate_spots_for_block(
         if chosen is None:
             return None
         allocations[vehicle.vehicle_no] = chosen
+        if is_depot_inner_track(target_track):
+            slot_no = _spot_slot_no(chosen)
+            if slot_no is not None:
+                min_slot_no = slot_no
     return allocations
 
 
@@ -152,6 +168,8 @@ def spot_candidates_for_vehicle(
     target_track: str,
     yard_mode: str,
     reserved_spot_codes: set[str] | frozenset[str] | None = None,
+    occupied_spot_assignments: dict[str, str] | None = None,
+    vehicle_by_no: dict[str, NormalizedVehicle] | None = None,
 ) -> list[str]:
     if vehicle.need_weigh and target_track == "机库":
         candidates = list(SPECIAL_FIXED_SPOTS["机库:WEIGH"])
@@ -159,17 +177,36 @@ def spot_candidates_for_vehicle(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
     if vehicle.goal.target_mode == "TRACK" and vehicle.goal.target_track == target_track and is_depot_inner_track(target_track):
-        candidates = list_track_spots(target_track, yard_mode)
+        candidates = _compatible_depot_spots(
+            vehicle=vehicle,
+            target_track=target_track,
+            yard_mode=yard_mode,
+            candidate_spots=list_track_spots(target_track, yard_mode),
+            occupied_spot_assignments=occupied_spot_assignments,
+            vehicle_by_no=vehicle_by_no,
+        )
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
     if vehicle.goal.target_mode == "SPOT":
-        candidates = _exact_depot_spot_candidates(vehicle, target_track, yard_mode)
+        candidates = _exact_depot_spot_candidates(
+            vehicle,
+            target_track,
+            yard_mode,
+            occupied_spot_assignments=occupied_spot_assignments,
+            vehicle_by_no=vehicle_by_no,
+        )
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
     if vehicle.goal.target_area_code == "大库:RANDOM":
-        candidates = _random_depot_spot_candidates(vehicle, target_track, yard_mode)
+        candidates = _random_depot_spot_candidates(
+            vehicle,
+            target_track,
+            yard_mode,
+            occupied_spot_assignments=occupied_spot_assignments,
+            vehicle_by_no=vehicle_by_no,
+        )
         return _without_reserved_foreign_spots(
             vehicle, target_track, yard_mode, candidates, reserved_spot_codes
         )
@@ -207,6 +244,8 @@ def _exact_depot_spot_candidates(
     vehicle: NormalizedVehicle,
     target_track: str,
     yard_mode: str,
+    occupied_spot_assignments: dict[str, str] | None = None,
+    vehicle_by_no: dict[str, NormalizedVehicle] | None = None,
 ) -> list[str]:
     if not is_depot_inner_track(target_track):
         return []
@@ -215,26 +254,99 @@ def _exact_depot_spot_candidates(
         return []
     if vehicle.goal.target_spot_code not in available_spots:
         return []
-    return [vehicle.goal.target_spot_code]
+    return _compatible_depot_spots(
+        vehicle=vehicle,
+        target_track=target_track,
+        yard_mode=yard_mode,
+        candidate_spots=[vehicle.goal.target_spot_code],
+        occupied_spot_assignments=occupied_spot_assignments,
+        vehicle_by_no=vehicle_by_no,
+    )
 
 
 def _random_depot_spot_candidates(
     vehicle: NormalizedVehicle,
     target_track: str,
     yard_mode: str,
+    occupied_spot_assignments: dict[str, str] | None = None,
+    vehicle_by_no: dict[str, NormalizedVehicle] | None = None,
 ) -> list[str]:
     if not is_depot_inner_track(target_track):
         return []
-    available_spots = list_track_spots(target_track, yard_mode)
+    available_spots = _compatible_depot_spots(
+        vehicle=vehicle,
+        target_track=target_track,
+        yard_mode=yard_mode,
+        candidate_spots=list_track_spots(target_track, yard_mode),
+        occupied_spot_assignments=occupied_spot_assignments,
+        vehicle_by_no=vehicle_by_no,
+    )
     if vehicle.goal.preferred_target_tracks or vehicle.goal.fallback_target_tracks:
         allowed_tracks = set(vehicle.goal.preferred_target_tracks) | set(vehicle.goal.fallback_target_tracks)
         if target_track not in allowed_tracks:
             return []
-    elif vehicle.vehicle_length >= 17.6 and target_track not in LONG_DEPOT_TRACKS:
-        return []
-    if vehicle.repair_process == "厂修":
-        return list(reversed(available_spots))
     return available_spots
+
+
+def _compatible_depot_spots(
+    *,
+    vehicle: NormalizedVehicle,
+    target_track: str,
+    yard_mode: str,
+    candidate_spots: list[str],
+    occupied_spot_assignments: dict[str, str] | None,
+    vehicle_by_no: dict[str, NormalizedVehicle] | None,
+) -> list[str]:
+    if vehicle.vehicle_length >= 17.6 and target_track not in LONG_DEPOT_TRACKS:
+        return []
+    spots = list(candidate_spots)
+    if vehicle.repair_process == "厂修":
+        return [spot_code for spot_code in spots if _spot_slot_no(spot_code) in {4, 5}]
+    if vehicle.repair_process != "段修":
+        return spots
+    max_slot_no = _max_segment_slot_no(
+        target_track=target_track,
+        yard_mode=yard_mode,
+        occupied_spot_assignments=occupied_spot_assignments,
+        vehicle_by_no=vehicle_by_no,
+    )
+    if max_slot_no is None:
+        return spots
+    return [
+        spot_code
+        for spot_code in spots
+        if (_spot_slot_no(spot_code) or 10**9) <= max_slot_no
+    ]
+
+
+def _max_segment_slot_no(
+    *,
+    target_track: str,
+    yard_mode: str,
+    occupied_spot_assignments: dict[str, str] | None,
+    vehicle_by_no: dict[str, NormalizedVehicle] | None,
+) -> int | None:
+    if not occupied_spot_assignments or not vehicle_by_no:
+        return None
+    track_spots = set(list_track_spots(target_track, yard_mode))
+    factory_slots = [
+        _spot_slot_no(spot_code)
+        for vehicle_no, spot_code in occupied_spot_assignments.items()
+        if spot_code in track_spots
+        and (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+        and vehicle.repair_process == "厂修"
+    ]
+    factory_slots = [slot_no for slot_no in factory_slots if slot_no is not None]
+    if not factory_slots:
+        return None
+    return min(factory_slots)
+
+
+def _spot_slot_no(spot_code: str) -> int | None:
+    suffix = spot_code[-1:]
+    if not suffix.isdigit():
+        return None
+    return int(suffix)
 
 
 def _requires_spot_assignment(vehicle: NormalizedVehicle, target_track: str) -> bool:

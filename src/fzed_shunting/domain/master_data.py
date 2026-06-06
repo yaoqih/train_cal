@@ -44,7 +44,7 @@ class PhysicalRoute(BaseModel):
 
 
 class BusinessRules(BaseModel):
-    loco_length_m: float = 20.0
+    loco_length_m: float = 15.0
     require_clear_intermediate_path_tracks: bool = True
 
 

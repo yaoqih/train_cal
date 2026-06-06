@@ -561,6 +561,8 @@ def test_solve_workflow_raises_stage_failure_with_progress(monkeypatch):
     assert exc.failed_stage_name == "stage_fail"
     assert exc.failed_stage_index == 2
     assert exc.completed_stage_names == ["stage_ok"]
+    assert [stage.name for stage in exc.completed_stages] == ["stage_ok"]
+    assert exc.completed_stages[0].view is not None
     assert exc.cause_message == "stage boom"
     assert exc.stage_input_summary["stage_mode"] == "PHASE1_PRE_REPAIR_BUFFERING"
     assert exc.stage_input_summary["active_move_count"] == 1

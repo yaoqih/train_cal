@@ -85,6 +85,9 @@ PHASE1_MAX_TOTAL_ACTIVE_VEHICLES = 32
 PHASE1_MAX_OPTIONAL_CLEANUP_PACKAGES = 4
 PHASE1_PRIMARY_BACKBONE_SLOT_COUNT = 3
 PHASE1_ELASTIC_BACKBONE_SLOT_COUNT = 1
+PHASE2_L1_TRANSFER_MAX_LENGTH_M = 193.0
+PHASE3_DYNAMIC_CURRENT_HOLD = "PHASE3_DYNAMIC_CURRENT_HOLD"
+FIXED_DEPOT_RESIDENT_SOURCE = "FIXED_DEPOT_RESIDENT"
 
 
 @dataclass(frozen=True)
@@ -98,11 +101,17 @@ class VehicleStageFacts:
     final_target_track: str
     final_target_spot: str
     final_allowed_tracks: tuple[str, ...]
+    final_preferred_tracks: tuple[str, ...]
+    final_fallback_tracks: tuple[str, ...]
+    final_target_area_code: str
+    final_target_mode: str
+    final_target_source: str
     final_family: str
     current_zone: str
     needs_depot_batch: bool
     is_depot_area_vehicle: bool
     is_current_final_track: bool
+    is_fixed_depot_resident: bool
     is_wash_conflict: bool
     is_cun4bei_final: bool
     needs_stage2_depot_collect: bool
@@ -261,6 +270,8 @@ class Phase1BackbonePlan:
     target_rank_by_vehicle: dict[str, int]
     layout_template_name: str
     opened_buffer_tracks: tuple[str, ...]
+    depot_slot_limit: int | None = None
+    depot_slot_limited: bool = False
 
 
 @dataclass(frozen=True)
@@ -404,11 +415,63 @@ class TopologyStagePlan:
 
 
 @dataclass(frozen=True)
+class Phase2DemandSummary:
+    depot_stay_vehicle_nos: frozenset[str]
+    cun4_final_vehicle_nos: frozenset[str]
+    outbound_vehicle_nos: frozenset[str]
+    fixed_depot_resident_vehicle_nos: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Phase2OutboundGroup:
+    group_id: str
+    group_kind: str
+    vehicle_nos: tuple[str, ...]
+    current_track: str
+    source_order_start: int
+    final_target_track: str
+    final_family: str
+    repair_process_profile: tuple[str, ...]
+    total_length_m: float
+    rank_key: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class Phase2TrackLayer:
+    source_track: str
+    layer_index: int
+    group_ids: tuple[str, ...]
+    vehicle_nos: tuple[str, ...]
+    total_length_m: float
+    outbound_vehicle_nos: tuple[str, ...]
+    cun4_final_vehicle_nos: tuple[str, ...]
+    exposed_prefix_vehicle_nos: tuple[str, ...]
+    diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Phase2ExecutionPlan:
+    execution_name: str
+    track_layers: tuple[Phase2TrackLayer, ...]
+    collection_batches: tuple[tuple[str, ...], ...]
+    predecessor_unlock_vehicle_nos: tuple[str, ...]
+    must_pull_vehicle_nos: tuple[str, ...]
+    unlocking_optional_vehicle_nos: tuple[str, ...]
+    phase3_clearance_vehicle_nos: tuple[str, ...]
+    pure_batch_optional_vehicle_nos: tuple[str, ...]
+    optional_cun4_vehicle_nos: tuple[str, ...]
+    deferred_tail_vehicle_nos: tuple[str, ...]
+    transfer_vehicle_nos: tuple[str, ...]
+    reserved_cun4_capacity_m: float
+    diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Stage2Plan:
-    hold_vehicle_nos: frozenset[str]
-    cun4bei_final_vehicle_nos: frozenset[str]
-    other_collect_vehicle_nos: frozenset[str]
-    collect_target_rank_by_vehicle: dict[str, int]
+    demand_summary: Phase2DemandSummary
+    outbound_groups: tuple[Phase2OutboundGroup, ...]
+    track_layers: tuple[Phase2TrackLayer, ...]
+    execution_plan: Phase2ExecutionPlan | None
     diagnostics: dict[str, Any]
 
 
@@ -439,6 +502,9 @@ def build_l7_closed_topology_workflow_payload(
         master=master,
         track_info=[dict(item) for item in payload.get("trackInfo", [])],
     )
+    fixed_depot_resident_vehicle_nos = sorted(
+        facts.vehicle_no for facts in vehicle_facts if facts.is_fixed_depot_resident
+    )
 
     return {
         "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
@@ -453,6 +519,7 @@ def build_l7_closed_topology_workflow_payload(
                 "stagePolicy": {
                     "stageMode": "PHASE1_PRE_REPAIR_BUFFERING",
                     "bufferTracks": list(JI_BUFFER_TRACKS),
+                    "fixedDepotResidentVehicleNos": fixed_depot_resident_vehicle_nos,
                     "packageAssignments": dict(stage_plan.phase1_plan.buffer_assignment),
                     "layoutAssignments": dict(stage_plan.phase1_plan.buffer_assignment),
                     "packageTargetRanks": dict(stage_plan.phase1_plan.target_rank_by_vehicle),
@@ -475,16 +542,48 @@ def build_l7_closed_topology_workflow_payload(
             },
             {
                 "name": "phase2_depot_area_marshalling",
-                "description": "联7开放后，大库区内保持待修车不变，并将去存4北及其他去向车辆编组后拉到存4北",
+                "description": "联7开放后，先在大库区内部形成出库链，再尽量少次整列拉到存4北",
                 "routePolicy": {},
                 "stagePolicy": {
                     "stageMode": "PHASE2_DEPOT_AREA_MARSHALLING",
                     "bufferTracks": list(JI_BUFFER_TRACKS),
                     "exchangeTrack": "存4北",
-                    "cun4beiFinalVehicles": sorted(stage_plan.stage2_plan.cun4bei_final_vehicle_nos),
-                    "otherCollectVehicles": sorted(stage_plan.stage2_plan.other_collect_vehicle_nos),
-                    "holdVehicles": sorted(stage_plan.stage2_plan.hold_vehicle_nos),
-                    "collectTargetRanks": dict(stage_plan.stage2_plan.collect_target_rank_by_vehicle),
+                    "fixedDepotResidentVehicleNos": fixed_depot_resident_vehicle_nos,
+                    "fixedDepotResidentVehicles": sorted(stage_plan.stage2_plan.demand_summary.fixed_depot_resident_vehicle_nos),
+                    "depotStayVehicles": sorted(stage_plan.stage2_plan.demand_summary.depot_stay_vehicle_nos),
+                    "cun4FinalVehicles": sorted(stage_plan.stage2_plan.demand_summary.cun4_final_vehicle_nos),
+                    "depotOutboundVehicles": sorted(stage_plan.stage2_plan.demand_summary.outbound_vehicle_nos),
+                    "phase2OutboundGroups": [
+                        {
+                            "groupId": group.group_id,
+                            "groupKind": group.group_kind,
+                            "vehicleNos": list(group.vehicle_nos),
+                            "currentTrack": group.current_track,
+                            "sourceOrderStart": group.source_order_start,
+                            "finalTargetTrack": group.final_target_track,
+                            "finalFamily": group.final_family,
+                            "repairProcessProfile": list(group.repair_process_profile),
+                            "totalLengthM": group.total_length_m,
+                        }
+                        for group in stage_plan.stage2_plan.outbound_groups
+                    ],
+                    "phase2TrackLayers": [
+                        {
+                            "sourceTrack": layer.source_track,
+                            "layerIndex": layer.layer_index,
+                            "groupIds": list(layer.group_ids),
+                            "vehicleNos": list(layer.vehicle_nos),
+                            "outboundVehicleNos": list(layer.outbound_vehicle_nos),
+                            "cun4FinalVehicleNos": list(layer.cun4_final_vehicle_nos),
+                            "exposedPrefixVehicleNos": list(layer.exposed_prefix_vehicle_nos),
+                            "totalLengthM": layer.total_length_m,
+                            "diagnostics": dict(layer.diagnostics),
+                        }
+                        for layer in stage_plan.stage2_plan.track_layers
+                    ],
+                    "phase2ExecutionPlan": _phase2_execution_stage_policy(
+                        stage_plan.stage2_plan.execution_plan,
+                    ),
                     "phase2Diagnostics": dict(stage_plan.stage2_plan.diagnostics),
                 },
                 "vehicleGoals": [
@@ -499,6 +598,7 @@ def build_l7_closed_topology_workflow_payload(
                 "stagePolicy": {
                     "stageMode": "PHASE3_JI_TO_DEPOT_ALLOCATION",
                     "bufferTracks": list(JI_BUFFER_TRACKS),
+                    "fixedDepotResidentVehicleNos": fixed_depot_resident_vehicle_nos,
                 },
                 "vehicleGoals": [
                     _phase3_goal(
@@ -515,6 +615,7 @@ def build_l7_closed_topology_workflow_payload(
                 "routePolicy": {},
                 "stagePolicy": {
                     "stageMode": PHASE4_RESIDUAL_CLEANUP,
+                    "fixedDepotResidentVehicleNos": fixed_depot_resident_vehicle_nos,
                 },
                 "vehicleGoals": [
                     _phase4_goal(
@@ -567,6 +668,11 @@ def _build_vehicle_stage_facts(
         final_family = _primary_final_track_from_allowed(allowed_tracks, final_target_track)
         current_zone = _track_zone(vehicle.current_track)
         is_current_final_track = vehicle.current_track in allowed_tracks
+        is_fixed_depot_resident = _is_fixed_depot_resident_goal(
+            current_track=vehicle.current_track,
+            raw_target_track=str(raw_goal.get("targetTrack") or ""),
+            raw_is_spotting=str(raw_goal.get("isSpotting") or ""),
+        )
         facts.append(
             VehicleStageFacts(
                 vehicle_no=vehicle.vehicle_no,
@@ -578,11 +684,17 @@ def _build_vehicle_stage_facts(
                 final_target_track=final_target_track,
                 final_target_spot=final_target_spot,
                 final_allowed_tracks=allowed_tracks,
+                final_preferred_tracks=tuple(vehicle.goal.preferred_target_tracks),
+                final_fallback_tracks=tuple(vehicle.goal.fallback_target_tracks),
+                final_target_area_code=vehicle.goal.target_area_code or "",
+                final_target_mode=vehicle.goal.target_mode,
+                final_target_source=vehicle.goal.target_source or "",
                 final_family=final_family,
                 current_zone=current_zone,
                 needs_depot_batch=needs_depot_batch,
                 is_depot_area_vehicle=is_depot_area_vehicle,
                 is_current_final_track=is_current_final_track,
+                is_fixed_depot_resident=is_fixed_depot_resident,
                 is_wash_conflict=vehicle.current_track in WASH_CONFLICT_TRACKS and needs_depot_batch,
                 is_cun4bei_final=is_cun4bei_final,
                 needs_stage2_depot_collect=_needs_stage2_depot_collect(
@@ -599,6 +711,25 @@ def _build_vehicle_stage_facts(
         )
     facts.sort(key=lambda item: (topology_pressure_key(item), final_sequence_key(item), item.vehicle_no))
     return facts
+
+
+def _is_fixed_depot_resident_goal(
+    *,
+    current_track: str,
+    raw_target_track: str,
+    raw_is_spotting: str,
+) -> bool:
+    if current_track == "轮":
+        return raw_target_track == "轮"
+    if current_track not in {"修1", "修2", "修3", "修4"}:
+        return False
+    if raw_target_track == current_track:
+        return True
+    if raw_target_track != "大库":
+        return False
+    # Empty/否 means the exported final depot slot did not request a different
+    # alignment. The current depot slot is therefore a hard business anchor.
+    return raw_is_spotting.strip() in {"", "否"}
 
 
 def final_sequence_key(facts: VehicleStageFacts) -> tuple[Any, ...]:
@@ -627,8 +758,8 @@ def _stage2_other_collect_order_key(facts: VehicleStageFacts) -> tuple[Any, ...]
     return (
         _phase2_other_target_priority(facts.final_target_track),
         _final_family_priority(facts.final_family),
-        _final_spot_priority(facts.final_target_spot),
         _depot_repair_process_priority(facts.repair_process),
+        _final_spot_priority(facts.final_target_spot),
         facts.current_track,
         facts.current_order,
         facts.vehicle_no,
@@ -637,8 +768,10 @@ def _stage2_other_collect_order_key(facts: VehicleStageFacts) -> tuple[Any, ...]
 
 def _stage2_cun4bei_final_order_key(facts: VehicleStageFacts) -> tuple[Any, ...]:
     return (
-        0 if facts.is_close_door else 1,
         _phase2_depot_track_priority(facts.current_track),
+        _depot_repair_process_priority(facts.repair_process),
+        _final_spot_priority(facts.final_target_spot),
+        0 if facts.is_close_door else 1,
         facts.current_order,
         facts.vehicle_no,
     )
@@ -694,47 +827,569 @@ def _build_topology_stage_plan(
 def _build_stage2_plan(
     facts_list: list[VehicleStageFacts],
 ) -> Stage2Plan:
-    hold_vehicle_nos: set[str] = set()
-    cun4bei_final_members: list[VehicleStageFacts] = []
-    other_collect_members: list[VehicleStageFacts] = []
+    depot_stay_members: list[VehicleStageFacts] = []
+    cun4_final_members: list[VehicleStageFacts] = []
+    outbound_members: list[VehicleStageFacts] = []
+    fixed_depot_resident_vehicle_nos = frozenset(
+        facts.vehicle_no for facts in facts_list if facts.is_fixed_depot_resident
+    )
     for facts in facts_list:
         if not facts.is_depot_area_vehicle:
             continue
+        if facts.is_fixed_depot_resident:
+            depot_stay_members.append(facts)
+            continue
         if facts.needs_depot_batch:
-            hold_vehicle_nos.add(facts.vehicle_no)
+            depot_stay_members.append(facts)
             continue
         if facts.is_cun4bei_final:
-            cun4bei_final_members.append(facts)
+            cun4_final_members.append(facts)
             continue
         if facts.needs_stage2_depot_collect:
-            other_collect_members.append(facts)
+            outbound_members.append(facts)
             continue
-        hold_vehicle_nos.add(facts.vehicle_no)
+        depot_stay_members.append(facts)
 
-    other_collect_members.sort(key=_stage2_other_collect_order_key)
-    cun4bei_final_members.sort(key=_stage2_cun4bei_final_order_key)
-    collect_target_rank_by_vehicle: dict[str, int] = {}
-    rank = 1
-    for facts in other_collect_members + cun4bei_final_members:
-        collect_target_rank_by_vehicle[facts.vehicle_no] = rank
-        rank += 1
+    demand_summary = Phase2DemandSummary(
+        depot_stay_vehicle_nos=frozenset(facts.vehicle_no for facts in depot_stay_members),
+        cun4_final_vehicle_nos=frozenset(facts.vehicle_no for facts in cun4_final_members),
+        outbound_vehicle_nos=frozenset(facts.vehicle_no for facts in outbound_members),
+        fixed_depot_resident_vehicle_nos=fixed_depot_resident_vehicle_nos,
+    )
+    outbound_groups = _build_phase2_outbound_groups(
+        outbound_members=outbound_members,
+        cun4_final_members=cun4_final_members,
+    )
+    track_layers = _build_phase2_track_layers(
+        outbound_groups=outbound_groups,
+    )
+    execution_plan = _build_phase2_execution_plan(
+        track_layers=track_layers,
+        vehicle_traits={
+            facts.vehicle_no: {
+                "need_weigh": facts.need_weigh,
+                "is_heavy": facts.is_heavy,
+                "is_close_door": facts.is_close_door,
+                "vehicle_length": facts.vehicle_length,
+            }
+            for facts in facts_list
+        },
+    )
     diagnostics = {
-        "holdVehicleNos": sorted(hold_vehicle_nos),
-        "holdVehicleCount": len(hold_vehicle_nos),
-        "cun4beiFinalVehicleNos": [facts.vehicle_no for facts in cun4bei_final_members],
-        "cun4beiFinalVehicleCount": len(cun4bei_final_members),
-        "otherCollectVehicleNos": [facts.vehicle_no for facts in other_collect_members],
-        "otherCollectVehicleCount": len(other_collect_members),
-        "collectVehicleCount": len(collect_target_rank_by_vehicle),
-        "collectTargetRanks": dict(sorted(collect_target_rank_by_vehicle.items())),
+        "depotStayVehicleNos": sorted(demand_summary.depot_stay_vehicle_nos),
+        "depotStayVehicleCount": len(demand_summary.depot_stay_vehicle_nos),
+        "cun4FinalVehicleNos": sorted(demand_summary.cun4_final_vehicle_nos),
+        "cun4FinalVehicleCount": len(demand_summary.cun4_final_vehicle_nos),
+        "depotOutboundVehicleNos": sorted(demand_summary.outbound_vehicle_nos),
+        "depotOutboundVehicleCount": len(demand_summary.outbound_vehicle_nos),
+        "fixedDepotResidentVehicleNos": sorted(demand_summary.fixed_depot_resident_vehicle_nos),
+        "fixedDepotResidentVehicleCount": len(demand_summary.fixed_depot_resident_vehicle_nos),
+        "outboundGroupCount": len(outbound_groups),
+        "outboundGroups": [
+            {
+                "groupId": group.group_id,
+                "groupKind": group.group_kind,
+                "vehicleNos": list(group.vehicle_nos),
+                "currentTrack": group.current_track,
+                "sourceOrderStart": group.source_order_start,
+                "finalTargetTrack": group.final_target_track,
+                "finalFamily": group.final_family,
+                "repairProcessProfile": list(group.repair_process_profile),
+                "totalLengthM": group.total_length_m,
+            }
+            for group in outbound_groups
+        ],
+        "trackLayerCount": len(track_layers),
+        "trackLayers": [
+            {
+                "sourceTrack": layer.source_track,
+                "layerIndex": layer.layer_index,
+                "groupIds": list(layer.group_ids),
+                "vehicleNos": list(layer.vehicle_nos),
+                "outboundVehicleNos": list(layer.outbound_vehicle_nos),
+                "cun4FinalVehicleNos": list(layer.cun4_final_vehicle_nos),
+                "exposedPrefixVehicleNos": list(layer.exposed_prefix_vehicle_nos),
+                "totalLengthM": layer.total_length_m,
+            }
+            for layer in track_layers
+        ],
+        "executionPlan": None if execution_plan is None else dict(execution_plan.diagnostics),
     }
     return Stage2Plan(
-        hold_vehicle_nos=frozenset(hold_vehicle_nos),
-        cun4bei_final_vehicle_nos=frozenset(facts.vehicle_no for facts in cun4bei_final_members),
-        other_collect_vehicle_nos=frozenset(facts.vehicle_no for facts in other_collect_members),
-        collect_target_rank_by_vehicle=collect_target_rank_by_vehicle,
+        demand_summary=demand_summary,
+        outbound_groups=outbound_groups,
+        track_layers=track_layers,
+        execution_plan=execution_plan,
         diagnostics=diagnostics,
     )
+
+
+def _build_phase2_outbound_groups(
+    *,
+    outbound_members: list[VehicleStageFacts],
+    cun4_final_members: list[VehicleStageFacts],
+) -> tuple[Phase2OutboundGroup, ...]:
+    groups: list[Phase2OutboundGroup] = []
+    group_index = 1
+    active_members = sorted(
+        [*outbound_members, *cun4_final_members],
+        key=lambda facts: (facts.current_track, facts.current_order, facts.vehicle_no),
+    )
+    by_track: dict[str, list[VehicleStageFacts]] = defaultdict(list)
+    for facts in active_members:
+        by_track[facts.current_track].append(facts)
+    for current_track in sorted(by_track, key=_phase2_depot_track_priority):
+        track_members = by_track[current_track]
+        current_run: list[VehicleStageFacts] = []
+        current_kind = ""
+        for facts in track_members:
+            group_kind = "CUN4_FINAL" if facts.is_cun4bei_final else "DEPOT_OUTBOUND"
+            if not current_run:
+                current_run = [facts]
+                current_kind = group_kind
+                continue
+            previous = current_run[-1]
+            if group_kind == current_kind and _phase2_should_extend_run(
+                previous=previous,
+                current=facts,
+                kind=current_kind,
+            ):
+                current_run.append(facts)
+                continue
+            groups.append(
+                _build_phase2_outbound_group(
+                    members=current_run,
+                    group_kind=current_kind,
+                    group_id=f"G{group_index:03d}",
+                )
+            )
+            group_index += 1
+            current_run = [facts]
+            current_kind = group_kind
+        if current_run:
+            groups.append(
+                _build_phase2_outbound_group(
+                    members=current_run,
+                    group_kind=current_kind,
+                    group_id=f"G{group_index:03d}",
+                )
+            )
+            group_index += 1
+    return tuple(groups)
+
+
+def _phase2_member_runs(
+    members: list[VehicleStageFacts],
+    *,
+    kind: str,
+) -> list[list[VehicleStageFacts]]:
+    if not members:
+        return []
+    runs: list[list[VehicleStageFacts]] = []
+    current_run: list[VehicleStageFacts] = []
+    for facts in members:
+        if not current_run:
+            current_run = [facts]
+            continue
+        previous = current_run[-1]
+        if _phase2_should_extend_run(previous=previous, current=facts, kind=kind):
+            current_run.append(facts)
+            continue
+        runs.append(current_run)
+        current_run = [facts]
+    if current_run:
+        runs.append(current_run)
+    return runs
+
+
+def _phase2_should_extend_run(
+    *,
+    previous: VehicleStageFacts,
+    current: VehicleStageFacts,
+    kind: str,
+) -> bool:
+    if current.current_track != previous.current_track:
+        return False
+    if current.current_order != previous.current_order + 1:
+        return False
+    if kind == "CUN4_FINAL":
+        return (
+            current.final_target_track == previous.final_target_track
+            and current.repair_process == previous.repair_process
+        )
+    return (
+        current.final_target_track == previous.final_target_track
+        and current.final_family == previous.final_family
+        and current.repair_process == previous.repair_process
+    )
+
+
+def _build_phase2_outbound_group(
+    *,
+    members: list[VehicleStageFacts],
+    group_kind: str,
+    group_id: str,
+) -> Phase2OutboundGroup:
+    head = members[0]
+    if group_kind == "CUN4_FINAL":
+        rank_key = _stage2_cun4bei_final_order_key(head)
+    else:
+        rank_key = _stage2_other_collect_order_key(head)
+    return Phase2OutboundGroup(
+        group_id=group_id,
+        group_kind=group_kind,
+        vehicle_nos=tuple(item.vehicle_no for item in members),
+        current_track=head.current_track,
+        source_order_start=head.current_order,
+        final_target_track=head.final_target_track,
+        final_family=head.final_family,
+        repair_process_profile=tuple(item.repair_process for item in members),
+        total_length_m=round(sum(item.vehicle_length for item in members), 1),
+        rank_key=rank_key,
+    )
+
+
+def _build_phase2_track_layers(
+    *,
+    outbound_groups: tuple[Phase2OutboundGroup, ...],
+) -> tuple[Phase2TrackLayer, ...]:
+    if not outbound_groups:
+        return ()
+    groups_by_track: dict[str, list[Phase2OutboundGroup]] = defaultdict(list)
+    for group in outbound_groups:
+        groups_by_track[group.current_track].append(group)
+    for track_groups in groups_by_track.values():
+        track_groups.sort(key=lambda group: group.source_order_start)
+    layers: list[Phase2TrackLayer] = []
+    for current_track in sorted(groups_by_track, key=_phase2_depot_track_priority):
+        track_groups = groups_by_track[current_track]
+        prefix_vehicle_nos: list[str] = []
+        prefix_group_ids: list[str] = []
+        prefix_total_length_m = 0.0
+        for depth, group in enumerate(track_groups, start=1):
+            prefix_group_ids.append(group.group_id)
+            prefix_vehicle_nos.extend(group.vehicle_nos)
+            prefix_total_length_m += group.total_length_m
+            outbound_vehicle_nos = tuple(group.vehicle_nos) if group.group_kind != "CUN4_FINAL" else ()
+            cun4_final_vehicle_nos = tuple(group.vehicle_nos) if group.group_kind == "CUN4_FINAL" else ()
+            layers.append(
+                Phase2TrackLayer(
+                    source_track=current_track,
+                    layer_index=depth,
+                    group_ids=(group.group_id,),
+                    vehicle_nos=tuple(group.vehicle_nos),
+                    total_length_m=group.total_length_m,
+                    outbound_vehicle_nos=outbound_vehicle_nos,
+                    cun4_final_vehicle_nos=cun4_final_vehicle_nos,
+                    exposed_prefix_vehicle_nos=tuple(prefix_vehicle_nos),
+                    diagnostics={
+                        "sourceTrack": current_track,
+                        "layerIndex": depth,
+                        "groupIds": [group.group_id],
+                        "vehicleNos": list(group.vehicle_nos),
+                        "outboundVehicleNos": list(outbound_vehicle_nos),
+                        "cun4FinalVehicleNos": list(cun4_final_vehicle_nos),
+                        "totalLengthM": group.total_length_m,
+                        "exposedPrefixVehicleNos": list(prefix_vehicle_nos),
+                        "exposedPrefixLengthM": round(prefix_total_length_m, 1),
+                    },
+                )
+            )
+    return tuple(layers)
+
+
+def _build_phase2_execution_plan(
+    *,
+    track_layers: tuple[Phase2TrackLayer, ...],
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> Phase2ExecutionPlan | None:
+    if not track_layers:
+        return None
+    ordered_layers = tuple(
+        sorted(
+            track_layers,
+            key=lambda layer: (
+                _phase2_depot_track_priority(layer.source_track),
+                layer.layer_index,
+            ),
+        )
+    )
+    must_pull_vehicle_nos = tuple(
+        vehicle_no
+        for layer in ordered_layers
+        for vehicle_no in layer.outbound_vehicle_nos
+    )
+    must_pull_set = set(must_pull_vehicle_nos)
+    predecessor_unlock_vehicle_nos = tuple(
+        vehicle_no
+        for source_track in {layer.source_track for layer in ordered_layers}
+        for source_layers in (tuple(layer for layer in ordered_layers if layer.source_track == source_track),)
+        for index, layer in enumerate(source_layers)
+        if layer.outbound_vehicle_nos
+        for previous_layer in source_layers[:index]
+        for vehicle_no in previous_layer.vehicle_nos
+        if vehicle_no not in must_pull_set
+    )
+    predecessor_unlock_set = set(predecessor_unlock_vehicle_nos)
+    unlocking_optional_track_set = {
+        layer.source_track
+        for layer in ordered_layers
+        if layer.outbound_vehicle_nos
+    }
+    optional_layers = [layer for layer in ordered_layers if layer.cun4_final_vehicle_nos]
+    unlocking_optional_vehicle_nos = tuple(
+        vehicle_no
+        for layer in optional_layers
+        if layer.source_track in unlocking_optional_track_set
+        for vehicle_no in layer.cun4_final_vehicle_nos
+    )
+    pure_batch_optional_vehicle_nos = tuple(
+        vehicle_no
+        for layer in optional_layers
+        if layer.source_track not in unlocking_optional_track_set
+        for vehicle_no in layer.cun4_final_vehicle_nos
+    )
+    phase3_clearance_vehicle_nos = tuple(
+        vehicle_no
+        for layer in optional_layers
+        if layer.source_track in {"修1", "修2", "修3", "修4"}
+        for vehicle_no in layer.cun4_final_vehicle_nos
+    )
+    phase3_clearance_set = set(phase3_clearance_vehicle_nos)
+    optional_vehicle_nos = tuple((*unlocking_optional_vehicle_nos, *pure_batch_optional_vehicle_nos))
+
+    def _layer_selection_key(layer: Phase2TrackLayer) -> tuple[int, int, int, str]:
+        layer_vehicle_nos = layer.vehicle_nos
+        if any(vehicle_no in predecessor_unlock_set for vehicle_no in layer_vehicle_nos):
+            tier = 0
+        elif any(vehicle_no in must_pull_set for vehicle_no in layer_vehicle_nos):
+            tier = 1
+        elif any(vehicle_no in phase3_clearance_set for vehicle_no in layer_vehicle_nos):
+            tier = 2
+        else:
+            tier = 3
+        return (
+            tier,
+            _phase2_attach_selection_priority(layer.source_track),
+            layer.layer_index,
+            layer.source_track,
+        )
+    required_layer_vehicle_nos = predecessor_unlock_set | must_pull_set | phase3_clearance_set
+    planned_layers = tuple(
+        sorted(
+            (
+                layer
+                for layer in ordered_layers
+                if any(vehicle_no in required_layer_vehicle_nos for vehicle_no in layer.vehicle_nos)
+            ),
+            key=_layer_selection_key,
+        )
+    )
+    selected_layers = _split_phase2_layers_for_hook_constraints(
+        planned_layers,
+        vehicle_traits=vehicle_traits,
+    )
+    selected_vehicle_nos = [
+        vehicle_no
+        for layer in selected_layers
+        for vehicle_no in layer.vehicle_nos
+    ]
+    selected_vehicle_set = set(selected_vehicle_nos)
+    deferred_tail_vehicle_nos = [
+        vehicle_no
+        for layer in ordered_layers
+        for vehicle_no in layer.vehicle_nos
+        if vehicle_no not in selected_vehicle_set
+    ]
+    reserved_cun4_capacity_m = 60.0
+    selected_length_m = sum(layer.total_length_m for layer in selected_layers)
+    collection_batches = _build_phase2_collection_batches(
+        selected_layers,
+        vehicle_traits=vehicle_traits,
+    )
+    transfer_vehicle_nos = tuple(selected_vehicle_nos)
+    deferred_tail_tuple = tuple(deferred_tail_vehicle_nos)
+    return Phase2ExecutionPlan(
+        execution_name="phase2_collect_then_transfer",
+        track_layers=tuple(selected_layers),
+        collection_batches=collection_batches,
+        predecessor_unlock_vehicle_nos=predecessor_unlock_vehicle_nos,
+        must_pull_vehicle_nos=must_pull_vehicle_nos,
+        unlocking_optional_vehicle_nos=unlocking_optional_vehicle_nos,
+        phase3_clearance_vehicle_nos=phase3_clearance_vehicle_nos,
+        pure_batch_optional_vehicle_nos=pure_batch_optional_vehicle_nos,
+        optional_cun4_vehicle_nos=optional_vehicle_nos,
+        deferred_tail_vehicle_nos=deferred_tail_tuple,
+        transfer_vehicle_nos=transfer_vehicle_nos,
+        reserved_cun4_capacity_m=reserved_cun4_capacity_m,
+        diagnostics={
+            "executionName": "phase2_collect_then_transfer",
+            "sourceTrackCount": len(selected_layers),
+            "sourceTracks": [layer.source_track for layer in selected_layers],
+            "collectionBatches": [list(batch) for batch in collection_batches],
+            "collectionBatchCount": len(collection_batches),
+            "predecessorUnlockVehicleNos": list(predecessor_unlock_vehicle_nos),
+            "predecessorUnlockVehicleCount": len(predecessor_unlock_vehicle_nos),
+            "mustPullVehicleNos": list(must_pull_vehicle_nos),
+            "mustPullVehicleCount": len(must_pull_vehicle_nos),
+            "unlockingOptionalVehicleNos": list(unlocking_optional_vehicle_nos),
+            "unlockingOptionalVehicleCount": len(unlocking_optional_vehicle_nos),
+            "phase3ClearanceVehicleNos": list(phase3_clearance_vehicle_nos),
+            "phase3ClearanceVehicleCount": len(phase3_clearance_vehicle_nos),
+            "pureBatchOptionalVehicleNos": list(pure_batch_optional_vehicle_nos),
+            "pureBatchOptionalVehicleCount": len(pure_batch_optional_vehicle_nos),
+            "optionalCun4VehicleNos": list(optional_vehicle_nos),
+            "optionalCun4VehicleCount": len(optional_vehicle_nos),
+            "deferredTailVehicleNos": list(deferred_tail_tuple),
+            "deferredTailVehicleCount": len(deferred_tail_tuple),
+            "transferVehicleNos": list(transfer_vehicle_nos),
+            "transferVehicleCount": len(transfer_vehicle_nos),
+            "reservedCun4CapacityM": reserved_cun4_capacity_m,
+            "selectedLengthM": round(selected_length_m, 1),
+            "trackLayers": [dict(layer.diagnostics) for layer in selected_layers],
+        },
+    )
+
+
+def _split_phase2_layers_for_hook_constraints(
+    layers: tuple[Phase2TrackLayer, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> tuple[Phase2TrackLayer, ...]:
+    split_layers: list[Phase2TrackLayer] = []
+    for layer in layers:
+        chunks = _phase2_vehicle_chunks_for_hook_constraints(
+            layer.vehicle_nos,
+            vehicle_traits=vehicle_traits,
+        )
+        if len(chunks) == 1 and chunks[0] == layer.vehicle_nos:
+            split_layers.append(layer)
+            continue
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            chunk_set = set(chunk)
+            outbound_vehicle_nos = tuple(
+                vehicle_no for vehicle_no in layer.outbound_vehicle_nos if vehicle_no in chunk_set
+            )
+            cun4_final_vehicle_nos = tuple(
+                vehicle_no for vehicle_no in layer.cun4_final_vehicle_nos if vehicle_no in chunk_set
+            )
+            total_length_m = round(
+                sum(float(vehicle_traits[vehicle_no].get("vehicle_length") or 0.0) for vehicle_no in chunk),
+                1,
+            )
+            split_layers.append(
+                Phase2TrackLayer(
+                    source_track=layer.source_track,
+                    layer_index=layer.layer_index,
+                    group_ids=tuple(f"{group_id}::P{chunk_index}" for group_id in layer.group_ids),
+                    vehicle_nos=chunk,
+                    total_length_m=total_length_m,
+                    outbound_vehicle_nos=outbound_vehicle_nos,
+                    cun4_final_vehicle_nos=cun4_final_vehicle_nos,
+                    exposed_prefix_vehicle_nos=chunk,
+                    diagnostics={
+                        **dict(layer.diagnostics),
+                        "vehicleNos": list(chunk),
+                        "outboundVehicleNos": list(outbound_vehicle_nos),
+                        "cun4FinalVehicleNos": list(cun4_final_vehicle_nos),
+                        "totalLengthM": total_length_m,
+                        "splitForPhase2HookConstraints": True,
+                        "splitPartIndex": chunk_index,
+                    },
+                )
+            )
+    return tuple(split_layers)
+
+
+def _phase2_vehicle_chunks_for_hook_constraints(
+    vehicle_nos: tuple[str, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> tuple[tuple[str, ...], ...]:
+    chunks: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for vehicle_no in vehicle_nos:
+        candidate = tuple([*current, vehicle_no])
+        if current and not _phase2_transfer_group_is_valid(candidate, vehicle_traits=vehicle_traits):
+            chunks.append(tuple(current))
+            current = [vehicle_no]
+            if not _phase2_transfer_group_is_valid(tuple(current), vehicle_traits=vehicle_traits):
+                raise ValueError(f"phase2 vehicle cannot form legal transfer group: {vehicle_no}")
+            continue
+        current.append(vehicle_no)
+    if current:
+        chunks.append(tuple(current))
+    return tuple(chunks)
+
+
+def _build_phase2_collection_batches(
+    layers: tuple[Phase2TrackLayer, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> tuple[tuple[str, ...], ...]:
+    batches: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for layer in layers:
+        layer_vehicle_nos = list(layer.vehicle_nos)
+        candidate = tuple([*current, *layer_vehicle_nos])
+        if current and not _phase2_transfer_group_is_valid(candidate, vehicle_traits=vehicle_traits):
+            batches.append(tuple(current))
+            current = layer_vehicle_nos
+            if not _phase2_transfer_group_is_valid(tuple(current), vehicle_traits=vehicle_traits):
+                raise ValueError(f"phase2 layer cannot form legal transfer group: {layer.vehicle_nos}")
+            continue
+        current.extend(layer_vehicle_nos)
+    if current:
+        batches.append(tuple(current))
+    return tuple(batches)
+
+
+def _phase2_transfer_group_is_valid(
+    vehicle_nos: tuple[str, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> bool:
+    if not _phase2_hook_group_is_valid(vehicle_nos, vehicle_traits=vehicle_traits):
+        return False
+    return _phase2_vehicle_length_m(vehicle_nos, vehicle_traits=vehicle_traits) <= PHASE2_L1_TRANSFER_MAX_LENGTH_M
+
+
+def _phase2_vehicle_length_m(
+    vehicle_nos: tuple[str, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> float:
+    return round(sum(float(vehicle_traits[vehicle_no].get("vehicle_length") or 0.0) for vehicle_no in vehicle_nos), 1)
+
+
+def _phase2_hook_group_is_valid(
+    vehicle_nos: tuple[str, ...],
+    *,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> bool:
+    if not vehicle_nos:
+        return True
+    heavy_count = sum(1 for vehicle_no in vehicle_nos if vehicle_traits[vehicle_no].get("is_heavy"))
+    empty_count = len(vehicle_nos) - heavy_count
+    equivalent_empty_count = empty_count + 4 * heavy_count
+    if heavy_count == 0 and empty_count > 20:
+        return False
+    if heavy_count > 2:
+        return False
+    if heavy_count > 0 and equivalent_empty_count > 20:
+        return False
+    if (
+        len(vehicle_nos) >= 2
+        and vehicle_traits[vehicle_nos[0]].get("is_close_door")
+        and any(vehicle_traits[vehicle_no].get("is_heavy") for vehicle_no in vehicle_nos[1:])
+    ):
+        return False
+    weigh_count = sum(1 for vehicle_no in vehicle_nos if vehicle_traits[vehicle_no].get("need_weigh"))
+    if weigh_count > 1:
+        return False
+    if weigh_count == 1 and not vehicle_traits[vehicle_nos[-1]].get("need_weigh"):
+        return False
+    return True
 
 
 def _build_phase1_plan(
@@ -743,9 +1398,11 @@ def _build_phase1_plan(
 ) -> Phase1Plan:
     source_plans = _build_phase1_source_track_plans(facts_list)
     reachable_depot_set = _build_phase1_reachable_depot_set(source_plans)
+    depot_slot_limit = _phase1_depot_insert_slot_limit(facts_list)
     backbone_plan = _solve_phase1_backbone_plan(
         source_plans=source_plans,
         reachable_depot_set=reachable_depot_set,
+        depot_slot_limit=depot_slot_limit,
         master=master,
     )
     wave_plans, finish_plan, finish_goal_overrides = _build_phase1_wave_plans(
@@ -785,6 +1442,20 @@ def _build_phase1_plan(
         wave_plans=wave_plans,
         diagnostics=dict(diagnostics),
     )
+
+
+def _phase2_attach_selection_priority(source_track: str) -> int:
+    return {
+        "轮": 0,
+        "修4库外": 1,
+        "修3库外": 2,
+        "修2库外": 3,
+        "修1库外": 4,
+        "修4": 5,
+        "修3": 6,
+        "修2": 7,
+        "修1": 8,
+    }.get(source_track, 99)
 
 
 def _build_phase1_demand_summary(
@@ -3059,6 +3730,55 @@ def _phase1_backbone_templates(
     return tuple(templates)
 
 
+def _phase1_depot_insert_slot_limit(facts_list: list[VehicleStageFacts]) -> int:
+    track_slot_capacity = {track: 5 for track in ("修1", "修2", "修3", "修4")}
+    occupied_by_track: Counter[str] = Counter()
+    for facts in facts_list:
+        if facts.current_track not in track_slot_capacity:
+            continue
+        if facts.needs_depot_batch:
+            occupied_by_track[facts.current_track] += 1
+    return max(
+        0,
+        sum(
+            max(0, capacity - occupied_by_track.get(track, 0))
+            for track, capacity in track_slot_capacity.items()
+        ),
+    )
+
+
+def _phase1_assigned_repair_depot_vehicle_count(
+    assignment_by_block: dict[str, str],
+    *,
+    block_by_id: dict[str, Phase1Block],
+) -> int:
+    return sum(
+        _phase1_repair_depot_vehicle_count(block_by_id[block_id])
+        for block_id in assignment_by_block
+        if block_id in block_by_id
+    )
+
+
+def _phase1_selected_repair_depot_vehicle_count(
+    assignment_by_vehicle: dict[str, str],
+    *,
+    block_by_id: dict[str, Phase1Block],
+) -> int:
+    selected_vehicle_nos = set(assignment_by_vehicle)
+    return sum(
+        1
+        for block in block_by_id.values()
+        if block.final_family in {"修1", "修2", "修3", "修4"}
+        for vehicle_no in block.vehicle_nos
+        if vehicle_no in selected_vehicle_nos
+    )
+
+
+def _phase1_repair_depot_vehicle_count(block: Phase1Block) -> int:
+    if block.final_family not in {"修1", "修2", "修3", "修4"}:
+        return 0
+    return len(block.vehicle_nos)
+
 def _phase1_block_assignment_order(block: Phase1Block, source_priority: tuple[int, ...]) -> tuple[Any, ...]:
     return (
         0 if block.layout_role == "core" else 1,
@@ -3181,6 +3901,7 @@ def _solve_phase1_template_backbone_plan(
     source_plans: list[SourceTrackPlan],
     reserved_buffer: dict[str, float],
     template: Phase1LayoutTemplate,
+    depot_slot_limit: int | None,
 ) -> Phase1BackbonePlan:
     ordered_blocks = sorted(
         [
@@ -3204,6 +3925,7 @@ def _solve_phase1_template_backbone_plan(
             source_plans=source_plans,
             reserved_buffer=reserved_buffer,
             template=template,
+            depot_slot_limit=depot_slot_limit,
         )
     best_score: tuple[int, int, int, int, int, int, int, int, int] | None = None
     best_assignment: dict[str, str] | None = None
@@ -3233,6 +3955,15 @@ def _solve_phase1_template_backbone_plan(
             block=block,
             block_by_id=block_by_id,
             selected_block_ids=set(assignment),
+        ):
+            dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
+            return
+        if (
+            depot_slot_limit is not None
+            and _phase1_assigned_repair_depot_vehicle_count(
+                assignment,
+                block_by_id=block_by_id,
+            ) + _phase1_repair_depot_vehicle_count(block) > depot_slot_limit
         ):
             dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
             return
@@ -3302,6 +4033,15 @@ def _solve_phase1_template_backbone_plan(
         target_rank_by_vehicle=target_rank_by_vehicle,
         layout_template_name=template.template_name,
         opened_buffer_tracks=opened_tracks,
+        depot_slot_limit=depot_slot_limit,
+        depot_slot_limited=(
+            depot_slot_limit is not None
+            and _phase1_selected_repair_depot_vehicle_count(
+                assignment,
+                block_by_id=block_by_id,
+            ) >= depot_slot_limit
+            and len(ordered_blocks) > len(assignment_by_block)
+        ),
     )
 
 
@@ -3309,9 +4049,9 @@ def _solve_phase1_backbone_plan(
     *,
     source_plans: list[SourceTrackPlan],
     reachable_depot_set: frozenset[str],
+    depot_slot_limit: int | None,
     master: MasterData,
 ) -> Phase1BackbonePlan:
-    del reachable_depot_set
     admitted_buffer_sources: list[str] = []
     active_hot_sources: set[str] = set()
     active_storage_sources: set[str] = set()
@@ -3358,6 +4098,7 @@ def _solve_phase1_backbone_plan(
             source_plans=admitted_source_plans,
             reserved_buffer=reserved_buffer,
             template=template,
+            depot_slot_limit=depot_slot_limit,
         )
         for template in templates
     ]
@@ -3385,7 +4126,28 @@ def _solve_phase1_backbone_plan(
             template=next(template for template in templates if template.template_name == plan.layout_template_name),
         ),
     )
-    return best_plan
+    return Phase1BackbonePlan(
+        selected_block_ids=best_plan.selected_block_ids,
+        selected_source_tracks=best_plan.selected_source_tracks,
+        reserved_buffer_by_track=best_plan.reserved_buffer_by_track,
+        selected_buffer_assignment=best_plan.selected_buffer_assignment,
+        target_rank_by_vehicle=best_plan.target_rank_by_vehicle,
+        layout_template_name=best_plan.layout_template_name,
+        opened_buffer_tracks=best_plan.opened_buffer_tracks,
+        depot_slot_limit=depot_slot_limit,
+        depot_slot_limited=(
+            depot_slot_limit is not None
+            and _phase1_selected_repair_depot_vehicle_count(
+                best_plan.selected_buffer_assignment,
+                block_by_id={
+                    block.block_id: block
+                    for source_plan in admitted_source_plans
+                    for block in source_plan.blocks
+                },
+            ) >= depot_slot_limit
+            and len(reachable_depot_set) > depot_slot_limit
+        ),
+    )
 
 
 def _build_phase1_buffer_budget(master: MasterData) -> dict[str, float]:
@@ -3403,6 +4165,7 @@ def _solve_phase1_template_backbone_plan_greedily(
     source_plans: list[SourceTrackPlan],
     reserved_buffer: dict[str, float],
     template: Phase1LayoutTemplate,
+    depot_slot_limit: int | None,
 ) -> Phase1BackbonePlan:
     remaining = {track: reserved_buffer[track] for track in template.tracks}
     selected_block_ids: list[str] = []
@@ -3423,6 +4186,11 @@ def _solve_phase1_template_backbone_plan_greedily(
             remaining=remaining,
             template=template,
             source_tracks=source_tracks,
+            depot_slot_limit=depot_slot_limit,
+            selected_vehicle_count=_phase1_selected_repair_depot_vehicle_count(
+                assignment,
+                block_by_id=block_by_id,
+            ),
         )
         if next_choice is None:
             break
@@ -3456,6 +4224,21 @@ def _solve_phase1_template_backbone_plan_greedily(
         opened_buffer_tracks=tuple(
             track for track in template.preferred_open_order if track in set(assignment.values())
         ),
+        depot_slot_limit=depot_slot_limit,
+        depot_slot_limited=(
+            depot_slot_limit is not None
+            and _phase1_selected_repair_depot_vehicle_count(
+                assignment,
+                block_by_id=block_by_id,
+            ) >= depot_slot_limit
+            and any(
+                block.uses_buffer
+                and block.block_type in {"bridge_to_depot", "depot_batch"}
+                and block.block_id not in selected_set
+                for plan in source_plans
+                for block in plan.blocks
+            )
+        ),
     )
 
 
@@ -3480,6 +4263,8 @@ def _choose_next_phase1_backbone_block(
     remaining: dict[str, float],
     template: Phase1LayoutTemplate,
     source_tracks: dict[str, set[str]],
+    depot_slot_limit: int | None,
+    selected_vehicle_count: int,
 ) -> tuple[SourceTrackPlan, Phase1Block, str] | None:
     candidates: list[tuple[tuple[Any, ...], SourceTrackPlan, Phase1Block, str]] = []
     track_sources: dict[str, set[str]] = defaultdict(set)
@@ -3489,6 +4274,11 @@ def _choose_next_phase1_backbone_block(
             if block.block_id in selected_block_ids:
                 continue
             if block.block_type not in {"bridge_to_depot", "depot_batch"} or not block.uses_buffer:
+                continue
+            if (
+                depot_slot_limit is not None
+                and selected_vehicle_count + _phase1_repair_depot_vehicle_count(block) > depot_slot_limit
+            ):
                 continue
             if not _phase1_backbone_predecessors_ready(
                 block=block,
@@ -4237,6 +5027,13 @@ def _build_phase1_block_diagnostics(
         "selectedPackageSourceTracks": selected_all_source_tracks,
         "selectedVehicleNos": sorted(selected_buffer_vehicle_nos),
         "selectedVehicleCount": len(selected_buffer_vehicle_nos),
+        "depotInsertSlotLimit": backbone_plan.depot_slot_limit,
+        "depotInsertSlotLimited": backbone_plan.depot_slot_limited,
+        "selectedRepairDepotInsertVehicleCount": sum(
+            1
+            for vehicle_no in selected_buffer_vehicle_nos
+            if facts_by_vehicle[vehicle_no].final_family in {"修1", "修2", "修3", "修4"}
+        ),
         "selectedLocalVehicleNos": sorted(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
         "selectedLocalVehicleCount": len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
         "activeVehicleCount": len(selected_buffer_vehicle_nos) + len(selected_finish_vehicle_nos - selected_buffer_vehicle_nos),
@@ -6507,6 +7304,8 @@ def _phase1_goal(
     *,
     stage_plan: TopologyStagePlan,
 ) -> dict[str, Any]:
+    if facts.is_fixed_depot_resident:
+        return _fixed_depot_resident_goal(facts)
     phase1 = stage_plan.phase1_plan
     goal_override = phase1.goal_overrides.get(facts.vehicle_no)
     if goal_override is not None:
@@ -6546,12 +7345,289 @@ def _phase1_wave_stage_policy(
     }
 
 
+def _phase2_execution_stage_policy(
+    execution_plan: Phase2ExecutionPlan | None,
+) -> dict[str, Any] | None:
+    if execution_plan is None:
+        return None
+    return {
+        "executionName": execution_plan.execution_name,
+        "sourceTracks": [layer.source_track for layer in execution_plan.track_layers],
+        "collectionBatches": [list(batch) for batch in execution_plan.collection_batches],
+        "predecessorUnlockVehicleNos": list(execution_plan.predecessor_unlock_vehicle_nos),
+        "mustPullVehicleNos": list(execution_plan.must_pull_vehicle_nos),
+        "unlockingOptionalVehicleNos": list(execution_plan.unlocking_optional_vehicle_nos),
+        "phase3ClearanceVehicleNos": list(execution_plan.phase3_clearance_vehicle_nos),
+        "pureBatchOptionalVehicleNos": list(execution_plan.pure_batch_optional_vehicle_nos),
+        "optionalCun4VehicleNos": list(execution_plan.optional_cun4_vehicle_nos),
+        "deferredTailVehicleNos": list(execution_plan.deferred_tail_vehicle_nos),
+        "transferVehicleNos": list(execution_plan.transfer_vehicle_nos),
+        "reservedCun4CapacityM": execution_plan.reserved_cun4_capacity_m,
+        "trackLayers": [
+            {
+                "sourceTrack": layer.source_track,
+                "layerIndex": layer.layer_index,
+                "groupIds": list(layer.group_ids),
+                "vehicleNos": list(layer.vehicle_nos),
+                "outboundVehicleNos": list(layer.outbound_vehicle_nos),
+                "cun4FinalVehicleNos": list(layer.cun4_final_vehicle_nos),
+                "exposedPrefixVehicleNos": list(layer.exposed_prefix_vehicle_nos),
+                "totalLengthM": layer.total_length_m,
+                "diagnostics": dict(layer.diagnostics),
+            }
+            for layer in execution_plan.track_layers
+        ],
+        "executionDiagnostics": dict(execution_plan.diagnostics),
+    }
+
+
+def rebuild_phase2_execution_policy_for_runtime(
+    *,
+    stage_payload: dict[str, Any],
+    track_sequences: dict[str, list[str] | tuple[str, ...]],
+) -> dict[str, Any] | None:
+    stage_policy = dict(stage_payload.get("stagePolicy") or {})
+    depot_stay_vehicle_nos = {
+        str(item)
+        for item in stage_policy.get("depotStayVehicles") or ()
+    }
+    fixed_depot_resident_vehicle_nos = {
+        str(item)
+        for item in stage_policy.get("fixedDepotResidentVehicleNos") or ()
+    }
+    cun4_final_vehicle_nos = {
+        str(item)
+        for item in stage_policy.get("cun4FinalVehicles") or ()
+    }
+    outbound_vehicle_nos = {
+        str(item)
+        for item in stage_policy.get("depotOutboundVehicles") or ()
+    }
+    depot_stay_vehicle_nos |= fixed_depot_resident_vehicle_nos
+    cun4_final_vehicle_nos -= fixed_depot_resident_vehicle_nos
+    outbound_vehicle_nos -= fixed_depot_resident_vehicle_nos
+    active_vehicle_nos = cun4_final_vehicle_nos | outbound_vehicle_nos
+    if not active_vehicle_nos:
+        return None
+
+    vehicle_rows = {
+        str(item["vehicleNo"]): dict(item)
+        for item in stage_payload.get("vehicleInfo") or ()
+    }
+    vehicle_traits = {
+        vehicle_no: _phase2_vehicle_traits_from_row(row)
+        for vehicle_no, row in vehicle_rows.items()
+    }
+    group_meta_by_vehicle: dict[str, dict[str, Any]] = {}
+    for group in stage_policy.get("phase2OutboundGroups") or ():
+        meta = {
+            "groupKind": str(group.get("groupKind") or ""),
+            "finalTargetTrack": str(group.get("finalTargetTrack") or ""),
+            "finalFamily": str(group.get("finalFamily") or ""),
+        }
+        for vehicle_no in group.get("vehicleNos") or ():
+            group_meta_by_vehicle[str(vehicle_no)] = meta
+
+    runtime_layers: list[Phase2TrackLayer] = []
+    runtime_blocked_tails: list[dict[str, Any]] = []
+    runtime_deferred_tail_vehicle_nos: list[str] = []
+    ordered_tracks = sorted(
+        (
+            str(track_name)
+            for track_name, sequence in track_sequences.items()
+            if sequence and _phase2_depot_track_priority(str(track_name)) < 99
+        ),
+        key=_phase2_depot_track_priority,
+    )
+    for source_track in ordered_tracks:
+        source_seq = [str(vehicle_no) for vehicle_no in track_sequences.get(source_track, ())]
+        prefix_vehicle_nos: list[str] = []
+        prefix_total_length_m = 0.0
+        blocked_tail_vehicle_nos: list[str] = []
+        run_vehicle_nos: list[str] = []
+        run_kind = ""
+        run_target_track = ""
+        run_final_family = ""
+        layer_index = 1
+        anchor_vehicle_no = ""
+
+        def flush_run() -> None:
+            nonlocal run_vehicle_nos, run_kind, run_target_track, run_final_family, prefix_total_length_m, layer_index
+            if not run_vehicle_nos:
+                return
+            total_length_m = round(
+                sum(float(vehicle_rows[vehicle_no]["vehicleLength"]) for vehicle_no in run_vehicle_nos),
+                1,
+            )
+            prefix_vehicle_nos.extend(run_vehicle_nos)
+            prefix_total_length_m = round(prefix_total_length_m + total_length_m, 1)
+            outbound_run_vehicle_nos = tuple(run_vehicle_nos) if run_kind == "DEPOT_OUTBOUND" else ()
+            cun4_run_vehicle_nos = tuple(run_vehicle_nos) if run_kind == "CUN4_FINAL" else ()
+            runtime_layers.append(
+                Phase2TrackLayer(
+                    source_track=source_track,
+                    layer_index=layer_index,
+                    group_ids=(f"RT::{source_track}::{layer_index}",),
+                    vehicle_nos=tuple(run_vehicle_nos),
+                    total_length_m=total_length_m,
+                    outbound_vehicle_nos=outbound_run_vehicle_nos,
+                    cun4_final_vehicle_nos=cun4_run_vehicle_nos,
+                    exposed_prefix_vehicle_nos=tuple(prefix_vehicle_nos),
+                    diagnostics={
+                        "sourceTrack": source_track,
+                        "layerIndex": layer_index,
+                        "groupIds": [f"RT::{source_track}::{layer_index}"],
+                        "vehicleNos": list(run_vehicle_nos),
+                        "outboundVehicleNos": list(outbound_run_vehicle_nos),
+                        "cun4FinalVehicleNos": list(cun4_run_vehicle_nos),
+                        "totalLengthM": total_length_m,
+                        "exposedPrefixVehicleNos": list(prefix_vehicle_nos),
+                        "exposedPrefixLengthM": prefix_total_length_m,
+                        "runtimeRebuilt": True,
+                        "finalTargetTrack": run_target_track,
+                        "finalFamily": run_final_family,
+                    },
+                )
+            )
+            layer_index += 1
+            run_vehicle_nos = []
+            run_kind = ""
+            run_target_track = ""
+            run_final_family = ""
+
+        for index, vehicle_no in enumerate(source_seq):
+            if vehicle_no in fixed_depot_resident_vehicle_nos:
+                flush_run()
+                if any(tail_vehicle_no in active_vehicle_nos for tail_vehicle_no in source_seq[index + 1:]):
+                    anchor_vehicle_no = vehicle_no
+                continue
+            if vehicle_no in depot_stay_vehicle_nos or vehicle_no not in active_vehicle_nos:
+                tail_has_outbound = any(
+                    tail_vehicle_no in outbound_vehicle_nos
+                    for tail_vehicle_no in source_seq[index + 1:]
+                )
+                if tail_has_outbound:
+                    if run_vehicle_nos and run_kind != "PREDECESSOR_UNLOCK":
+                        flush_run()
+                    if not run_vehicle_nos:
+                        run_kind = "PREDECESSOR_UNLOCK"
+                        run_target_track = ""
+                        run_final_family = ""
+                    run_vehicle_nos.append(vehicle_no)
+                    continue
+                flush_run()
+                if vehicle_no in depot_stay_vehicle_nos and not anchor_vehicle_no:
+                    anchor_vehicle_no = vehicle_no
+                continue
+            if anchor_vehicle_no:
+                blocked_tail_vehicle_nos.append(vehicle_no)
+                runtime_deferred_tail_vehicle_nos.append(vehicle_no)
+                continue
+            meta = group_meta_by_vehicle.get(vehicle_no) or {}
+            vehicle_kind = "CUN4_FINAL" if vehicle_no in cun4_final_vehicle_nos else "DEPOT_OUTBOUND"
+            vehicle_target_track = str(meta.get("finalTargetTrack") or "")
+            vehicle_final_family = str(meta.get("finalFamily") or vehicle_target_track)
+            if (
+                run_vehicle_nos
+                and (
+                    vehicle_kind != run_kind
+                    or vehicle_target_track != run_target_track
+                    or vehicle_final_family != run_final_family
+                )
+            ):
+                flush_run()
+            if not run_vehicle_nos:
+                run_kind = vehicle_kind
+                run_target_track = vehicle_target_track
+                run_final_family = vehicle_final_family
+            run_vehicle_nos.append(vehicle_no)
+        flush_run()
+        if blocked_tail_vehicle_nos:
+            runtime_blocked_tails.append(
+                {
+                    "sourceTrack": source_track,
+                    "anchorVehicleNo": anchor_vehicle_no,
+                    "blockedTailVehicleNos": list(blocked_tail_vehicle_nos),
+                }
+            )
+
+    base_execution_plan = _build_phase2_execution_plan(
+        track_layers=tuple(runtime_layers),
+        vehicle_traits=vehicle_traits,
+    )
+    if base_execution_plan is None:
+        if not runtime_deferred_tail_vehicle_nos:
+            return None
+        return {
+            "executionName": "phase2_collect_then_transfer",
+            "sourceTracks": [],
+            "collectionBatches": [],
+            "predecessorUnlockVehicleNos": [],
+            "mustPullVehicleNos": [],
+            "unlockingOptionalVehicleNos": [],
+            "pureBatchOptionalVehicleNos": [],
+            "optionalCun4VehicleNos": [],
+            "deferredTailVehicleNos": list(dict.fromkeys(runtime_deferred_tail_vehicle_nos)),
+            "transferVehicleNos": [],
+            "reservedCun4CapacityM": 60.0,
+            "trackLayers": [],
+            "executionDiagnostics": {
+                "runtimeRebuilt": True,
+                "runtimeBlockedTails": runtime_blocked_tails,
+                "deferredTailVehicleNos": list(dict.fromkeys(runtime_deferred_tail_vehicle_nos)),
+            },
+        }
+
+    merged_deferred_tail_vehicle_nos = tuple(
+        dict.fromkeys(
+            [
+                *base_execution_plan.deferred_tail_vehicle_nos,
+                *runtime_deferred_tail_vehicle_nos,
+            ]
+        )
+    )
+    rebuilt_execution_plan = Phase2ExecutionPlan(
+        execution_name=base_execution_plan.execution_name,
+        track_layers=base_execution_plan.track_layers,
+        collection_batches=base_execution_plan.collection_batches,
+        predecessor_unlock_vehicle_nos=base_execution_plan.predecessor_unlock_vehicle_nos,
+        must_pull_vehicle_nos=base_execution_plan.must_pull_vehicle_nos,
+        unlocking_optional_vehicle_nos=base_execution_plan.unlocking_optional_vehicle_nos,
+        phase3_clearance_vehicle_nos=base_execution_plan.phase3_clearance_vehicle_nos,
+        pure_batch_optional_vehicle_nos=base_execution_plan.pure_batch_optional_vehicle_nos,
+        optional_cun4_vehicle_nos=base_execution_plan.optional_cun4_vehicle_nos,
+        deferred_tail_vehicle_nos=merged_deferred_tail_vehicle_nos,
+        transfer_vehicle_nos=base_execution_plan.transfer_vehicle_nos,
+        reserved_cun4_capacity_m=base_execution_plan.reserved_cun4_capacity_m,
+        diagnostics={
+            **base_execution_plan.diagnostics,
+            "runtimeRebuilt": True,
+            "runtimeBlockedTails": runtime_blocked_tails,
+            "deferredTailVehicleNos": list(merged_deferred_tail_vehicle_nos),
+            "deferredTailVehicleCount": len(merged_deferred_tail_vehicle_nos),
+        },
+    )
+    return _phase2_execution_stage_policy(rebuilt_execution_plan)
+
+
+def _phase2_vehicle_traits_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    attributes = str(row.get("vehicleAttributes") or "").strip()
+    return {
+        "need_weigh": attributes == "称重",
+        "is_heavy": attributes == "重车",
+        "is_close_door": attributes == "关门车",
+        "vehicle_length": float(row.get("vehicleLength") or 0.0),
+    }
+
+
 def _phase1_wave_goal(
     facts: VehicleStageFacts,
     *,
     wave_plan: Phase1WavePlan,
     stage_plan: TopologyStagePlan,
 ) -> dict[str, Any]:
+    if facts.is_fixed_depot_resident:
+        return _fixed_depot_resident_goal(facts)
     goal_override = wave_plan.goal_overrides.get(facts.vehicle_no)
     if goal_override is not None:
         target_track, source = goal_override
@@ -6570,24 +7646,22 @@ def _phase2_goal(
     *,
     stage_plan: TopologyStagePlan,
 ) -> dict[str, Any]:
+    if facts.is_fixed_depot_resident:
+        return _fixed_depot_resident_goal(facts)
     if facts.vehicle_no in stage_plan.phase1_plan.selected_vehicle_nos:
         return _stage_track_goal(
             facts.vehicle_no,
             stage_plan.phase1_plan.buffer_assignment[facts.vehicle_no],
             "PHASE2_HOLD_PHASE1_BACKBONE",
         )
-    if facts.vehicle_no in stage_plan.stage2_plan.collect_target_rank_by_vehicle:
-        source = (
-            "PHASE2_DEPOT_TO_CUN4BEI_FINAL"
-            if facts.vehicle_no in stage_plan.stage2_plan.cun4bei_final_vehicle_nos
-            else "PHASE2_DEPOT_TO_CUN4BEI_OTHER"
-        )
-        return _stage_rank_goal(
-            facts.vehicle_no,
-            "存4北",
-            stage_plan.stage2_plan.collect_target_rank_by_vehicle[facts.vehicle_no],
-            source,
-        )
+    execution_plan = stage_plan.stage2_plan.execution_plan
+    transfer_vehicle_nos = frozenset(execution_plan.transfer_vehicle_nos) if execution_plan is not None else frozenset()
+    if facts.vehicle_no in transfer_vehicle_nos:
+        return _stage_track_goal(facts.vehicle_no, "存4北", "PHASE2_TRANSFER_TO_CUN4")
+    if execution_plan is not None and facts.vehicle_no in execution_plan.deferred_tail_vehicle_nos:
+        return _hold_current_track_goal(facts)
+    if facts.vehicle_no in stage_plan.stage2_plan.demand_summary.depot_stay_vehicle_nos:
+        return _stage_track_goal(facts.vehicle_no, _phase2_resting_track(facts), "PHASE2_DEPOT_STAY")
     return _stage_track_goal(facts.vehicle_no, _phase2_resting_track(facts), "STAGE_HOLD")
 
 
@@ -6597,13 +7671,15 @@ def _phase3_goal(
     final_goal_by_vehicle: dict[str, dict[str, Any]],
     stage_plan: TopologyStagePlan,
 ) -> dict[str, Any]:
+    if facts.is_fixed_depot_resident:
+        return _fixed_depot_resident_goal(facts)
     if facts.needs_depot_batch:
-        return dict(final_goal_by_vehicle[facts.vehicle_no])
-    return _stage_track_goal(
-        facts.vehicle_no,
-        _phase3_resting_track(facts, stage_plan),
-        "STAGE_HOLD",
-    )
+        return _normalized_final_goal_payload(facts)
+    return _stage_track_goal(facts.vehicle_no, facts.current_track, PHASE3_DYNAMIC_CURRENT_HOLD)
+
+
+def _fixed_depot_resident_goal(facts: VehicleStageFacts) -> dict[str, Any]:
+    return _stage_track_goal(facts.vehicle_no, facts.current_track, FIXED_DEPOT_RESIDENT_SOURCE)
 
 
 def _hold_current_track_goal(facts: VehicleStageFacts) -> dict[str, Any]:
@@ -6618,22 +7694,6 @@ def _stage_track_goal(vehicle_no: str, target_track: str, source: str) -> dict[s
         "targetAreaCode": f"STAGE::{source}",
         "targetSource": source,
         "isSpotting": "",
-    }
-
-
-def _stage_rank_goal(
-    vehicle_no: str,
-    target_track: str,
-    target_rank: int,
-    source: str,
-) -> dict[str, Any]:
-    return {
-        "vehicleNo": vehicle_no,
-        "targetTrack": target_track,
-        "targetMode": "WORK_POSITION",
-        "targetSpotCode": str(target_rank),
-        "targetSource": source,
-        "isSpotting": str(target_rank),
     }
 
 
@@ -6662,6 +7722,26 @@ def _final_goal_payload(item: dict[str, Any]) -> dict[str, Any]:
     return goal
 
 
+def _normalized_final_goal_payload(facts: VehicleStageFacts) -> dict[str, Any]:
+    goal = {
+        "vehicleNo": facts.vehicle_no,
+        "targetTrack": facts.final_target_track,
+        "targetMode": facts.final_target_mode,
+        "isSpotting": facts.final_target_spot,
+    }
+    if facts.final_target_area_code:
+        goal["targetAreaCode"] = facts.final_target_area_code
+    if facts.final_target_source:
+        goal["targetSource"] = facts.final_target_source
+    if facts.final_preferred_tracks:
+        goal["preferredTargetTracks"] = list(facts.final_preferred_tracks)
+    if facts.final_fallback_tracks:
+        goal["fallbackTargetTracks"] = list(facts.final_fallback_tracks)
+    if facts.final_allowed_tracks:
+        goal["allowedTargetTracks"] = list(facts.final_allowed_tracks)
+    return goal
+
+
 def _primary_final_track_from_allowed(
     allowed_tracks: tuple[str, ...],
     final_target_track: str,
@@ -6676,22 +7756,13 @@ def _phase2_resting_track(facts: VehicleStageFacts) -> str:
     return facts.current_track
 
 
-def _phase3_resting_track(
-    facts: VehicleStageFacts,
-    stage_plan: TopologyStagePlan,
-) -> str:
-    if facts.vehicle_no in stage_plan.phase1_plan.selected_vehicle_nos:
-        return stage_plan.phase1_plan.buffer_assignment[facts.vehicle_no]
-    if facts.is_depot_area_vehicle and not facts.needs_depot_batch:
-        return "存4北"
-    return _phase2_resting_track(facts)
-
-
 def _phase4_goal(
     facts: VehicleStageFacts,
     *,
     final_goal_by_vehicle: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    if facts.is_fixed_depot_resident:
+        return _fixed_depot_resident_goal(facts)
     if facts.needs_depot_batch:
         return {
             "vehicleNo": facts.vehicle_no,

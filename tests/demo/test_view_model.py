@@ -1,7 +1,12 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from fzed_shunting.demo import view_model as view_model_module
-from fzed_shunting.demo.view_model import build_demo_view_model, select_demo_payload
+from fzed_shunting.demo.view_model import (
+    build_demo_view_model,
+    build_demo_workflow_view_model,
+    select_demo_payload,
+)
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.solver.profile import (
     VALIDATION_DEFAULT_BEAM_WIDTH,
@@ -16,6 +21,7 @@ from fzed_shunting.solver.astar_solver import (
 from fzed_shunting.solver.result import SolverResult
 from fzed_shunting.solver.types import HookAction
 from fzed_shunting.sim.generator import generate_typical_suite
+from fzed_shunting.workflow.runner import WorkflowStageFailure, WorkflowStageResult
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "master"
@@ -893,3 +899,41 @@ def test_build_demo_view_model_supports_paint_and_shot_scenarios():
     assert paint_view.steps[-1].hook.target_track == "油"
     assert shot_view.summary.is_valid is True
     assert shot_view.steps[-1].hook.target_track == "抛"
+
+
+def test_build_demo_workflow_view_model_returns_completed_stages_on_failure(monkeypatch):
+    master = load_master_data(DATA_DIR)
+    completed_stage = WorkflowStageResult(
+        name="phase1_done",
+        input_payload={"vehicleInfo": []},
+        view=SimpleNamespace(summary=SimpleNamespace(is_valid=True)),
+    )
+
+    def fake_solve_workflow(*args, **kwargs):  # noqa: ANN002, ANN003, ARG001
+        raise WorkflowStageFailure(
+            failed_stage_name="phase2_failed",
+            failed_stage_index=2,
+            total_stage_count=4,
+            completed_stage_names=["phase1_done"],
+            completed_stages=[completed_stage],
+            cause_message="stage failure",
+            stage_input_summary={"active_move_count": 3},
+        )
+
+    monkeypatch.setattr(
+        "fzed_shunting.workflow.runner.solve_workflow",
+        fake_solve_workflow,
+    )
+
+    workflow_view = build_demo_workflow_view_model(master, {"workflowStages": [{}]})
+
+    assert workflow_view.workflow.stage_count == 4
+    assert [stage.name for stage in workflow_view.workflow.stages] == ["phase1_done"]
+    assert workflow_view.failure == {
+        "failedStageName": "phase2_failed",
+        "failedStageIndex": 2,
+        "totalStageCount": 4,
+        "completedStageNames": ["phase1_done"],
+        "causeMessage": "stage failure",
+        "stageInputSummary": {"active_move_count": 3},
+    }

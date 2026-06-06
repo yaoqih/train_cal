@@ -8,6 +8,7 @@ from fzed_shunting.domain.depot_spots import (
     realign_spots_for_track_order,
     spot_candidates_for_vehicle,
 )
+from fzed_shunting.domain.hook_constraints import tail_unweighed_weigh_vehicle_no
 from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, NormalizedVehicle
 from fzed_shunting.solver.goal_logic import goal_is_satisfied
@@ -133,7 +134,13 @@ def _apply_detach(
     next_spot_assignments = realigned_spot_assignments
     next_weighed_vehicle_nos = set(state.weighed_vehicle_nos)
     if move.target_track == "机库":
-        next_weighed_vehicle_nos.update(move.vehicle_nos)
+        weighed_vehicle_no = tail_unweighed_weigh_vehicle_no(
+            move.vehicle_nos,
+            vehicle_by_no=vehicle_by_no,
+            weighed_vehicle_nos=state.weighed_vehicle_nos,
+        )
+        if weighed_vehicle_no is not None:
+            next_weighed_vehicle_nos.add(weighed_vehicle_no)
     return ReplayState(
         track_sequences=next_track_sequences,
         loco_track_name=move.target_track,

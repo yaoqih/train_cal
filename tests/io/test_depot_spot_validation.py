@@ -124,7 +124,48 @@ def test_track_mode_depot_vehicles_consume_initial_depot_spots():
     normalized = normalize_plan_input(payload, master)
     assignments = build_initial_spot_assignments(normalized)
 
-    assert assignments == {"TD1": "101", "TD2": "102"}
+    assert assignments == {"TD1": "104", "TD2": "105"}
+
+
+def test_segment_depot_vehicle_stays_north_of_factory_vehicle_on_same_track():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修1", "trackDistance": 151.7},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修1",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "DJ1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetMode": "TRACK",
+                "targetTrack": "修1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "修1",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "CJ1",
+                "repairProcess": "厂修",
+                "vehicleLength": 14.3,
+                "targetMode": "TRACK",
+                "targetTrack": "修1",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+
+    normalized = normalize_plan_input(payload, master)
+    assignments = build_initial_spot_assignments(normalized)
+
+    assert assignments == {"DJ1": "101", "CJ1": "104"}
 
 
 def test_random_depot_allocation_reserves_unsatisfied_exact_depot_spots():
@@ -368,7 +409,7 @@ def test_random_depot_single_vehicle_prefers_inner_spot_for_factory_repair():
         occupied_spot_assignments={},
     )
 
-    assert factory_allocated == {"FACTORY": "105"}
+    assert factory_allocated == {"FACTORY": "104"}
     assert section_allocated == {"SECTION": "101"}
 
 
@@ -418,4 +459,4 @@ def test_random_depot_mixed_allocation_keeps_factory_on_inner_spot():
         occupied_spot_assignments={},
     )
 
-    assert allocated == {"SECTION": "101", "FACTORY": "105"}
+    assert allocated == {"SECTION": "101", "FACTORY": "104"}

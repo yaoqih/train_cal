@@ -11,7 +11,11 @@ from fzed_shunting.domain.depot_spots import (
 from fzed_shunting.domain.carry_order import iter_carried_tail_blocks
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
-from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
+from fzed_shunting.domain.hook_constraints import (
+    close_door_first_for_large_rear_consist,
+    tail_unweighed_weigh_vehicle_no,
+    validate_hook_vehicle_group,
+)
 from fzed_shunting.domain.work_positions import (
     is_work_position_track,
     preview_work_positions_after_prepend,
@@ -100,11 +104,19 @@ def _min_detach_groups(
     groups = 0
     shared_targets: set[str] = set()
     for vehicle_no in reversed(tuple(vehicle_nos)):
-        effective_targets = _effective_target_tracks_for_detach(
-            vehicle_no,
-            vehicle_by_no=vehicle_by_no,
-            weighed_vehicle_nos=weighed_vehicle_nos,
-        )
+        vehicle = vehicle_by_no.get(vehicle_no)
+        if vehicle is None:
+            return len(vehicle_nos)
+        if vehicle.need_weigh and vehicle_no not in weighed_vehicle_nos:
+            effective_targets = {"机库"}
+        elif shared_targets == {"机库"}:
+            effective_targets = {"机库"}
+        else:
+            effective_targets = _effective_target_tracks_for_detach(
+                vehicle_no,
+                vehicle_by_no=vehicle_by_no,
+                weighed_vehicle_nos=weighed_vehicle_nos,
+            )
         if not effective_targets:
             return len(vehicle_nos)
         if not shared_targets:
@@ -536,7 +548,12 @@ def generate_goal_moves(
             route_blockage_cache=route_blockage_cache,
         )
     )
-    return _dedup_moves(moves)
+    return _filter_phase2_moves(
+        _dedup_moves(moves),
+        plan_input=plan_input,
+        state=state,
+        vehicle_by_no=vehicle_by_no,
+    )
 
 
 def generate_real_hook_moves(
@@ -660,7 +677,11 @@ def generate_real_hook_moves(
             block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
             if validate_hook_vehicle_group(block_vehicles):
                 continue
-            if _violates_non_cun4bei_attach_close_door_rule(block, vehicle_by_no):
+            if _violates_non_cun4bei_attach_close_door_rule(
+                block,
+                vehicle_by_no,
+                carried_vehicle_count=len(state.loco_carry),
+            ):
                 continue
             block_goal_satisfied = all(
                 _vehicle_goal_satisfied_on_track(
@@ -1004,7 +1025,64 @@ def generate_real_hook_moves(
                 ):
                     break
 
-    return _sort_moves_for_stable_search(_dedup_moves(moves))
+    return _sort_moves_for_stable_search(
+        _filter_phase2_moves(
+            _dedup_moves(moves),
+            plan_input=plan_input,
+            state=state,
+            vehicle_by_no=vehicle_by_no,
+        )
+    )
+
+
+def _filter_phase2_moves(
+    moves: list[HookAction],
+    *,
+    plan_input: NormalizedPlanInput,
+    state: ReplayState,
+    vehicle_by_no: dict[str, NormalizedVehicle],
+) -> list[HookAction]:
+    stage_policy = plan_input.stage_policy or {}
+    if str(stage_policy.get("stageMode") or "") != "PHASE2_DEPOT_AREA_MARSHALLING":
+        return moves
+    exchange_track = str(stage_policy.get("exchangeTrack") or "存4北")
+    active_vehicle_nos = {
+        vehicle.vehicle_no
+        for vehicle in plan_input.vehicles
+        if exchange_track in vehicle.goal.allowed_target_tracks
+        and vehicle.current_track != exchange_track
+    }
+    active_source_tracks = {
+        vehicle.current_track
+        for vehicle in plan_input.vehicles
+        if vehicle.vehicle_no in active_vehicle_nos
+    }
+    current_group_source_track = str(stage_policy.get("phase2CurrentGroupSourceTrack") or "")
+    current_group_vehicle_nos = tuple(str(item) for item in stage_policy.get("phase2CurrentGroupVehicleNos") or ())
+    filtered: list[HookAction] = []
+    for move in moves:
+        if state.loco_carry:
+            if (
+                move.action_type == "DETACH"
+                and move.target_track == exchange_track
+                and (not current_group_vehicle_nos or tuple(move.vehicle_nos) == current_group_vehicle_nos)
+            ):
+                filtered.append(move)
+            continue
+        if move.action_type != "ATTACH":
+            continue
+        if current_group_source_track:
+            if move.source_track != current_group_source_track:
+                continue
+        elif move.source_track not in active_source_tracks:
+            continue
+        if current_group_vehicle_nos:
+            if tuple(move.vehicle_nos) != current_group_vehicle_nos:
+                continue
+        elif not any(vehicle_no in active_vehicle_nos for vehicle_no in move.vehicle_nos):
+            continue
+        filtered.append(move)
+    return filtered
 
 
 def _empty_carry_detach_has_followup_attach(
@@ -1083,7 +1161,11 @@ def _has_productive_followup_attach(
                 continue
             if validate_hook_vehicle_group(block_vehicles):
                 continue
-            if _violates_non_cun4bei_attach_close_door_rule(block, vehicle_by_no):
+            if _violates_non_cun4bei_attach_close_door_rule(
+                block,
+                vehicle_by_no,
+                carried_vehicle_count=len(state.loco_carry),
+            ):
                 continue
             followup_state = _apply_move(
                 state=state,
@@ -1226,14 +1308,21 @@ def _detach_block_satisfies_target(
     plan_input: NormalizedPlanInput,
     vehicle_by_no: dict[str, NormalizedVehicle],
 ) -> bool:
+    weigh_tail_vehicle_no = tail_unweighed_weigh_vehicle_no(
+        block,
+        vehicle_by_no=vehicle_by_no,
+        weighed_vehicle_nos=state.weighed_vehicle_nos,
+    )
+    has_unweighed_weigh = any(
+        vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
+        for vehicle_no in block
+    )
+    if has_unweighed_weigh:
+        return target_track == "机库" and weigh_tail_vehicle_no is not None
     for vehicle_no in block:
         vehicle = vehicle_by_no.get(vehicle_no)
         if vehicle is None:
             return False
-        if vehicle.need_weigh and vehicle_no not in state.weighed_vehicle_nos:
-            if target_track != "机库":
-                return False
-            continue
         if target_track not in vehicle.goal.allowed_target_tracks:
             return False
     return True
@@ -1429,7 +1518,11 @@ def _real_hook_attach_frontier_prefix_sizes(
         block_vehicles = [vehicle_by_no[vehicle_no] for vehicle_no in block]
         if validate_hook_vehicle_group(block_vehicles):
             continue
-        if _violates_non_cun4bei_attach_close_door_rule(block, vehicle_by_no):
+        if _violates_non_cun4bei_attach_close_door_rule(
+            block,
+            vehicle_by_no,
+            carried_vehicle_count=len(state.loco_carry),
+        ):
             continue
         if prefix_size in requested_prefix_sizes:
             frontier[prefix_size] = prefix_size
@@ -2039,12 +2132,16 @@ def _candidate_targets(
     route_oracle: RouteOracle | None = None,
 ) -> list[str]:
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
+    weigh_tail_vehicle_no = tail_unweighed_weigh_vehicle_no(
+        block,
+        vehicle_by_no=vehicle_by_no,
+        weighed_vehicle_nos=state.weighed_vehicle_nos,
+    )
     if any(
         vehicle_by_no[vehicle_no].need_weigh and vehicle_no not in state.weighed_vehicle_nos
         for vehicle_no in block
     ):
-        # 机库 weighing is 单钩 — only single-vehicle blocks may be sent there.
-        return ["机库"] if len(block) == 1 else []
+        return ["机库"] if weigh_tail_vehicle_no is not None else []
     goal = vehicle_by_no[block[0]].goal
     lead_vehicle = vehicle_by_no[block[0]]
     targets = goal_effective_allowed_tracks(
@@ -2996,19 +3093,24 @@ def _violates_close_door_hook_rule(
             if pending < 3:
                 return True  # not enough vehicles to push CD to position ≥ 4
         return False
-    if len(block) <= 10:
-        return False
-    return bool(first_vehicle and first_vehicle.is_close_door)
+    return close_door_first_for_large_rear_consist(
+        block,
+        vehicle_by_no=vehicle_by_no,
+        rear_vehicle_count=max(len(state.loco_carry), len(block)),
+    )
 
 
 def _violates_non_cun4bei_attach_close_door_rule(
     block: list[str],
     vehicle_by_no: dict,
+    *,
+    carried_vehicle_count: int = 0,
 ) -> bool:
-    if len(block) <= 10:
-        return False
-    first_vehicle = vehicle_by_no.get(block[0])
-    return bool(first_vehicle is not None and first_vehicle.is_close_door)
+    return close_door_first_for_large_rear_consist(
+        block,
+        vehicle_by_no=vehicle_by_no,
+        rear_vehicle_count=carried_vehicle_count + len(block),
+    )
 
 
 def _violates_work_position_preview(

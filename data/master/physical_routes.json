@@ -201,7 +201,7 @@
   },
   {
     "code": "L9-油漆尽头",
-    "total_length_m": 209,
+    "total_length_m": 204.2,
     "status": "已确认",
     "description": "L9到油漆尽头",
     "left_node": "L9",
@@ -217,7 +217,7 @@
   },
   {
     "code": "L15-抛丸尽头",
-    "total_length_m": 129.8,
+    "total_length_m": 89.8,
     "status": "已确认",
     "description": "L15到抛丸尽头",
     "left_node": "L15",

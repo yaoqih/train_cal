@@ -69,6 +69,7 @@ class DemoStep(BaseModel):
     step_index: int
     hook: DemoHook | None = None
     loco_track_name: str
+    loco_node: str | None = None
     loco_carry_vehicle_nos: list[str] = Field(default_factory=list)
     changed_tracks: list[str] = Field(default_factory=list)
     track_sequences: dict[str, list[str]] = Field(default_factory=dict)
@@ -103,11 +104,13 @@ class DemoViewModel(BaseModel):
     track_map: DemoTrackMap = Field(default_factory=DemoTrackMap)
     topology_graph: DemoTopologyGraph = Field(default_factory=DemoTopologyGraph)
     comparison_summary: dict[str, object] | None = None
+    diagnostics: dict[str, object] = Field(default_factory=dict)
     vehicle_target_tracks: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class DemoWorkflowViewModel(BaseModel):
     workflow: object
+    failure: dict[str, object] | None = None
 
 
 def select_demo_payload(
@@ -301,10 +304,10 @@ def build_demo_workflow_view_model(
     use_validation_recovery: bool = True,
     diagnose_front_search_only: bool = False,
 ) -> DemoWorkflowViewModel:
-    from fzed_shunting.workflow.runner import solve_workflow
+    from fzed_shunting.workflow.runner import WorkflowResult, WorkflowStageFailure, solve_workflow
 
-    return DemoWorkflowViewModel(
-        workflow=solve_workflow(
+    try:
+        workflow = solve_workflow(
             master,
             payload,
             solver=solver,
@@ -314,7 +317,22 @@ def build_demo_workflow_view_model(
             use_validation_recovery=use_validation_recovery,
             diagnose_front_search_only=diagnose_front_search_only,
         )
-    )
+        return DemoWorkflowViewModel(workflow=workflow)
+    except WorkflowStageFailure as exc:
+        return DemoWorkflowViewModel(
+            workflow=WorkflowResult(
+                stage_count=exc.total_stage_count,
+                stages=list(exc.completed_stages),
+            ),
+            failure={
+                "failedStageName": exc.failed_stage_name,
+                "failedStageIndex": exc.failed_stage_index,
+                "totalStageCount": exc.total_stage_count,
+                "completedStageNames": exc.completed_stage_names,
+                "causeMessage": exc.cause_message,
+                "stageInputSummary": exc.stage_input_summary,
+            },
+        )
 
 
 def _resolve_hook_plan(
@@ -455,6 +473,7 @@ def _build_steps(
                 step_index=index,
                 hook=hook,
                 loco_track_name=snapshot.loco_track_name,
+                loco_node=snapshot.loco_node,
                 loco_carry_vehicle_nos=list(snapshot.loco_carry),
                 changed_tracks=changed_tracks,
                 track_sequences={track: list(seq) for track, seq in snapshot.track_sequences.items()},

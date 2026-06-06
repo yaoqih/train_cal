@@ -5,7 +5,6 @@ from functools import lru_cache
 from io import BytesIO
 import json
 from pathlib import Path
-import time
 from html import escape
 
 import streamlit as st
@@ -20,7 +19,6 @@ from fzed_shunting.demo.layout import (
 )
 from fzed_shunting.demo.schematic import build_schematic_route, load_schematic_layout
 from fzed_shunting.demo.view_model import (
-    build_demo_view_model,
     build_demo_workflow_view_model,
     select_demo_payload,
 )
@@ -32,7 +30,10 @@ from fzed_shunting.solver.profile import (
     validation_time_budget_ms,
 )
 from fzed_shunting.tools.segmented_routes_svg import load_segmented_physical_routes
-from fzed_shunting.workflow.l7_closed_topology_mode import is_l7_closed_topology_mode
+from fzed_shunting.workflow.l7_closed_topology_mode import (
+    OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+    is_l7_closed_topology_mode,
+)
 
 
 MASTER_DIR = Path(__file__).resolve().parent / "data" / "master"
@@ -56,34 +57,12 @@ def _validation_time_budget_ms(timeout_seconds: float) -> float:
     return validation_time_budget_ms(timeout_seconds)
 
 
-def _plan_validation_source_label(plan_payload: object | None) -> str:
-    if plan_payload is not None:
-        return "当前 PASS/FAIL 验证的是外部 Plan JSON，不是重新求解结果。"
-    return "当前 PASS/FAIL 验证的是当前 Solver 生成的钩计划。"
-
-
-@st.cache_data(show_spinner=False, max_entries=32)
-def _cached_demo_view_model(
-    payload_key: str,
-    plan_payload_key: str | None,
-    solver: str,
-    heuristic_weight: float,
-    beam_width: int | None,
-    time_budget_ms: float | None,
-    compare_external_plan: bool,
-):
-    payload = json.loads(payload_key)
-    plan_payload = json.loads(plan_payload_key) if plan_payload_key else None
-    return build_demo_view_model(
-        _get_master_data(),
-        payload,
-        plan_payload=plan_payload,
-        solver=solver,
-        heuristic_weight=heuristic_weight,
-        beam_width=beam_width,
-        time_budget_ms=time_budget_ms,
-        compare_external_plan=compare_external_plan,
-    )
+def _as_l7_workflow_payload(payload: dict) -> dict:
+    if _is_workflow_payload(payload):
+        return dict(payload)
+    workflow_payload = dict(payload)
+    workflow_payload["operationMode"] = OPERATION_MODE_L7_CLOSED_TOPOLOGY
+    return workflow_payload
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
@@ -111,7 +90,6 @@ def main():
     st.caption("按场景文件回放 block 级求解结果，并显示 verifier 结论。")
 
     scenario_path = st.text_input("Scenario JSON 路径", value="")
-    plan_path = st.text_input("可选 Plan JSON 路径", value="")
     auto_solver = st.checkbox(
         "使用全量验证同款求解参数（推荐）",
         value=True,
@@ -135,13 +113,6 @@ def main():
         heuristic_weight = st.number_input("Heuristic Weight", min_value=1.0, value=1.0, step=0.5)
         beam_width = st.number_input("Beam Width", min_value=1, value=VALIDATION_DEFAULT_BEAM_WIDTH, step=1)
         time_budget_ms = None
-    compare_solvers = st.checkbox("Compare Solvers", value=False)
-    compare_external_plan = st.checkbox(
-        "对比外部 Plan 与当前 Solver",
-        value=False,
-        disabled=not bool(plan_path),
-        help="默认只回放外部 Plan；开启后会额外运行一次当前 Solver 做钩数对比。",
-    )
     if not scenario_path:
         st.info("先通过 CLI 生成一个 scenario.json，或使用 `artifacts/typical_suite.json` 中的典型场景，再粘贴路径。")
         return
@@ -153,48 +124,11 @@ def main():
 
     master = _get_master_data()
     raw_payload = json.loads(path.read_text(encoding="utf-8"))
-    if _is_workflow_payload(raw_payload):
-        _render_workflow_demo(
-            master=master,
-            payload=raw_payload,
-            solver=solver,
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width if solver in {"beam", "lns"} else None,
-            time_budget_ms=time_budget_ms,
-        )
-        return
     selected_payload, scenario_names, active_scenario_name = select_demo_payload(raw_payload)
     payload = selected_payload
-    if _is_workflow_payload(payload):
-        if scenario_names:
-            selected_name = st.selectbox(
-                "典型 Workflow 场景",
-                options=scenario_names,
-                index=scenario_names.index(active_scenario_name) if active_scenario_name else 0,
-            )
-            payload, _, active_scenario_name = select_demo_payload(raw_payload, selected_name=selected_name)
-            scenario_meta = next(
-                (
-                    item
-                    for item in raw_payload.get("scenarios", [])
-                    if item.get("name") == active_scenario_name
-                ),
-                None,
-            )
-            if scenario_meta and scenario_meta.get("description"):
-                st.caption(str(scenario_meta["description"]))
-        _render_workflow_demo(
-            master=master,
-            payload=payload,
-            solver=solver,
-            heuristic_weight=heuristic_weight,
-            beam_width=beam_width if solver in {"beam", "lns"} else None,
-            time_budget_ms=time_budget_ms,
-        )
-        return
     if scenario_names:
         selected_name = st.selectbox(
-            "典型场景",
+            "场景",
             options=scenario_names,
             index=scenario_names.index(active_scenario_name) if active_scenario_name else 0,
         )
@@ -209,224 +143,15 @@ def main():
         )
         if scenario_meta and scenario_meta.get("description"):
             st.caption(str(scenario_meta["description"]))
-    vehicle_display_metadata = _build_vehicle_display_metadata(payload)
-    plan_payload = None
-    if plan_path:
-        candidate = Path(plan_path)
-        if not candidate.exists():
-            st.error("Plan 文件不存在")
-            return
-        plan_payload = json.loads(candidate.read_text(encoding="utf-8"))
-    try:
-        with st.spinner("求解中…"):
-            view = _cached_demo_view_model(
-                _payload_cache_key(payload),
-                _payload_cache_key(plan_payload) if plan_payload is not None else None,
-                solver,
-                heuristic_weight,
-                beam_width if solver in {"beam", "lns"} else None,
-                time_budget_ms,
-                compare_external_plan,
-            )
-    except Exception as exc:  # noqa: BLE001
-        st.error(str(exc))
-        return
-
-    summary_cols = st.columns(6)
-    summary_cols[0].metric("车辆数", view.summary.vehicle_count)
-    summary_cols[1].metric("钩数", view.summary.hook_count)
-    summary_cols[2].metric("已称重车辆", view.summary.weighed_vehicle_count)
-    summary_cols[3].metric("最终占用线", len(view.summary.final_tracks))
-    summary_cols[4].metric("库内台位", view.summary.assigned_spot_count)
-    summary_cols[5].metric("Verifier", "PASS" if view.summary.is_valid else "FAIL")
-    st.caption(_plan_validation_source_label(plan_payload))
-
-    if view.verifier_errors:
-        st.error("校验未通过")
-        st.json(view.verifier_errors)
-    else:
-        st.success("校验通过")
-
-    if view.comparison_summary is not None:
-        st.subheader("外部计划对比")
-        panel = _build_comparison_panel(view.comparison_summary)
-        compare_cols = st.columns(len(panel["metrics"]))
-        for column, metric in zip(compare_cols, panel["metrics"], strict=False):
-            column.metric(metric["label"], metric["value"])
-        for caption in panel["captions"]:
-            st.caption(caption)
-
-    if compare_solvers and not plan_payload:
-        st.subheader("Solver 对比")
-        rows = []
-        for solver_name in ["exact", "weighted", "beam", "lns"]:
-            try:
-                compare_view = _cached_demo_view_model(
-                    _payload_cache_key(payload),
-                    None,
-                    solver_name,
-                    heuristic_weight,
-                    beam_width if solver_name in {"beam", "lns"} else None,
-                    time_budget_ms,
-                    False,
-                )
-                rows.append(
-                    {
-                        "solver": solver_name,
-                        "isValid": compare_view.summary.is_valid,
-                        "hooks": compare_view.summary.hook_count,
-                        "vehicles": compare_view.summary.vehicle_count,
-                        "weighed": compare_view.summary.weighed_vehicle_count,
-                        "assignedSpots": compare_view.summary.assigned_spot_count,
-                        "errors": " | ".join(compare_view.verifier_errors[:2]),
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                rows.append(
-                    {
-                        "solver": solver_name,
-                        "isValid": False,
-                        "hooks": None,
-                        "vehicles": None,
-                        "weighed": None,
-                        "assignedSpots": None,
-                        "errors": str(exc),
-                    }
-                )
-        st.dataframe(rows, use_container_width=True, hide_index=True)
-
-    replay_tab, vehicles_tab, plan_tab, overview_tab, distance_tab = st.tabs(
-        ["回放", "车辆分布", "钩计划", "线路总览", "距离构成"]
+    _render_workflow_demo(
+        master=master,
+        payload=_as_l7_workflow_payload(payload),
+        solver=solver,
+        heuristic_weight=heuristic_weight,
+        beam_width=beam_width if solver in {"beam", "lns"} else None,
+        time_budget_ms=time_budget_ms,
     )
-
-    with replay_tab:
-        st.subheader("逐钩回放")
-        control_cols = st.columns([2, 1, 1])
-        with control_cols[0]:
-            step_index = st.slider(
-                "Step",
-                min_value=0,
-                max_value=len(view.steps) - 1,
-                value=view.failed_hook_nos[0] if view.failed_hook_nos else 0,
-            )
-        with control_cols[1]:
-            autoplay = st.checkbox("Auto Play", value=False)
-        with control_cols[2]:
-            autoplay_interval_ms = st.number_input(
-                "Interval (ms)", min_value=100, value=600, step=100
-            )
-        step_container = st.container()
-        if autoplay:
-            for auto_index in range(len(view.steps)):
-                with step_container:
-                    _render_step(view, auto_index, vehicle_display_metadata=vehicle_display_metadata)
-                time.sleep(autoplay_interval_ms / 1000)
-        else:
-            with step_container:
-                _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
-
-    with vehicles_tab:
-        st.caption("初始车辆分布与各自目的地，用来核对求解器的输入。")
-        roster_rows = _build_vehicle_roster_rows(payload)
-        if roster_rows:
-            st.dataframe(roster_rows, use_container_width=True, hide_index=True)
-        else:
-            st.caption("本场景没有初始车辆信息。")
-
-    with plan_tab:
-        download_cols = st.columns(2)
-        download_cols[0].download_button(
-            "下载钩计划 JSON",
-            data=json.dumps(
-                {
-                    "hook_plan": [
-                        {
-                            "hookNo": hook.hook_no,
-                            "actionType": hook.action_type,
-                            "sourceTrack": hook.source_track,
-                            "targetTrack": hook.target_track,
-                            "vehicleCount": hook.vehicle_count,
-                            "vehicleNos": hook.vehicle_nos,
-                            "pathTracks": hook.path_tracks,
-                            "remark": hook.remark,
-                        }
-                        for hook in view.hook_plan
-                    ],
-                    "verifierErrors": view.verifier_errors,
-                    "failedHookNos": view.failed_hook_nos,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            file_name="hook_plan.json",
-            mime="application/json",
-        )
-        download_cols[1].download_button(
-            "下载回放快照 JSON",
-            data=json.dumps(
-                {
-                    "steps": [
-                        {
-                            "stepIndex": step.step_index,
-                            "hookNo": step.hook.hook_no if step.hook else None,
-                            "locoTrackName": step.loco_track_name,
-                            "changedTracks": step.changed_tracks,
-                            "trackSequences": step.track_sequences,
-                            "weighedVehicleNos": step.weighed_vehicle_nos,
-                            "spotAssignments": step.spot_assignments,
-                            "verifierErrors": step.verifier_errors,
-                        }
-                        for step in view.steps
-                    ]
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            file_name="replay_steps.json",
-            mime="application/json",
-        )
-
-        st.dataframe(
-            [
-                {
-                    "hookNo": hook.hook_no,
-                    "actionType": hook.action_type,
-                    "sourceTrack": hook.source_track,
-                    "targetTrack": hook.target_track,
-                    "vehicleCount": hook.vehicle_count,
-                    "vehicleNos": " ".join(hook.vehicle_nos),
-                    "pathTracks": " -> ".join(hook.path_tracks),
-                    "routeLengthM": hook.route_length_m,
-                    "reverseBranches": " ".join(hook.reverse_branch_codes),
-                    "remark": hook.remark,
-                }
-                for hook in view.hook_plan
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-        if view.failed_hook_nos:
-            st.warning(f"失败钩号: {', '.join(str(item) for item in view.failed_hook_nos)}")
-
-    with overview_tab:
-        st.caption("固定方位示意图用于理解全场结构，路径和状态不在这里叠加。")
-        st.markdown(
-            _build_topology_svg(
-                view.topology_graph,
-                None,
-                hook=None,
-                show_all_labels=True,
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with distance_tab:
-        st.caption("距离构成：聚合分支与分段股道，用于核对路径距离数据。")
-        st.dataframe(
-            _build_distance_catalog_rows(),
-            use_container_width=True,
-            hide_index=True,
-        )
+    return
 
 
 def _render_workflow_demo(
@@ -448,6 +173,11 @@ def _render_workflow_demo(
     workflow = workflow_view.workflow
     st.subheader("多轮 Workflow")
     st.caption(f"共 {workflow.stage_count} 个阶段。")
+    if workflow_view.failure:
+        _render_workflow_failure(workflow_view.failure)
+    if not workflow.stages:
+        st.info("尚无已完成阶段可回放。")
+        return
     stage_names = [stage.name for stage in workflow.stages]
     stage_index = st.selectbox(
         "阶段",
@@ -516,6 +246,20 @@ def _render_workflow_demo(
         key=f"workflow-step-{stage_index}",
     )
     _render_step(view, step_index, vehicle_display_metadata=vehicle_display_metadata)
+
+
+def _render_workflow_failure(failure: dict[str, object]) -> None:
+    failed_index = failure.get("failedStageIndex")
+    total_count = failure.get("totalStageCount")
+    failed_name = failure.get("failedStageName")
+    cause = failure.get("causeMessage")
+    st.error(f"Workflow 在第 {failed_index}/{total_count} 阶段失败：{failed_name}")
+    if cause:
+        st.caption(str(cause))
+    stage_input_summary = failure.get("stageInputSummary")
+    if isinstance(stage_input_summary, dict) and stage_input_summary:
+        with st.expander("失败阶段输入摘要", expanded=True):
+            st.json(stage_input_summary)
 
 
 def _is_workflow_payload(payload: dict) -> bool:
@@ -1582,43 +1326,6 @@ def _find_vehicle_track(track_sequences: dict[str, list[str]], vehicle_no: str) 
         if vehicle_no in seq:
             return track_name
     return None
-
-
-def _build_comparison_panel(comparison_summary: dict[str, object] | None) -> dict[str, list[dict] | list[str]]:
-    if not comparison_summary:
-        return {"metrics": [], "captions": []}
-
-    metrics = [
-        {"label": "外部钩数", "value": comparison_summary["externalHookCount"]},
-        {
-            "label": "求解器钩数",
-            "value": (
-                comparison_summary["solverHookCount"]
-                if comparison_summary["solverHookCount"] is not None
-                else "N/A"
-            ),
-        },
-        {
-            "label": "钩数差值",
-            "value": (
-                comparison_summary["hookCountDelta"]
-                if comparison_summary["hookCountDelta"] is not None
-                else "N/A"
-            ),
-        },
-        {
-            "label": "外部计划校验",
-            "value": "PASS" if comparison_summary["externalIsValid"] else "FAIL",
-        },
-    ]
-    captions: list[str] = []
-    failed_hook_nos = comparison_summary.get("failedHookNos") or []
-    if failed_hook_nos:
-        captions.append("失败钩号: " + ", ".join(str(item) for item in failed_hook_nos))
-    solver_error = comparison_summary.get("solverError")
-    if solver_error:
-        captions.append(f"求解器对比结果: {solver_error}")
-    return {"metrics": metrics, "captions": captions}
 
 
 def _track_map_legend_markdown() -> str:

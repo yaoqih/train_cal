@@ -10,6 +10,7 @@ from fzed_shunting.domain.depot_spots import (
     exact_spot_reservations,
     realign_spots_for_track_order,
 )
+from fzed_shunting.domain.hook_constraints import tail_unweighed_weigh_vehicle_no
 from fzed_shunting.domain.route_oracle import TRACK_ENDPOINTS
 from fzed_shunting.io.normalize_input import NormalizedPlanInput
 
@@ -109,7 +110,13 @@ def replay_plan(
             state.loco_track_name = target
             state.loco_node = _order_end_node(target)
             if target == "机库":
-                state.weighed_vehicle_nos.update(vehicle_nos)
+                weighed_vehicle_no = tail_unweighed_weigh_vehicle_no(
+                    vehicle_nos,
+                    vehicle_by_no=vehicle_by_no,
+                    weighed_vehicle_nos=state.weighed_vehicle_nos,
+                )
+                if weighed_vehicle_no is not None:
+                    state.weighed_vehicle_nos.add(weighed_vehicle_no)
         else:
             raise ValueError(f"Unsupported native hook actionType: {action_type}")
         snapshots.append(ReplayState.model_validate(deepcopy(state.model_dump())))

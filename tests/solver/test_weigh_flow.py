@@ -105,3 +105,81 @@ def test_verifier_rejects_direct_move_for_weigh_vehicle():
 
     assert report.is_valid is False
     assert any("weigh" in error.lower() for error in report.errors)
+
+
+def test_verifier_allows_weigh_vehicle_with_companion_when_weigh_car_is_tail():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 71.6},
+            {"trackName": "存4北", "trackDistance": 317.8},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "存5北",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "P1",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            },
+            {
+                "trackName": "存5北",
+                "order": "2",
+                "vehicleModel": "棚车",
+                "vehicleNo": "W3",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "存4北",
+                "isSpotting": "",
+                "vehicleAttributes": "称重",
+            },
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": ["P1", "W3"],
+                "pathTracks": ["存5北"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "DETACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "机库",
+                "vehicleNos": ["P1", "W3"],
+                "pathTracks": ["存5北", "渡1", "渡2", "机北1", "机北2", "渡4", "机库"],
+            },
+            {
+                "hookNo": 3,
+                "actionType": "ATTACH",
+                "sourceTrack": "机库",
+                "targetTrack": "机库",
+                "vehicleNos": ["P1", "W3"],
+                "pathTracks": ["机库"],
+            },
+            {
+                "hookNo": 4,
+                "actionType": "DETACH",
+                "sourceTrack": "机库",
+                "targetTrack": "存4北",
+                "vehicleNos": ["P1", "W3"],
+                "pathTracks": ["机库", "渡4", "机北2", "机北1", "渡2", "渡1", "存4北"],
+            },
+        ],
+    )
+
+    assert report.is_valid is True

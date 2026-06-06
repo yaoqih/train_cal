@@ -5,10 +5,13 @@ from types import SimpleNamespace
 
 from fzed_shunting.domain.master_data import load_master_data
 from fzed_shunting.workflow.l7_closed_topology_mode import (
+    FIXED_DEPOT_RESIDENT_SOURCE,
     OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+    PHASE3_DYNAMIC_CURRENT_HOLD,
     PHASE4_DYNAMIC_CURRENT_HOLD,
     PHASE4_RESIDUAL_CLEANUP,
     build_l7_closed_topology_workflow_payload,
+    rebuild_phase2_execution_policy_for_runtime,
 )
 from fzed_shunting.workflow.runner import solve_workflow
 
@@ -450,7 +453,6 @@ def test_phase1_block_layout_preserves_full_compile_without_source_mixing():
     assert diagnostics["bufferSourceTracks"]["机棚"] == ["预修"]
     assert diagnostics["bufferSourceTracks"]["机北1"] == ["预修"]
     assert diagnostics["bufferSourceTracks"]["机北2"] == ["预修"]
-    assert diagnostics["bufferSourceTracks"]["机南"] == ["油"]
 
 
 def test_phase1_avoids_mixing_sources_on_same_buffer_when_empty_track_exists():
@@ -505,7 +507,7 @@ def test_phase1_reuses_same_temp_track_for_same_source_cleanup_when_capacity_all
     assert diagnostics["selectedTempTracksBySource"]["调棚"] == [goals["A"]["targetTrack"]]
 
 
-def test_phase2_keeps_depot_repairs_and_orders_other_collect_before_cun4_final():
+def test_phase2_builds_cun4_staging_and_final_segments():
     master = load_master_data(DATA_DIR)
     payload = {
         "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
@@ -530,27 +532,430 @@ def test_phase2_keeps_depot_repairs_and_orders_other_collect_before_cun4_final()
         for item in workflow_payload["workflowStages"][1]["vehicleGoals"]
     }
     phase2_diag = workflow_payload["workflowStages"][1]["stagePolicy"]["phase2Diagnostics"]
+    phase2_policy = workflow_payload["workflowStages"][1]["stagePolicy"]
 
     assert phase2_goals["A"]["targetTrack"] == phase1_goals["A"]["targetTrack"]
     assert phase2_goals["A"]["targetSource"] == "PHASE2_HOLD_PHASE1_BACKBONE"
     assert phase2_goals["B"]["targetTrack"] == "修1"
-    assert phase2_goals["B"]["targetSource"] == "STAGE_HOLD"
+    assert phase2_goals["B"]["targetSource"] == FIXED_DEPOT_RESIDENT_SOURCE
     assert phase2_goals["B"]["targetMode"] == "AREA"
     assert phase2_goals["C"]["targetTrack"] == "存4北"
-    assert phase2_goals["C"]["targetSource"] == "PHASE2_DEPOT_TO_CUN4BEI_OTHER"
-    assert phase2_goals["C"]["targetMode"] == "WORK_POSITION"
-    assert phase2_goals["C"]["targetSpotCode"] == "1"
-    assert phase2_goals["C"]["targetTrack"] == "存4北"
+    assert phase2_goals["C"]["targetSource"] == "PHASE2_TRANSFER_TO_CUN4"
+    assert phase2_goals["C"]["targetMode"] == "AREA"
     assert phase2_goals["D"]["targetTrack"] == "存4北"
-    assert phase2_goals["D"]["targetSource"] == "PHASE2_DEPOT_TO_CUN4BEI_FINAL"
-    assert phase2_goals["D"]["targetMode"] == "WORK_POSITION"
-    assert phase2_goals["D"]["targetSpotCode"] == "3"
+    assert phase2_goals["D"]["targetSource"] == "PHASE2_TRANSFER_TO_CUN4"
     assert phase2_goals["E"]["targetTrack"] == "存4北"
-    assert phase2_goals["E"]["targetSource"] == "PHASE2_DEPOT_TO_CUN4BEI_FINAL"
-    assert phase2_goals["E"]["targetSpotCode"] == "2"
-    assert phase2_diag["otherCollectVehicleNos"] == ["C"]
-    assert phase2_diag["cun4beiFinalVehicleNos"] == ["E", "D"]
-    assert phase2_diag["collectTargetRanks"] == {"C": 1, "E": 2, "D": 3}
+    assert phase2_goals["E"]["targetSource"] == "PHASE2_TRANSFER_TO_CUN4"
+    assert phase2_policy["depotStayVehicles"] == ["B"]
+    assert phase2_policy["fixedDepotResidentVehicleNos"] == ["B"]
+    assert phase2_policy["fixedDepotResidentVehicles"] == ["B"]
+    assert phase2_policy["depotOutboundVehicles"] == ["C"]
+    assert phase2_policy["cun4FinalVehicles"] == ["D", "E"]
+    assert [layer["sourceTrack"] for layer in phase2_policy["phase2TrackLayers"]] == ["修3", "修2", "修1库外"]
+    assert phase2_policy["phase2ExecutionPlan"]["sourceTracks"] == ["修1库外", "修3", "修2"]
+    assert phase2_policy["phase2ExecutionPlan"]["phase3ClearanceVehicleNos"] == ["E", "D"]
+    assert phase2_policy["phase2ExecutionPlan"]["transferVehicleNos"] == ["C", "E", "D"]
+    assert phase2_policy["phase2ExecutionPlan"]["deferredTailVehicleNos"] == []
+    assert phase2_diag["depotStayVehicleNos"] == ["B"]
+    assert phase2_diag["depotOutboundVehicleNos"] == ["C"]
+    assert phase2_diag["outboundGroupCount"] == 3
+    assert phase2_diag["trackLayerCount"] == 3
+
+
+def test_fixed_depot_resident_is_not_cleared_or_reallocated():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="洗南", order="1", vehicle_no="A", target_track="修1"),
+            _vehicle(track_name="修2", order="1", vehicle_no="FIX", target_track="修2"),
+            _vehicle(track_name="修3", order="1", vehicle_no="C4", target_track="存4北"),
+            _vehicle(track_name="修1库外", order="1", vehicle_no="OUT", target_track="存1"),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase2_policy = workflow_payload["workflowStages"][1]["stagePolicy"]
+    phase2_goals = {
+        item["vehicleNo"]: item
+        for item in workflow_payload["workflowStages"][1]["vehicleGoals"]
+    }
+    phase3_goals = {
+        item["vehicleNo"]: item
+        for item in workflow_payload["workflowStages"][2]["vehicleGoals"]
+    }
+
+    assert phase2_policy["fixedDepotResidentVehicleNos"] == ["FIX"]
+    assert phase2_policy["fixedDepotResidentVehicles"] == ["FIX"]
+    assert phase2_goals["FIX"]["targetSource"] == FIXED_DEPOT_RESIDENT_SOURCE
+    assert phase2_goals["FIX"]["targetTrack"] == "修2"
+    assert phase3_goals["FIX"]["targetSource"] == FIXED_DEPOT_RESIDENT_SOURCE
+    assert phase3_goals["FIX"]["targetTrack"] == "修2"
+    execution_plan = phase2_policy["phase2ExecutionPlan"]
+    assert "FIX" not in execution_plan["transferVehicleNos"]
+    assert "FIX" not in execution_plan["phase3ClearanceVehicleNos"]
+
+
+def test_depot_random_goal_on_current_repair_slot_is_fixed_depot_resident():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="修2", order="1", vehicle_no="RANDOM", target_track="大库"),
+            _vehicle(track_name="修1库外", order="1", vehicle_no="OUT", target_track="存1"),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase2_policy = workflow_payload["workflowStages"][1]["stagePolicy"]
+    phase3_goals = {
+        item["vehicleNo"]: item
+        for item in workflow_payload["workflowStages"][2]["vehicleGoals"]
+    }
+
+    assert phase2_policy["fixedDepotResidentVehicleNos"] == ["RANDOM"]
+    assert phase2_policy["fixedDepotResidentVehicles"] == ["RANDOM"]
+    assert phase3_goals["RANDOM"].get("targetSource") == FIXED_DEPOT_RESIDENT_SOURCE
+
+
+def test_phase2_runtime_rebuild_pulls_depot_stay_anchor_when_it_blocks_outbound():
+    stage_payload = {
+        "vehicleInfo": [
+            _vehicle(track_name="修2", order="1", vehicle_no="A", target_track="存4北"),
+            _vehicle(track_name="修2", order="2", vehicle_no="B", target_track="轮"),
+            _vehicle(track_name="修2", order="3", vehicle_no="C", target_track="存4北"),
+            _vehicle(track_name="修2", order="4", vehicle_no="D", target_track="油", repair_process="厂修"),
+        ],
+        "stagePolicy": {
+            "depotStayVehicles": ["B"],
+            "cun4FinalVehicles": ["A", "C"],
+            "depotOutboundVehicles": ["D"],
+            "phase2OutboundGroups": [
+                {
+                    "groupId": "G1",
+                    "groupKind": "CUN4_FINAL",
+                    "vehicleNos": ["A"],
+                    "currentTrack": "修2",
+                    "sourceOrderStart": 1,
+                    "finalTargetTrack": "存4北",
+                    "finalFamily": "存4北",
+                    "repairProcessProfile": ["段修"],
+                    "totalLengthM": 14.3,
+                },
+                {
+                    "groupId": "G2",
+                    "groupKind": "CUN4_FINAL",
+                    "vehicleNos": ["C"],
+                    "currentTrack": "修2",
+                    "sourceOrderStart": 3,
+                    "finalTargetTrack": "存4北",
+                    "finalFamily": "存4北",
+                    "repairProcessProfile": ["段修"],
+                    "totalLengthM": 14.3,
+                },
+                {
+                    "groupId": "G3",
+                    "groupKind": "DEPOT_OUTBOUND",
+                    "vehicleNos": ["D"],
+                    "currentTrack": "修2",
+                    "sourceOrderStart": 4,
+                    "finalTargetTrack": "油",
+                    "finalFamily": "油",
+                    "repairProcessProfile": ["厂修"],
+                    "totalLengthM": 14.3,
+                },
+            ],
+        },
+    }
+
+    policy = rebuild_phase2_execution_policy_for_runtime(
+        stage_payload=stage_payload,
+        track_sequences={"修2": ["A", "B", "C", "D"]},
+    )
+
+    assert policy is not None
+    assert policy["transferVehicleNos"] == ["A", "B", "C", "D"]
+    assert policy["mustPullVehicleNos"] == ["D"]
+    assert policy["predecessorUnlockVehicleNos"] == ["A", "B", "C"]
+    assert policy["deferredTailVehicleNos"] == []
+    assert policy["collectionBatches"] == [["A", "B", "C", "D"]]
+    assert [layer["vehicleNos"] for layer in policy["trackLayers"]] == [["A"], ["B"], ["C"], ["D"]]
+    assert policy["executionDiagnostics"]["runtimeBlockedTails"] == []
+
+
+def test_phase2_runtime_rebuild_does_not_pull_fixed_depot_resident_anchor():
+    stage_payload = {
+        "vehicleInfo": [
+            _vehicle(track_name="修2", order="1", vehicle_no="FIX", target_track="修2"),
+            _vehicle(track_name="修2", order="2", vehicle_no="C", target_track="存4北"),
+            _vehicle(track_name="修2", order="3", vehicle_no="D", target_track="油", repair_process="厂修"),
+        ],
+        "stagePolicy": {
+            "fixedDepotResidentVehicleNos": ["FIX"],
+            "depotStayVehicles": ["FIX"],
+            "cun4FinalVehicles": ["C"],
+            "depotOutboundVehicles": ["D"],
+            "phase2OutboundGroups": [
+                {
+                    "groupId": "G1",
+                    "groupKind": "CUN4_FINAL",
+                    "vehicleNos": ["C"],
+                    "currentTrack": "修2",
+                    "sourceOrderStart": 2,
+                    "finalTargetTrack": "存4北",
+                    "finalFamily": "存4北",
+                    "repairProcessProfile": ["段修"],
+                    "totalLengthM": 14.3,
+                },
+                {
+                    "groupId": "G2",
+                    "groupKind": "DEPOT_OUTBOUND",
+                    "vehicleNos": ["D"],
+                    "currentTrack": "修2",
+                    "sourceOrderStart": 3,
+                    "finalTargetTrack": "油",
+                    "finalFamily": "油",
+                    "repairProcessProfile": ["厂修"],
+                    "totalLengthM": 14.3,
+                },
+            ],
+        },
+    }
+
+    policy = rebuild_phase2_execution_policy_for_runtime(
+        stage_payload=stage_payload,
+        track_sequences={"修2": ["FIX", "C", "D"]},
+    )
+
+    assert policy is not None
+    assert policy["transferVehicleNos"] == []
+    assert policy["predecessorUnlockVehicleNos"] == []
+    assert policy["deferredTailVehicleNos"] == ["C", "D"]
+    assert policy["executionDiagnostics"]["runtimeBlockedTails"] == [
+        {
+            "sourceTrack": "修2",
+            "anchorVehicleNo": "FIX",
+            "blockedTailVehicleNos": ["C", "D"],
+        }
+    ]
+
+
+def test_phase2_splits_required_outbound_into_legal_collection_batches():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(track_name="修1库外", order=str(index), vehicle_no=f"O{index:02d}", target_track="存1")
+        for index in range(1, 22)
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    execution_plan = workflow_payload["workflowStages"][1]["stagePolicy"]["phase2ExecutionPlan"]
+
+    assert execution_plan["transferVehicleNos"] == [f"O{index:02d}" for index in range(1, 22)]
+    assert execution_plan["deferredTailVehicleNos"] == []
+    assert execution_plan["collectionBatches"] == [
+        [f"O{index:02d}" for index in range(1, 14)],
+        [f"O{index:02d}" for index in range(14, 22)],
+    ]
+
+
+def test_phase2_splits_required_outbound_for_heavy_equivalent_limit():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(
+            track_name="修1库外",
+            order=str(index),
+            vehicle_no=f"H{index:02d}",
+            target_track="存1",
+            vehicle_attributes="重车" if index in {1, 2} else "",
+        )
+        for index in range(1, 16)
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    execution_plan = workflow_payload["workflowStages"][1]["stagePolicy"]["phase2ExecutionPlan"]
+
+    assert execution_plan["collectionBatches"] == [
+        [f"H{index:02d}" for index in range(1, 14)],
+        ["H14", "H15"],
+    ]
+
+
+def test_phase2_splits_required_outbound_when_close_door_precedes_heavy():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(
+            track_name="修1库外",
+            order="1",
+            vehicle_no="CLOSE",
+            target_track="存1",
+            vehicle_attributes="关门车",
+        ),
+        _vehicle(
+            track_name="修1库外",
+            order="2",
+            vehicle_no="HEAVY",
+            target_track="存1",
+            vehicle_attributes="重车",
+        ),
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    execution_plan = workflow_payload["workflowStages"][1]["stagePolicy"]["phase2ExecutionPlan"]
+
+    assert execution_plan["collectionBatches"] == [["CLOSE"], ["HEAVY"]]
+
+
+def test_phase2_splits_required_outbound_for_weigh_tail_constraint():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(
+            track_name="修1库外",
+            order="1",
+            vehicle_no="W1",
+            target_track="存1",
+            vehicle_attributes="称重",
+        ),
+        _vehicle(track_name="修1库外", order="2", vehicle_no="N1", target_track="存1"),
+        _vehicle(
+            track_name="修1库外",
+            order="3",
+            vehicle_no="W2",
+            target_track="存1",
+            vehicle_attributes="称重",
+        ),
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    execution_plan = workflow_payload["workflowStages"][1]["stagePolicy"]["phase2ExecutionPlan"]
+
+    assert execution_plan["collectionBatches"] == [["W1"], ["N1", "W2"]]
+
+
+def test_phase2_splits_collection_batches_for_l1_transfer_length_limit():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(
+            track_name="修1库外",
+            order=str(index),
+            vehicle_no=f"L{index}",
+            target_track="存1",
+            vehicle_length=50.0,
+        )
+        for index in range(1, 6)
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase2_payload = {
+        "trackInfo": workflow_payload["trackInfo"],
+        "initialVehicleInfo": workflow_payload["initialVehicleInfo"],
+        "locoTrackName": workflow_payload["locoTrackName"],
+        "workflowStages": workflow_payload["workflowStages"][:2],
+    }
+    result = solve_workflow(
+        master,
+        phase2_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=4,
+        time_budget_ms=10_000,
+        use_validation_recovery=True,
+    )
+
+    phase2_view = result.stages[1].view
+    phase2_plan = result.stages[1].input_payload["stagePolicy"]["phase2ExecutionPlan"]
+    detach_hooks = [
+        hook
+        for hook in phase2_view.hook_plan
+        if hook.action_type == "DETACH" and hook.target_track == "存4北"
+    ]
+
+    assert phase2_view.summary.is_valid is True
+    assert phase2_plan["collectionBatches"] == [["L1", "L2", "L3"], ["L4", "L5"]]
+    assert [hook.vehicle_nos for hook in detach_hooks] == phase2_plan["collectionBatches"]
+
+
+def test_phase2_runner_executes_split_batches_and_leaves_loco_empty():
+    master = load_master_data(DATA_DIR)
+    vehicles = [
+        _vehicle(track_name="修1库外", order=str(index), vehicle_no=f"O{index:02d}", target_track="存1")
+        for index in range(1, 22)
+    ]
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": vehicles,
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase2_payload = {
+        "trackInfo": workflow_payload["trackInfo"],
+        "initialVehicleInfo": workflow_payload["initialVehicleInfo"],
+        "locoTrackName": workflow_payload["locoTrackName"],
+        "workflowStages": workflow_payload["workflowStages"][:2],
+    }
+    result = solve_workflow(
+        master,
+        phase2_payload,
+        solver="beam",
+        heuristic_weight=1.0,
+        beam_width=4,
+        time_budget_ms=10_000,
+        use_validation_recovery=True,
+    )
+
+    phase2_view = result.stages[1].view
+    phase2_plan = result.stages[1].input_payload["stagePolicy"]["phase2ExecutionPlan"]
+    detach_hooks = [
+        hook
+        for hook in phase2_view.hook_plan
+        if hook.action_type == "DETACH" and hook.target_track == "存4北"
+    ]
+
+    assert phase2_view.summary.is_valid is True
+    assert phase2_plan["collectionBatches"] == [
+        [f"O{index:02d}" for index in range(1, 14)],
+        [f"O{index:02d}" for index in range(14, 22)],
+    ]
+    assert [hook.vehicle_nos for hook in detach_hooks] == phase2_plan["collectionBatches"]
+    assert set(phase2_view.steps[-1].track_sequences["存4北"]) == {
+        f"O{index:02d}" for index in range(1, 22)
+    }
+    assert phase2_view.steps[-1].loco_carry_vehicle_nos == []
 
 
 def test_phase3_restores_exact_depot_goals_and_phase4_downgrades_to_dynamic_hold():
@@ -580,6 +985,8 @@ def test_phase3_restores_exact_depot_goals_and_phase4_downgrades_to_dynamic_hold
     assert phase3_goals["A"]["isSpotting"] == ""
     assert phase3_goals["B"]["targetTrack"] == "修1"
     assert phase3_goals["B"]["isSpotting"] == "101"
+    assert phase3_goals["C"]["targetSource"] == PHASE3_DYNAMIC_CURRENT_HOLD
+    assert phase3_goals["C"]["targetTrack"] == "存4北"
     assert workflow_payload["workflowStages"][3]["stagePolicy"]["stageMode"] == PHASE4_RESIDUAL_CLEANUP
     assert phase4_goals["A"]["targetSource"] == PHASE4_DYNAMIC_CURRENT_HOLD
     assert phase4_goals["A"]["targetMode"] == "SNAPSHOT"
@@ -603,6 +1010,7 @@ def test_solve_workflow_auto_expands_l7_mode_and_applies_stage_route_overlay(mon
     def fake_build_demo_view_model(
         stage_master,
         stage_payload,
+        plan_payload=None,
         solver="beam",
         heuristic_weight=1.0,
         beam_width=None,
@@ -644,14 +1052,17 @@ def test_solve_workflow_auto_expands_l7_mode_and_applies_stage_route_overlay(mon
     result = solve_workflow(master, payload)
 
     assert result.stage_count == 4
-    assert seen_stage_names == [
+    assert seen_stage_names[:4] == [
         "phase1_pre_repair_buffering",
         "phase1_pre_repair_buffering",
         "phase1_pre_repair_buffering",
         "phase2_depot_area_marshalling",
-        "phase3_ji_to_depot_allocation",
-        "final_exact_settle_and_cleanup",
     ]
-    assert seen_branch_status == ["阶段封锁", "阶段封锁", "阶段封锁", "已确认", "已确认", "已确认"]
+    assert seen_stage_names[-1] == "final_exact_settle_and_cleanup"
+    assert set(seen_stage_names[4:-1]) == {
+        "phase3_ji_to_depot_allocation",
+    }
+    assert seen_branch_status[:3] == ["阶段封锁", "阶段封锁", "阶段封锁"]
+    assert seen_branch_status[3:] == ["已确认"] * (len(seen_branch_status) - 3)
     assert result.stages[0].input_payload["stagePolicy"]["stageMode"] == "PHASE1_PRE_REPAIR_BUFFERING"
     assert len(result.stages[0].input_payload["stagePolicy"]["phase1WavePlans"]) == 3

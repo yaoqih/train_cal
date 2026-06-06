@@ -3,7 +3,10 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from fzed_shunting.domain.depot_spots import spot_candidates_for_vehicle
-from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
+from fzed_shunting.domain.hook_constraints import (
+    close_door_first_for_large_rear_consist,
+    validate_hook_vehicle_group,
+)
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.domain.route_oracle import RouteOracle
 from fzed_shunting.domain.work_positions import (
@@ -64,6 +67,10 @@ def verify_plan(
     route_oracle = RouteOracle(master)
     capacity_by_track = {info.track_name: info.track_distance for info in plan_input.track_info}
     length_by_vehicle = {vehicle.vehicle_no: vehicle.vehicle_length for vehicle in plan_input.vehicles}
+    fixed_depot_resident_vehicle_nos = {
+        str(vehicle_no)
+        for vehicle_no in plan_input.stage_policy.get("fixedDepotResidentVehicleNos", [])
+    }
     try:
         initial = initial_state_override or build_initial_state(plan_input)
         replay = replay_plan(initial, hook_plan, plan_input=plan_input)
@@ -173,6 +180,14 @@ def verify_plan(
                         f"contains unknown vehicles: {unknown_vehicle_nos}"
                     )
                 else:
+                    fixed_touched_vehicle_nos = sorted(
+                        set(str(vehicle_no) for vehicle_no in hook["vehicleNos"])
+                        & fixed_depot_resident_vehicle_nos
+                    )
+                    if fixed_touched_vehicle_nos:
+                        hook_errors.append(
+                            f"Fixed depot resident vehicles cannot be moved: {fixed_touched_vehicle_nos}"
+                        )
                     hook_vehicles = [
                         vehicle
                         for vehicle in plan_input.vehicles
@@ -222,15 +237,20 @@ def verify_plan(
                         target_node=target_node,
                     )
                     hook_errors.extend(route_result.errors)
-        if hook["targetTrack"] != "存4北" and len(hook["vehicleNos"]) > 10:
-            first_vehicle = hook["vehicleNos"][0]
-            vehicle = next(
-                (item for item in plan_input.vehicles if item.vehicle_no == first_vehicle),
-                None,
+        if hook["targetTrack"] != "存4北":
+            rear_vehicle_count = (
+                len(pre_state.loco_carry) + len(hook["vehicleNos"])
+                if hook.get("actionType") == "ATTACH"
+                else max(len(pre_state.loco_carry), len(hook["vehicleNos"]))
             )
-            if vehicle and vehicle.is_close_door:
+            vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in plan_input.vehicles}
+            if close_door_first_for_large_rear_consist(
+                hook["vehicleNos"],
+                vehicle_by_no=vehicle_by_no,
+                rear_vehicle_count=rear_vehicle_count,
+            ):
                 hook_errors.append(
-                    f"Close-door vehicle {first_vehicle} cannot be first position when hook size > 10"
+                    "Close-door vehicle cannot be first position when rear consist size > 10"
                 )
         hook_reports.append(
             HookVerificationReport(

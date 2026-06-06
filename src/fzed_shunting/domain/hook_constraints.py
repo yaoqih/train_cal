@@ -35,4 +35,43 @@ def validate_hook_vehicle_group(vehicles: Sequence[NormalizedVehicle]) -> list[s
         errors.append("单钩重车折算后不得超过 20 辆空车")
     if weigh_count > 1:
         errors.append("单钩称重最多处理 1 辆称重车")
+    if weigh_count == 1 and vehicles and not vehicles[-1].need_weigh:
+        errors.append("称重车必须位于机后最后一位")
     return errors
+
+
+def tail_unweighed_weigh_vehicle_no(
+    vehicle_nos: Sequence[str],
+    *,
+    vehicle_by_no: dict,
+    weighed_vehicle_nos: set[str],
+) -> str | None:
+    if not vehicle_nos:
+        return None
+    unweighed_need_weigh = [
+        vehicle_no
+        for vehicle_no in vehicle_nos
+        if (
+            (vehicle := vehicle_by_no.get(vehicle_no)) is not None
+            and vehicle.need_weigh
+            and vehicle_no not in weighed_vehicle_nos
+        )
+    ]
+    if len(unweighed_need_weigh) != 1:
+        return None
+    tail_vehicle_no = vehicle_nos[-1]
+    if tail_vehicle_no != unweighed_need_weigh[0]:
+        return None
+    return tail_vehicle_no
+
+
+def close_door_first_for_large_rear_consist(
+    vehicle_nos: Sequence[str],
+    *,
+    vehicle_by_no: dict,
+    rear_vehicle_count: int,
+) -> bool:
+    if rear_vehicle_count <= 10 or not vehicle_nos:
+        return False
+    first_vehicle = vehicle_by_no.get(vehicle_nos[0])
+    return bool(first_vehicle and first_vehicle.is_close_door)

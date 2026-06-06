@@ -222,7 +222,7 @@ def test_replay_attach_releases_source_spot_assignment():
     normalized = normalize_plan_input(payload, master)
     initial = build_initial_state(normalized)
 
-    assert initial.spot_assignments == {"C_ATTACH": "101"}
+    assert initial.spot_assignments == {"C_ATTACH": "104"}
 
     result = replay_plan(
         initial,
@@ -405,7 +405,7 @@ def test_replay_assigns_exact_depot_spot_when_moving_into_depot():
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "C2",
-                "repairProcess": "厂修",
+                "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetTrack": "大库",
                 "isSpotting": "101",

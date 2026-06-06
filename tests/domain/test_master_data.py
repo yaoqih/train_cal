@@ -43,9 +43,9 @@ def test_physical_route_lengths_follow_business_appendix_without_overwriting_tra
     assert master.physical_routes["L9-油漆尽头"].status == "已确认"
     assert master.physical_routes["大门L1"].total_length_m == 193.0
     assert master.physical_routes["大门L1"].left_node == "5号门"
-    assert master.physical_routes["L9-油漆尽头"].total_length_m == 209.0
+    assert master.physical_routes["L9-油漆尽头"].total_length_m == 204.2
     assert master.physical_routes["L15-抛丸尽头"].status == "已确认"
-    assert master.physical_routes["L15-抛丸尽头"].total_length_m == 129.8
+    assert master.physical_routes["L15-抛丸尽头"].total_length_m == 89.8
     assert master.tracks["油"].effective_length_m == 109.0
     assert master.tracks["抛"].effective_length_m == 42.3
     assert master.tracks["轮"].effective_length_m == 47.3
@@ -60,7 +60,7 @@ def test_master_data_contains_track_and_branch_topology():
     assert master.tracks["机库"].terminal_branch == "L7-机库尽头"
     assert master.physical_routes["L6-L7"].left_node == "L6"
     assert master.physical_routes["L6-L7"].right_node == "L7"
-    assert master.business_rules.loco_length_m > 0
+    assert master.business_rules.loco_length_m == 15.0
     assert master.business_rules.require_clear_intermediate_path_tracks is True
 
 

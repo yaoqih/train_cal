@@ -156,6 +156,50 @@ def test_plan_verifier_rejects_non_sequential_hook_numbers():
     assert any("hookNo" in error and "sequential" in error for error in report.errors)
 
 
+def test_plan_verifier_rejects_moving_fixed_depot_resident_vehicle():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "修2", "trackDistance": 151.7},
+            {"trackName": "存4北", "trackDistance": 317.8},
+            {"trackName": "机库", "trackDistance": 71.6},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "修2",
+                "order": "1",
+                "vehicleModel": "棚车",
+                "vehicleNo": "FIX",
+                "repairProcess": "段修",
+                "vehicleLength": 14.3,
+                "targetTrack": "修2",
+                "targetMode": "TRACK",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+        ],
+        "stagePolicy": {
+            "fixedDepotResidentVehicleNos": ["FIX"],
+        },
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master, allow_internal_loco_tracks=True)
+
+    report = verify_plan(
+        master,
+        normalized,
+        _native_direct_plan(
+            source_track="修2",
+            target_track="存4北",
+            vehicle_nos=["FIX"],
+            detach_path_tracks=["修2", "库前", "存4北"],
+        ),
+    )
+
+    assert report.is_valid is False
+    assert any("Fixed depot resident vehicles cannot be moved" in error for error in report.errors)
+
+
 def test_plan_verifier_rejects_wrong_final_track():
     master = load_master_data(DATA_DIR)
     payload = {
@@ -440,6 +484,74 @@ def test_plan_verifier_rejects_close_door_front_position_non_cun4bei_when_gt10()
 
     assert report.is_valid is False
     assert any("close-door" in error.lower() for error in report.errors)
+
+
+def test_plan_verifier_rejects_close_door_front_position_when_total_rear_consist_exceeds_10():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "trackInfo": [
+            {"trackName": "存5北", "trackDistance": 367},
+            {"trackName": "机库", "trackDistance": 200},
+            {"trackName": "调北", "trackDistance": 70.1},
+        ],
+        "vehicleInfo": [
+            {
+                "trackName": "机库",
+                "order": str(i),
+                "vehicleModel": "棚车",
+                "vehicleNo": f"CARRY_{i}",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "调北",
+                "isSpotting": "",
+                "vehicleAttributes": "",
+            }
+            for i in range(1, 7)
+        ]
+        + [
+            {
+                "trackName": "存5北",
+                "order": str(i),
+                "vehicleModel": "棚车",
+                "vehicleNo": f"HOOK_{i}",
+                "repairProcess": "段修",
+                "vehicleLength": 14.0,
+                "targetTrack": "调北",
+                "isSpotting": "",
+                "vehicleAttributes": "关门车" if i == 1 else "",
+            }
+            for i in range(1, 6)
+        ],
+        "locoTrackName": "机库",
+    }
+    normalized = normalize_plan_input(payload, master)
+
+    report = verify_plan(
+        master,
+        normalized,
+        [
+            {
+                "hookNo": 1,
+                "actionType": "ATTACH",
+                "sourceTrack": "机库",
+                "targetTrack": "机库",
+                "vehicleNos": [f"CARRY_{i}" for i in range(1, 7)],
+                "pathTracks": ["机库"],
+            },
+            {
+                "hookNo": 2,
+                "actionType": "ATTACH",
+                "sourceTrack": "存5北",
+                "targetTrack": "存5北",
+                "vehicleNos": [f"HOOK_{i}" for i in range(1, 6)],
+                "pathTracks": ["存5北"],
+            },
+        ],
+        require_complete_goals=False,
+    )
+
+    assert report.is_valid is False
+    assert any("rear consist size > 10" in error for error in report.errors)
 
 
 def test_plan_verifier_rejects_close_door_first_when_hook_contains_heavy_vehicle():
@@ -948,7 +1060,7 @@ def test_plan_verifier_returns_hook_level_diagnostics():
                 "order": "1",
                 "vehicleModel": "棚车",
                 "vehicleNo": "H10",
-                "repairProcess": "厂修",
+                "repairProcess": "段修",
                 "vehicleLength": 14.3,
                 "targetTrack": "大库",
                 "isSpotting": "101",
@@ -1094,7 +1206,7 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
                     "order": str(idx),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"F1_{idx}",
-                    "repairProcess": "厂修",
+                    "repairProcess": "段修",
                     "vehicleLength": 14.3,
                     "targetTrack": "修1",
                     "isSpotting": f"10{idx}",
@@ -1108,7 +1220,7 @@ def test_plan_verifier_accepts_short_random_depot_vehicle_on_3_4_when_1_2_are_fu
                     "order": str(idx),
                     "vehicleModel": "棚车",
                     "vehicleNo": f"F2_{idx}",
-                    "repairProcess": "厂修",
+                    "repairProcess": "段修",
                     "vehicleLength": 14.3,
                     "targetTrack": "修2",
                     "isSpotting": f"20{idx}",
