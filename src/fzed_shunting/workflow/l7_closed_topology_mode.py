@@ -4,6 +4,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from fzed_shunting.domain.depot_spots import list_track_spots
 from fzed_shunting.domain.master_data import MasterData
 from fzed_shunting.io.normalize_input import NormalizedPlanInput, normalize_plan_input
 
@@ -284,12 +285,34 @@ class Phase1FinishPlan:
 class Phase1WavePlan:
     wave_name: str
     wave_role: str
+    wave_type: str
+    selected_source_track: str
     selected_block_ids: tuple[str, ...]
+    required_predecessor_ids: tuple[str, ...]
     selected_vehicle_nos: frozenset[str]
     buffer_assignment: dict[str, str]
     goal_overrides: dict[str, tuple[str, str]]
     target_rank_by_vehicle: dict[str, int]
     diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Phase1MacroTask:
+    task_id: str
+    source_track: str
+    source_role: str
+    wave_chunks: tuple[tuple[str, tuple[str, ...]], ...]
+    block_ids: tuple[str, ...]
+    required_predecessor_ids: tuple[str, ...]
+    vehicle_nos: tuple[str, ...]
+    buffer_vehicle_count: int
+    cleanup_vehicle_count: int
+    released_depot_vehicle_count: int
+    released_finish_vehicle_count: int
+    pressure_gain: int
+    topology_zones: tuple[str, ...]
+    throat_groups: tuple[str, ...]
+    score_key: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -362,6 +385,7 @@ class Phase1SourceOpeningSummary:
     optional_cleanup_packages: tuple[Phase1LayoutPackage, ...]
     backbone_vehicle_count: int
     required_cleanup_vehicle_count: int
+    required_clearance_gain_units: int
     opening_cost_units: int
     opening_gain_units: int
     opening_score: int
@@ -376,6 +400,7 @@ class Phase1SourceAdmission:
     optional_cleanup_packages: tuple[Phase1LayoutPackage, ...]
     backbone_vehicle_count: int
     required_cleanup_vehicle_count: int
+    required_clearance_gain_units: int
     opening_cost_units: int
     opening_gain_units: int
     opening_score: int
@@ -467,11 +492,21 @@ class Phase2ExecutionPlan:
 
 
 @dataclass(frozen=True)
+class Phase2WavePlan:
+    wave_name: str
+    wave_role: str
+    collected_vehicle_nos: tuple[str, ...]
+    attach_units: tuple[dict[str, Any], ...]
+    diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Stage2Plan:
     demand_summary: Phase2DemandSummary
     outbound_groups: tuple[Phase2OutboundGroup, ...]
     track_layers: tuple[Phase2TrackLayer, ...]
     execution_plan: Phase2ExecutionPlan | None
+    wave_plans: tuple[Phase2WavePlan, ...]
     diagnostics: dict[str, Any]
 
 
@@ -486,10 +521,30 @@ def is_l7_closed_topology_mode(payload: dict[str, Any]) -> bool:
 def build_l7_closed_topology_workflow_payload(
     master: MasterData,
     payload: dict[str, Any],
+    *,
+    allow_internal_loco_tracks: bool = False,
+    phase1_respect_existing_buffer_occupancy: bool = True,
+    phase1_buffer_occupancy_exempt_vehicle_nos: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    normalized = normalize_plan_input(payload, master)
+    normalized = normalize_plan_input(
+        payload,
+        master,
+        allow_internal_loco_tracks=allow_internal_loco_tracks,
+    )
     vehicle_facts = _build_vehicle_stage_facts(payload, normalized)
-    stage_plan = _build_topology_stage_plan(vehicle_facts, master)
+    if phase1_respect_existing_buffer_occupancy and phase1_buffer_occupancy_exempt_vehicle_nos is None:
+        phase1_buffer_occupancy_exempt_vehicle_nos = frozenset(
+            facts.vehicle_no
+            for facts in vehicle_facts
+            if facts.current_track in JI_BUFFER_TRACKS and facts.needs_depot_batch
+        )
+    stage_plan = _build_topology_stage_plan(
+        vehicle_facts,
+        master,
+        normalized.yard_mode,
+        phase1_respect_existing_buffer_occupancy=phase1_respect_existing_buffer_occupancy,
+        phase1_buffer_occupancy_exempt_vehicle_nos=phase1_buffer_occupancy_exempt_vehicle_nos,
+    )
     final_goal_by_vehicle = {
         str(item["vehicleNo"]): _final_goal_payload(item)
         for item in payload.get("vehicleInfo", [])
@@ -520,6 +575,19 @@ def build_l7_closed_topology_workflow_payload(
                     "stageMode": "PHASE1_PRE_REPAIR_BUFFERING",
                     "bufferTracks": list(JI_BUFFER_TRACKS),
                     "fixedDepotResidentVehicleNos": fixed_depot_resident_vehicle_nos,
+                    "phase1OriginalGoalRows": [
+                        {
+                            "vehicleNo": facts.vehicle_no,
+                            "targetTrack": str(facts.raw_goal.get("targetTrack") or ""),
+                            "isSpotting": str(facts.raw_goal.get("isSpotting") or ""),
+                        }
+                        for facts in vehicle_facts
+                    ],
+                    "phase1InitialBufferVehicleNos": sorted(
+                        facts.vehicle_no
+                        for facts in vehicle_facts
+                        if facts.current_track in JI_BUFFER_TRACKS and facts.needs_depot_batch
+                    ),
                     "packageAssignments": dict(stage_plan.phase1_plan.buffer_assignment),
                     "layoutAssignments": dict(stage_plan.phase1_plan.buffer_assignment),
                     "packageTargetRanks": dict(stage_plan.phase1_plan.target_rank_by_vehicle),
@@ -584,6 +652,17 @@ def build_l7_closed_topology_workflow_payload(
                     "phase2ExecutionPlan": _phase2_execution_stage_policy(
                         stage_plan.stage2_plan.execution_plan,
                     ),
+                    "phase2WavePlans": [
+                        {
+                            "waveName": wave.wave_name,
+                            "waveRole": wave.wave_role,
+                            "phase2CollectedVehicleNos": list(wave.collected_vehicle_nos),
+                            "phase2AttachUnits": [dict(item) for item in wave.attach_units],
+                            "activeGoalsByVehicle": dict(wave.diagnostics.get("activeGoalsByVehicle") or {}),
+                            "waveDiagnostics": dict(wave.diagnostics),
+                        }
+                        for wave in stage_plan.stage2_plan.wave_plans
+                    ],
                     "phase2Diagnostics": dict(stage_plan.stage2_plan.diagnostics),
                 },
                 "vehicleGoals": [
@@ -635,7 +714,7 @@ def _with_required_phase_buffer_track_info(
     track_info: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     by_name = {str(item.get("trackName") or ""): dict(item) for item in track_info}
-    required_tracks = tuple(dict.fromkeys(JI_BUFFER_TRACKS + PHASE1_TEMP_PARKING_TRACKS))
+    required_tracks = tuple(dict.fromkeys(JI_BUFFER_TRACKS + PHASE1_TEMP_PARKING_TRACKS + tuple(sorted(DEPOT_OUTER_TRACKS))))
     for track_name in required_tracks:
         if track_name in by_name or track_name not in master.tracks:
             continue
@@ -815,9 +894,18 @@ def _phase2_depot_track_priority(track_name: str) -> int:
 def _build_topology_stage_plan(
     facts_list: list[VehicleStageFacts],
     master: MasterData,
+    yard_mode: str,
+    *,
+    phase1_respect_existing_buffer_occupancy: bool = True,
+    phase1_buffer_occupancy_exempt_vehicle_nos: frozenset[str] | None = None,
 ) -> TopologyStagePlan:
-    phase1_plan = _build_phase1_plan(facts_list, master)
-    stage2_plan = _build_stage2_plan(facts_list)
+    phase1_plan = _build_phase1_plan(
+        facts_list,
+        master,
+        respect_existing_buffer_occupancy=phase1_respect_existing_buffer_occupancy,
+        buffer_occupancy_exempt_vehicle_nos=phase1_buffer_occupancy_exempt_vehicle_nos,
+    )
+    stage2_plan = _build_stage2_plan(facts_list, yard_mode=yard_mode)
     return TopologyStagePlan(
         phase1_plan=phase1_plan,
         stage2_plan=stage2_plan,
@@ -826,6 +914,8 @@ def _build_topology_stage_plan(
 
 def _build_stage2_plan(
     facts_list: list[VehicleStageFacts],
+    *,
+    yard_mode: str,
 ) -> Stage2Plan:
     depot_stay_members: list[VehicleStageFacts] = []
     cun4_final_members: list[VehicleStageFacts] = []
@@ -875,6 +965,20 @@ def _build_stage2_plan(
             for facts in facts_list
         },
     )
+    wave_plans = _build_phase2_wave_plans(
+        facts_list=facts_list,
+        demand_summary=demand_summary,
+        yard_mode=yard_mode,
+        vehicle_traits={
+            facts.vehicle_no: {
+                "need_weigh": facts.need_weigh,
+                "is_heavy": facts.is_heavy,
+                "is_close_door": facts.is_close_door,
+                "vehicle_length": facts.vehicle_length,
+            }
+            for facts in facts_list
+        },
+    )
     diagnostics = {
         "depotStayVehicleNos": sorted(demand_summary.depot_stay_vehicle_nos),
         "depotStayVehicleCount": len(demand_summary.depot_stay_vehicle_nos),
@@ -914,12 +1018,24 @@ def _build_stage2_plan(
             for layer in track_layers
         ],
         "executionPlan": None if execution_plan is None else dict(execution_plan.diagnostics),
+        "wavePlanCount": len(wave_plans),
+        "wavePlans": [
+            {
+                "waveName": wave.wave_name,
+                "waveRole": wave.wave_role,
+                "collectedVehicleNos": list(wave.collected_vehicle_nos),
+                "attachUnits": [dict(item) for item in wave.attach_units],
+                "diagnostics": dict(wave.diagnostics),
+            }
+            for wave in wave_plans
+        ],
     }
     return Stage2Plan(
         demand_summary=demand_summary,
         outbound_groups=outbound_groups,
         track_layers=track_layers,
         execution_plan=execution_plan,
+        wave_plans=wave_plans,
         diagnostics=diagnostics,
     )
 
@@ -1096,6 +1212,169 @@ def _build_phase2_track_layers(
                 )
             )
     return tuple(layers)
+
+
+def _build_phase2_wave_plans(
+    *,
+    facts_list: list[VehicleStageFacts],
+    demand_summary: Phase2DemandSummary,
+    yard_mode: str,
+    vehicle_traits: dict[str, dict[str, Any]],
+) -> tuple[Phase2WavePlan, ...]:
+    facts_by_vehicle = {facts.vehicle_no: facts for facts in facts_list}
+    active_vehicle_nos = [
+        facts.vehicle_no
+        for facts in sorted(
+            facts_list,
+            key=lambda item: (
+                _phase2_depot_track_priority(item.current_track),
+                item.current_order,
+                item.vehicle_no,
+            ),
+        )
+        if facts.is_depot_area_vehicle
+        and not facts.is_fixed_depot_resident
+        and (facts.is_cun4bei_final or (not facts.is_cun4bei_final and not facts.needs_depot_batch))
+    ]
+    if not active_vehicle_nos:
+        return ()
+    if len(active_vehicle_nos) > 20:
+        return ()
+    if not _phase2_hook_group_is_valid(tuple(active_vehicle_nos), vehicle_traits=vehicle_traits):
+        return ()
+    if _phase2_vehicle_length_m(tuple(active_vehicle_nos), vehicle_traits=vehicle_traits) > PHASE2_L1_TRANSFER_MAX_LENGTH_M:
+        return ()
+
+    grouped_by_track: dict[str, list[VehicleStageFacts]] = defaultdict(list)
+    for facts in facts_list:
+        if facts.is_depot_area_vehicle:
+            grouped_by_track[facts.current_track].append(facts)
+    for items in grouped_by_track.values():
+        items.sort(key=lambda item: (item.current_order, item.vehicle_no))
+
+    reorder_active_goals: dict[str, dict[str, Any]] = {}
+    outbound_attach_units: list[dict[str, Any]] = []
+    cun4_attach_units: list[dict[str, Any]] = []
+    collected_vehicle_nos: list[str] = []
+    reorder_needed = False
+    for source_track in sorted(grouped_by_track, key=_phase2_depot_track_priority):
+        track_items = grouped_by_track[source_track]
+        fixed_suffix_start = len(track_items)
+        for index, facts in enumerate(track_items):
+            if facts.is_fixed_depot_resident:
+                fixed_suffix_start = index
+                break
+        if any(
+            not facts.is_fixed_depot_resident
+            for facts in track_items[fixed_suffix_start:]
+        ):
+            return ()
+        movable_prefix = [facts for facts in track_items[:fixed_suffix_start] if facts.vehicle_no in active_vehicle_nos]
+        if not movable_prefix:
+            continue
+        ordered_prefix = sorted(
+            movable_prefix,
+            key=lambda facts: (
+                0 if not facts.is_cun4bei_final else 1,
+                facts.current_order,
+                facts.vehicle_no,
+            ),
+        )
+        if [facts.vehicle_no for facts in ordered_prefix] != [facts.vehicle_no for facts in movable_prefix]:
+            reorder_needed = True
+        if source_track in DEPOT_TARGET_TRACKS:
+            available_spots = list_track_spots(source_track, yard_mode)
+            if len(available_spots) < len(track_items):
+                return ()
+            for slot_index, facts in enumerate(ordered_prefix, start=1):
+                reorder_active_goals[facts.vehicle_no] = {
+                    "vehicleNo": facts.vehicle_no,
+                    "targetTrack": source_track,
+                    "targetMode": "SPOT",
+                    "targetSpotCode": available_spots[slot_index - 1],
+                    "targetSource": "PHASE2_REORDER_PREFIX",
+                    "isSpotting": available_spots[slot_index - 1],
+                }
+        ordered_outbound_vehicle_nos = [
+            facts.vehicle_no
+            for facts in ordered_prefix
+            if not facts.is_cun4bei_final
+        ]
+        ordered_cun4_vehicle_nos = [
+            facts.vehicle_no
+            for facts in ordered_prefix
+            if facts.is_cun4bei_final
+        ]
+        if ordered_outbound_vehicle_nos:
+            outbound_attach_units.append(
+                {
+                    "sourceTrack": source_track,
+                    "vehicleNos": ordered_outbound_vehicle_nos,
+                }
+            )
+            collected_vehicle_nos.extend(ordered_outbound_vehicle_nos)
+        if ordered_cun4_vehicle_nos:
+            cun4_attach_units.append(
+                {
+                    "sourceTrack": source_track,
+                    "vehicleNos": ordered_cun4_vehicle_nos,
+                }
+            )
+            collected_vehicle_nos.extend(ordered_cun4_vehicle_nos)
+
+    attach_units = [*outbound_attach_units, *cun4_attach_units]
+    if not attach_units:
+        return ()
+    waves: list[Phase2WavePlan] = []
+    if reorder_needed and reorder_active_goals:
+        waves.append(
+            Phase2WavePlan(
+                wave_name="phase2_reorder_prefix",
+                wave_role="REORDER",
+                collected_vehicle_nos=tuple(),
+                attach_units=tuple(),
+                diagnostics={
+                    "activeGoalsByVehicle": dict(sorted(reorder_active_goals.items())),
+                    "reorderVehicleNos": sorted(reorder_active_goals),
+                    "outboundVehicleNos": sorted(
+                        facts.vehicle_no
+                        for facts in facts_by_vehicle.values()
+                        if facts.vehicle_no in reorder_active_goals and not facts.is_cun4bei_final
+                    ),
+                    "cun4VehicleNos": sorted(
+                        facts.vehicle_no
+                        for facts in facts_by_vehicle.values()
+                        if facts.vehicle_no in reorder_active_goals and facts.is_cun4bei_final
+                    ),
+                },
+            )
+        )
+    waves.append(
+        Phase2WavePlan(
+            wave_name="phase2_export_single_wave",
+            wave_role="EXPORT",
+            collected_vehicle_nos=tuple(collected_vehicle_nos),
+            attach_units=tuple(attach_units),
+                diagnostics={
+                    "activeGoalsByVehicle": {},
+                    "collectedVehicleNos": list(collected_vehicle_nos),
+                    "attachUnits": [dict(item) for item in attach_units],
+                    "outboundAttachUnits": [dict(item) for item in outbound_attach_units],
+                    "cun4AttachUnits": [dict(item) for item in cun4_attach_units],
+                "outboundPrefixVehicleNos": sorted(
+                    facts.vehicle_no
+                    for facts in facts_by_vehicle.values()
+                    if facts.vehicle_no in collected_vehicle_nos and not facts.is_cun4bei_final
+                ),
+                "cun4VehicleNos": sorted(
+                    facts.vehicle_no
+                    for facts in facts_by_vehicle.values()
+                    if facts.vehicle_no in collected_vehicle_nos and facts.is_cun4bei_final
+                ),
+            },
+        )
+    )
+    return tuple(waves)
 
 
 def _build_phase2_execution_plan(
@@ -1395,15 +1674,20 @@ def _phase2_hook_group_is_valid(
 def _build_phase1_plan(
     facts_list: list[VehicleStageFacts],
     master: MasterData,
+    *,
+    respect_existing_buffer_occupancy: bool = True,
+    buffer_occupancy_exempt_vehicle_nos: frozenset[str] | None = None,
 ) -> Phase1Plan:
     source_plans = _build_phase1_source_track_plans(facts_list)
     reachable_depot_set = _build_phase1_reachable_depot_set(source_plans)
-    depot_slot_limit = _phase1_depot_insert_slot_limit(facts_list)
     backbone_plan = _solve_phase1_backbone_plan(
+        facts_list=facts_list,
         source_plans=source_plans,
         reachable_depot_set=reachable_depot_set,
-        depot_slot_limit=depot_slot_limit,
+        depot_slot_limit=None,
         master=master,
+        respect_existing_buffer_occupancy=respect_existing_buffer_occupancy,
+        buffer_occupancy_exempt_vehicle_nos=buffer_occupancy_exempt_vehicle_nos,
     )
     wave_plans, finish_plan, finish_goal_overrides = _build_phase1_wave_plans(
         facts_list=facts_list,
@@ -1415,6 +1699,12 @@ def _build_phase1_plan(
         vehicle_no
         for vehicle_no in reachable_depot_set
         if vehicle_no not in backbone_plan.selected_buffer_assignment
+    )
+    _validate_phase1_staging_contract(
+        facts_list=facts_list,
+        reachable_depot_set=reachable_depot_set,
+        buffer_assignment=backbone_plan.selected_buffer_assignment,
+        goal_overrides=finish_goal_overrides,
     )
     diagnostics = _build_phase1_block_diagnostics(
         facts_list=facts_list,
@@ -1921,6 +2211,7 @@ def _build_phase1_source_opening_summaries(
             optional_cleanup_packages=admission.optional_cleanup_packages,
             backbone_vehicle_count=admission.backbone_vehicle_count,
             required_cleanup_vehicle_count=admission.required_cleanup_vehicle_count,
+            required_clearance_gain_units=admission.required_clearance_gain_units,
             opening_cost_units=admission.opening_cost_units,
             opening_gain_units=admission.opening_gain_units,
             opening_score=admission.opening_score,
@@ -1957,10 +2248,18 @@ def _build_phase1_source_admissions(
             role = optional_cleanup_packages[0].source_chain_role if optional_cleanup_packages else "other"
         backbone_vehicle_count = sum(len(package.vehicle_nos) for package in backbone_packages)
         required_cleanup_vehicle_count = sum(len(package.vehicle_nos) for package in required_cleanup_packages)
+        required_clearance_gain_units = sum(
+            max(
+                len(package.vehicle_nos),
+                int(getattr(package, "complexity_cost", 0) or 0),
+            )
+            for package in required_cleanup_packages
+            if package.source_chain_role in {"receiving_storage", "yard_storage", "cun4_clear"}
+        )
         opening_cost_units = len(backbone_packages) + (
             _phase1_source_opening_cleanup_multiplier(role) * len(required_cleanup_packages)
         )
-        opening_gain_units = backbone_vehicle_count * 2
+        opening_gain_units = backbone_vehicle_count * 2 + required_clearance_gain_units
         opening_score = opening_gain_units - opening_cost_units
         primary_packages = _phase1_primary_backbone_packages(backbone_packages)
         primary_package_ids = tuple(package.package_id for package in primary_packages)
@@ -1978,6 +2277,7 @@ def _build_phase1_source_admissions(
                 optional_cleanup_packages=optional_cleanup_packages,
                 backbone_vehicle_count=backbone_vehicle_count,
                 required_cleanup_vehicle_count=required_cleanup_vehicle_count,
+                required_clearance_gain_units=required_clearance_gain_units,
                 opening_cost_units=opening_cost_units,
                 opening_gain_units=opening_gain_units,
                 opening_score=opening_score,
@@ -1987,6 +2287,7 @@ def _build_phase1_source_admissions(
                 admission_tier=_phase1_source_admission_tier(
                     source_chain_role=role,
                     backbone_vehicle_count=backbone_vehicle_count,
+                    required_clearance_gain_units=required_clearance_gain_units,
                     opening_score=opening_score,
                 ),
             )
@@ -2034,8 +2335,13 @@ def _phase1_source_admission_tier(
     *,
     source_chain_role: str,
     backbone_vehicle_count: int,
+    required_clearance_gain_units: int,
     opening_score: int,
 ) -> str:
+    if backbone_vehicle_count <= 0 and required_clearance_gain_units > 0:
+        if source_chain_role in {"receiving_storage", "yard_storage", "cun4_clear"}:
+            return "clearance_required"
+        return "weak"
     if backbone_vehicle_count <= 0:
         return "defer"
     if source_chain_role in {"wash_gate", "work_gate", "ji_clear"}:
@@ -2050,9 +2356,10 @@ def _phase1_source_admission_tier(
 
 def _phase1_source_admission_priority(admission: Phase1SourceAdmission) -> tuple[Any, ...]:
     return (
-        {"core": 0, "strong": 1, "weak": 2, "defer": 3}.get(admission.admission_tier, 9),
+        {"core": 0, "strong": 1, "clearance_required": 2, "weak": 3, "defer": 4}.get(admission.admission_tier, 9),
         _phase1_source_chain_priority(admission.source_chain_role),
         -admission.backbone_vehicle_count,
+        -admission.required_clearance_gain_units,
         -admission.primary_vehicle_count,
         admission.primary_required_length_m,
         len(admission.required_cleanup_packages),
@@ -2081,7 +2388,7 @@ def _select_phase1_admission_plan(
     strong_candidates = [
         admission
         for admission in eligible
-        if admission.admission_tier in {"core", "strong"}
+        if admission.admission_tier in {"core", "strong", "clearance_required"}
     ]
     fallback_candidates = [
         admission
@@ -2107,10 +2414,12 @@ def _select_phase1_admission_plan(
             selected_primary_required_length = round(sum(item.primary_required_length_m for item in selected), 1)
             core_count = sum(1 for item in selected if item.admission_tier == "core")
             strong_count = sum(1 for item in selected if item.admission_tier == "strong")
+            clearance_required_count = sum(1 for item in selected if item.admission_tier == "clearance_required")
             weak_count = sum(1 for item in selected if item.admission_tier == "weak")
             score = (
                 core_count,
                 strong_count,
+                clearance_required_count,
                 -weak_count,
                 selected_vehicle_count,
                 selected_primary_vehicle_count,
@@ -2147,7 +2456,7 @@ def _select_phase1_admission_plan(
         can_take = next_primary_required <= total_capacity
         if _phase1_source_is_companion_eligible(candidate):
             can_take = can_take
-        elif candidate.admission_tier in {"core", "strong"}:
+        elif candidate.admission_tier in {"core", "strong", "clearance_required"}:
             can_take = can_take and selected_slot_count < (
                 PHASE1_PRIMARY_BACKBONE_SLOT_COUNT + PHASE1_ELASTIC_BACKBONE_SLOT_COUNT
             )
@@ -2199,7 +2508,10 @@ def _select_phase1_admission_plan(
         if admission.source_track in admitted_set:
             continue
         if not admission.backbone_packages:
-            rejection_reason_by_source[admission.source_track] = "no_backbone"
+            if admission.required_clearance_gain_units > 0:
+                rejection_reason_by_source[admission.source_track] = "clearance_not_admitted"
+            else:
+                rejection_reason_by_source[admission.source_track] = "no_backbone"
         elif admission.admission_tier == "weak":
             rejection_reason_by_source[admission.source_track] = "weak_source"
         else:
@@ -3128,6 +3440,7 @@ def _build_phase1_layout_diagnostics(
                 "backboneVehicleCount": admission.backbone_vehicle_count,
                 "requiredCleanupPackageCount": len(admission.required_cleanup_packages),
                 "requiredCleanupVehicleCount": admission.required_cleanup_vehicle_count,
+                "requiredClearanceGainUnits": admission.required_clearance_gain_units,
                 "optionalCleanupPackageCount": len(admission.optional_cleanup_packages),
                 "openingCostUnits": admission.opening_cost_units,
                 "openingGainUnits": admission.opening_gain_units,
@@ -3242,7 +3555,11 @@ def _build_phase1_source_track_plans(
 ) -> list[SourceTrackPlan]:
     facts_by_track: dict[str, list[VehicleStageFacts]] = defaultdict(list)
     for facts in facts_list:
-        if facts.current_track in PHASE1_NON_DEPOT_REGION_TRACKS:
+        if (
+            facts.current_track in PHASE1_NON_DEPOT_REGION_TRACKS
+            or _needs_phase1_depot_staging(facts)
+            or (facts.current_track in JI_BUFFER_TRACKS and not _needs_phase1_depot_staging(facts))
+        ):
             facts_by_track[facts.current_track].append(facts)
     block_index = 1
     plans: list[SourceTrackPlan] = []
@@ -3301,12 +3618,15 @@ def _build_single_source_track_blocks(
     future_has_depot = False
     for index in range(len(ordered_members) - 1, -1, -1):
         future_depot_suffix[index] = future_has_depot
-        if _is_phase1_candidate(ordered_members[index]):
+        if _needs_phase1_depot_staging(ordered_members[index]):
             future_has_depot = True
     for facts_index, facts in enumerate(ordered_members):
         local_target = _phase1_local_finish_target_track(facts)
         if local_target is not None:
-            staged.append(("local", facts))
+            if future_depot_suffix[facts_index] and not depot_seen:
+                staged.append(("bucket", facts))
+            else:
+                staged.append(("local", facts))
             needs_bridge_prefix = True
             continue
         front_evict_target = (
@@ -3315,10 +3635,12 @@ def _build_single_source_track_blocks(
             else None
         )
         if front_evict_target is not None:
-            staged.append(("local", facts))
+            staged.append(("bucket", facts))
             needs_bridge_prefix = True
             continue
-        if _is_phase1_candidate(facts):
+        if _needs_phase1_depot_staging(facts):
+            if facts.current_track in JI_BUFFER_TRACKS:
+                continue
             block_kind = "bridge" if not depot_seen and needs_bridge_prefix else "depot"
             staged.append((block_kind, facts))
             depot_seen = True
@@ -3337,7 +3659,7 @@ def _build_single_source_track_blocks(
     all_relevant = [
         facts
         for kind, facts in staged
-        if kind in {"local", "bridge", "depot"}
+        if kind in {"local", "bucket", "bridge", "depot"}
     ]
     for kind, facts in staged:
         if kind == "blocked":
@@ -3359,7 +3681,13 @@ def _build_single_source_track_blocks(
                 chunk_kind = None
                 chunk_target = None
             continue
-        current_target = _phase1_local_finish_target_track(facts) if kind == "local" else None
+        current_target = (
+            _phase1_local_finish_target_track(facts)
+            if kind == "local"
+            else _phase1_blocker_bucket_target_source(facts=facts, source_track=source_track)
+            if kind == "bucket"
+            else None
+        )
         should_split = bool(
             chunk_members
             and (
@@ -3428,7 +3756,7 @@ def _build_single_source_track_blocks(
                 phase3_rank_key=block.phase3_rank_key,
                 released_depot_vehicle_count=block.released_depot_vehicle_count,
                 released_finish_vehicle_count=block.released_finish_vehicle_count,
-                required_predecessor_ids=tuple(predecessor_ids),
+                required_predecessor_ids=tuple(predecessor_ids[-1:]),
                 layout_role=layout_role,
                 topology_zone=block.topology_zone,
                 throat_group=block.throat_group,
@@ -3449,7 +3777,7 @@ def _phase1_should_split_block_chunk(
 ) -> bool:
     length_limit = (
         PHASE1_LOCAL_FINISH_SEGMENT_LENGTH_M
-        if kind == "local" and source_track in {"存5北", "存5南", "存3", "存2", "存1"}
+        if kind in {"local", "bucket"} and source_track in {"存5北", "存5南", "存3", "存2", "存1"}
         else PHASE1_UNIT_MAX_LENGTH_M
     )
     projected_length = sum(item.vehicle_length for item in members) + next_facts.vehicle_length
@@ -3491,8 +3819,8 @@ def _make_phase1_block(
     ]
     future_depot = [item for item in future_relevant if _is_phase1_candidate(item)]
     future_finish = [item for item in future_relevant if _phase1_local_finish_target_track(item) is not None]
-    if kind == "local":
-        target_track = _phase1_local_finish_target_track(members[0])
+    if kind in {"local", "bucket"}:
+        target_track = None if kind == "bucket" else _phase1_local_finish_target_track(members[0])
         target_source = None
         if source_track in {"存4北", "存4南"} and target_track is None:
             target_source = "PHASE1_CLEAR_CUN4"
@@ -3678,56 +4006,14 @@ def _phase1_backbone_templates(
     *,
     source_plans: list[SourceTrackPlan],
 ) -> tuple[Phase1LayoutTemplate, ...]:
-    has_wheel = any(
-        block.final_family == "轮"
-        for plan in source_plans
-        for block in plan.blocks
-        if block.uses_buffer
+    return (
+        Phase1LayoutTemplate(
+            template_name="pure_depot_staging",
+            tracks=JI_BUFFER_TRACKS,
+            preferred_open_order=("机棚", "机南", "机北1", "机北2", "机北3"),
+            support_tracks=frozenset({"机北1", "机北2", "机北3"}),
+        ),
     )
-    templates = [
-        Phase1LayoutTemplate(
-            template_name="main_pair",
-            tracks=("机棚", "机南"),
-            preferred_open_order=("机棚", "机南"),
-            support_tracks=frozenset(),
-        ),
-        Phase1LayoutTemplate(
-            template_name="main_plus_jibei1",
-            tracks=("机棚", "机南", "机北1"),
-            preferred_open_order=("机棚", "机南", "机北1"),
-            support_tracks=frozenset({"机北1"}),
-        ),
-        Phase1LayoutTemplate(
-            template_name="main_plus_jibei2",
-            tracks=("机棚", "机南", "机北2"),
-            preferred_open_order=("机棚", "机南", "机北2"),
-            support_tracks=frozenset({"机北2"}),
-        ),
-        Phase1LayoutTemplate(
-            template_name="main_plus_jibei1_jibei2",
-            tracks=("机棚", "机南", "机北1", "机北2"),
-            preferred_open_order=("机棚", "机南", "机北1", "机北2"),
-            support_tracks=frozenset({"机北1", "机北2"}),
-        ),
-    ]
-    if has_wheel:
-        templates.append(
-            Phase1LayoutTemplate(
-                template_name="main_plus_jibei3",
-                tracks=("机棚", "机南", "机北3"),
-                preferred_open_order=("机棚", "机南", "机北3"),
-                support_tracks=frozenset({"机北3"}),
-            )
-        )
-        templates.append(
-            Phase1LayoutTemplate(
-                template_name="main_plus_jibei1_jibei3",
-                tracks=("机棚", "机南", "机北1", "机北3"),
-                preferred_open_order=("机棚", "机南", "机北1", "机北3"),
-                support_tracks=frozenset({"机北1", "机北3"}),
-            )
-        )
-    return tuple(templates)
 
 
 def _phase1_depot_insert_slot_limit(facts_list: list[VehicleStageFacts]) -> int:
@@ -3778,6 +4064,28 @@ def _phase1_repair_depot_vehicle_count(block: Phase1Block) -> int:
     if block.final_family not in {"修1", "修2", "修3", "修4"}:
         return 0
     return len(block.vehicle_nos)
+
+
+def _phase1_required_predecessor_closure_ids(
+    *,
+    block: Phase1Block,
+    block_by_id: dict[str, Phase1Block],
+) -> tuple[str, ...]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    def visit(current: Phase1Block) -> None:
+        for predecessor_id in current.required_predecessor_ids:
+            predecessor = block_by_id.get(predecessor_id)
+            if predecessor is None or predecessor.block_id in seen:
+                continue
+            seen.add(predecessor.block_id)
+            visit(predecessor)
+            ordered_ids.append(predecessor.block_id)
+
+    visit(block)
+    return tuple(ordered_ids)
+
 
 def _phase1_block_assignment_order(block: Phase1Block, source_priority: tuple[int, ...]) -> tuple[Any, ...]:
     return (
@@ -3940,6 +4248,8 @@ def _solve_phase1_template_backbone_plan(
     ) -> None:
         nonlocal best_score, best_assignment
         if index >= len(ordered_blocks):
+            if len(assignment) != len(ordered_blocks):
+                return
             score = _phase1_template_assignment_score(
                 ordered_blocks=ordered_blocks,
                 assignment=assignment,
@@ -3956,7 +4266,6 @@ def _solve_phase1_template_backbone_plan(
             block_by_id=block_by_id,
             selected_block_ids=set(assignment),
         ):
-            dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
             return
         if (
             depot_slot_limit is not None
@@ -3965,17 +4274,17 @@ def _solve_phase1_template_backbone_plan(
                 block_by_id=block_by_id,
             ) + _phase1_repair_depot_vehicle_count(block) > depot_slot_limit
         ):
-            dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
             return
 
-        for track in _phase1_template_track_candidates(
+        candidates = _phase1_template_track_candidates(
             block=block,
             template=template,
             remaining=remaining,
             source_tracks=source_tracks,
             track_sources=track_sources,
             track_families=track_families,
-        ):
+        )
+        for track in candidates:
             next_remaining = dict(remaining)
             next_remaining[track] -= _phase1_buffer_required_length(block)
             next_assignment = dict(assignment)
@@ -3988,8 +4297,6 @@ def _solve_phase1_template_backbone_plan(
             next_track_families[track].add(block.final_family)
             dfs(index + 1, next_remaining, next_assignment, next_source_tracks, next_track_sources, next_track_families)
 
-        dfs(index + 1, remaining, assignment, source_tracks, track_sources, track_families)
-
     dfs(
         0,
         {track: reserved_buffer[track] for track in template.tracks},
@@ -3998,6 +4305,14 @@ def _solve_phase1_template_backbone_plan(
         {track: set() for track in template.tracks},
         {track: set() for track in template.tracks},
     )
+    if best_assignment is None and ordered_blocks:
+        raise ValueError(
+            "phase1 cannot place all depot staging blocks in JI buffers: "
+            + ", ".join(
+                f"{block.block_id}:{block.source_track}:{list(block.vehicle_nos)}"
+                for block in ordered_blocks
+            )
+        )
     assignment_by_block = best_assignment or {}
     selected_block_ids: list[str] = []
     selected_source_tracks: list[str] = []
@@ -4008,11 +4323,16 @@ def _solve_phase1_template_backbone_plan(
             continue
         if block.source_track not in selected_source_tracks:
             selected_source_tracks.append(block.source_track)
-        for predecessor_id in block.required_predecessor_ids:
+        selected_block_id_set = set(selected_block_ids)
+        for predecessor_id in _phase1_required_predecessor_closure_ids(
+            block=block,
+            block_by_id=block_by_id,
+        ):
             predecessor = block_by_id.get(predecessor_id)
-            if predecessor is None or predecessor.uses_buffer or predecessor_id in selected_block_ids:
+            if predecessor is None or predecessor.uses_buffer or predecessor_id in selected_block_id_set:
                 continue
             selected_block_ids.append(predecessor_id)
+            selected_block_id_set.add(predecessor_id)
         selected_block_ids.append(block.block_id)
         for vehicle_no in block.vehicle_nos:
             assignment[vehicle_no] = target_track
@@ -4047,51 +4367,24 @@ def _solve_phase1_template_backbone_plan(
 
 def _solve_phase1_backbone_plan(
     *,
+    facts_list: list[VehicleStageFacts],
     source_plans: list[SourceTrackPlan],
     reachable_depot_set: frozenset[str],
     depot_slot_limit: int | None,
     master: MasterData,
+    respect_existing_buffer_occupancy: bool,
+    buffer_occupancy_exempt_vehicle_nos: frozenset[str] | None,
 ) -> Phase1BackbonePlan:
-    admitted_buffer_sources: list[str] = []
-    active_hot_sources: set[str] = set()
-    active_storage_sources: set[str] = set()
-    admitted_source_plans: list[SourceTrackPlan] = []
-    for plan in source_plans:
-        has_buffer = any(block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"} for block in plan.blocks)
-        if not has_buffer:
-            admitted_source_plans.append(plan)
-            continue
-        source_role = _phase1_source_chain_role(source_track=plan.source_track)
-        opening_gain_units = sum(len(block.vehicle_nos) * 2 for block in plan.blocks if block.uses_buffer)
-        opening_cost_units = sum(
-            1 if block.uses_buffer else len(block.vehicle_nos)
-            for block in plan.blocks
-            if block.block_type in {"bridge_to_depot", "depot_batch", "prefix_clear", "tail_finish", "clear_cun4"}
+    admitted_source_plans = list(source_plans)
+    reserved_buffer = (
+        _build_phase1_runtime_available_buffer_budget(
+            facts_list=facts_list,
+            master=master,
+            exempt_vehicle_nos=buffer_occupancy_exempt_vehicle_nos,
         )
-        opening_score = opening_gain_units - opening_cost_units
-        if _phase1_is_storage_source_role(source_role) and opening_score <= 0:
-            continue
-        next_hot_sources = set(active_hot_sources)
-        next_storage_sources = set(active_storage_sources)
-        if _phase1_is_hot_source_role(source_role):
-            next_hot_sources.add(plan.source_track)
-        elif _phase1_is_storage_source_role(source_role):
-            next_storage_sources.add(plan.source_track)
-        if len(next_hot_sources) > PHASE1_MAX_ACTIVE_HOT_SOURCE_TRACKS:
-            continue
-        if len(next_storage_sources) > PHASE1_MAX_ACTIVE_STORAGE_SOURCE_TRACKS:
-            continue
-        admitted_buffer_sources.append(plan.source_track)
-        active_hot_sources = next_hot_sources
-        active_storage_sources = next_storage_sources
-        admitted_source_plans.append(plan)
-    reserved_buffer = {
-        track: round(
-            min(float(master.tracks[track].effective_length_m), PHASE1_USABLE_BUFFER_CAPACITY_M[track]),
-            1,
-        )
-        for track in JI_BUFFER_TRACKS
-    }
+        if respect_existing_buffer_occupancy
+        else _build_phase1_buffer_budget(master)
+    )
     templates = _phase1_backbone_templates(source_plans=admitted_source_plans)
     template_plans = [
         _solve_phase1_template_backbone_plan(
@@ -4160,6 +4453,33 @@ def _build_phase1_buffer_budget(master: MasterData) -> dict[str, float]:
     }
 
 
+def _build_phase1_runtime_available_buffer_budget(
+    *,
+    facts_list: list[VehicleStageFacts],
+    master: MasterData,
+    exempt_vehicle_nos: frozenset[str] | None = None,
+) -> dict[str, float]:
+    budget = _build_phase1_buffer_budget(master)
+    exempt_vehicle_nos = exempt_vehicle_nos or frozenset()
+    existing_by_track: dict[str, list[VehicleStageFacts]] = defaultdict(list)
+    for facts in facts_list:
+        if facts.current_track not in JI_BUFFER_TRACKS:
+            continue
+        if not facts.needs_depot_batch:
+            continue
+        if facts.vehicle_no in exempt_vehicle_nos:
+            continue
+        existing_by_track[facts.current_track].append(facts)
+    for track_name, members in existing_by_track.items():
+        ordered = sorted(members, key=lambda item: (item.current_order, item.vehicle_no))
+        occupied = round(
+            sum(item.vehicle_length for item in ordered) + max(1.0, len(ordered) - 1),
+            1,
+        )
+        budget[track_name] = round(max(0.0, budget[track_name] - occupied), 1)
+    return budget
+
+
 def _solve_phase1_template_backbone_plan_greedily(
     *,
     source_plans: list[SourceTrackPlan],
@@ -4178,7 +4498,16 @@ def _solve_phase1_template_backbone_plan_greedily(
         for block in plan.blocks
     }
     selected_set: set[str] = set()
-    while True:
+    while len([
+        block
+        for plan in source_plans
+        for block in plan.blocks
+        if block.uses_buffer and block.block_type in {"bridge_to_depot", "depot_batch"}
+    ]) > len([
+        block_id
+        for block_id in selected_set
+        if block_by_id.get(block_id) is not None and block_by_id[block_id].uses_buffer
+    ]):
         next_choice = _choose_next_phase1_backbone_block(
             source_plans=source_plans,
             block_by_id=block_by_id,
@@ -4193,11 +4522,28 @@ def _solve_phase1_template_backbone_plan_greedily(
             ),
         )
         if next_choice is None:
-            break
+            remaining_blocks = [
+                block
+                for plan in source_plans
+                for block in plan.blocks
+                if block.uses_buffer
+                and block.block_type in {"bridge_to_depot", "depot_batch"}
+                and block.block_id not in selected_set
+            ]
+            raise ValueError(
+                "phase1 cannot greedily place all depot staging blocks in JI buffers: "
+                + ", ".join(
+                    f"{block.block_id}:{block.source_track}:{list(block.vehicle_nos)}"
+                    for block in remaining_blocks
+                )
+            )
         plan, block, target_track = next_choice
         if plan.source_track not in selected_source_tracks:
             selected_source_tracks.append(plan.source_track)
-        for predecessor_id in block.required_predecessor_ids:
+        for predecessor_id in _phase1_required_predecessor_closure_ids(
+            block=block,
+            block_by_id=block_by_id,
+        ):
             predecessor = block_by_id.get(predecessor_id)
             if predecessor is None or predecessor.uses_buffer or predecessor_id in selected_set:
                 continue
@@ -4372,75 +4718,287 @@ def _build_phase1_wave_plans(
     backbone_plan: Phase1BackbonePlan,
     master: MasterData,
 ) -> tuple[tuple[Phase1WavePlan, ...], Phase1FinishPlan, dict[str, tuple[str, str]]]:
-    wave_a_added_ids = _phase1_wave_a_block_ids(
+    all_selected_ids = _phase1_wave_a_block_ids(source_plans=source_plans, backbone_plan=backbone_plan)
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    selected_set = set(all_selected_ids)
+    macro_tasks = _build_phase1_macro_tasks(
         source_plans=source_plans,
-        backbone_plan=backbone_plan,
+        selected_block_ids=selected_set,
     )
-    wave_b_added_ids = _phase1_wave_b_block_ids(
-        source_plans=source_plans,
-        already_selected_ids=wave_a_added_ids,
-    )
-    wave_c_added_ids = _phase1_wave_c_block_ids(
-        source_plans=source_plans,
-        already_selected_ids=wave_a_added_ids + wave_b_added_ids,
-    )
-    wave_definitions = [
-        ("wave_a_backbone", "backbone", wave_a_added_ids),
-        ("wave_b_pressure_relief", "pressure_relief", wave_b_added_ids),
-        ("wave_c_cleanup", "cleanup", wave_c_added_ids),
-    ]
+    wave_definitions: list[tuple[str, str, str, tuple[str, ...], Phase1MacroTask]] = []
+    wave_index = 1
+    for macro_task in macro_tasks:
+        for wave_role, block_ids in macro_task.wave_chunks:
+            wave_definitions.append(
+                (
+                    f"wave_{wave_index:02d}_{macro_task.source_track}_{block_ids[0]}",
+                    wave_role,
+                    macro_task.source_track,
+                    block_ids,
+                    macro_task,
+                )
+            )
+            wave_index += 1
     cumulative_ids: list[str] = []
     wave_plans: list[Phase1WavePlan] = []
-    final_goal_overrides: dict[str, tuple[str, str]] = {}
-    for wave_name, wave_role, added_ids in wave_definitions:
+    for wave_name, wave_role, selected_source_track, added_ids, macro_task in wave_definitions:
         cumulative_ids.extend(added_ids)
-        cumulative_selected_ids = tuple(dict.fromkeys(cumulative_ids))
-        finish_plan = Phase1FinishPlan(
-            selected_block_ids=cumulative_selected_ids,
+        required_predecessor_ids = tuple(
+            dict.fromkeys(
+                predecessor_id
+                for block_id in added_ids
+                for predecessor_id in block_by_id[block_id].required_predecessor_ids
+                if predecessor_id in selected_set and predecessor_id not in added_ids
+            )
+        )
+        wave_finish_plan = Phase1FinishPlan(
+            selected_block_ids=tuple(added_ids),
             goal_overrides={},
         )
         goal_overrides = _materialize_phase1_finish_goal_overrides(
             facts_list=facts_list,
             source_plans=source_plans,
-            finish_plan=finish_plan,
+            finish_plan=wave_finish_plan,
             buffer_assignment=backbone_plan.selected_buffer_assignment,
             master=master,
         )
-        wave_buffer_assignment = _phase1_wave_buffer_assignment(
+        wave_active_buffer_assignment = _phase1_wave_buffer_assignment(
             source_plans=source_plans,
-            selected_block_ids=frozenset(cumulative_selected_ids),
+            selected_block_ids=frozenset(added_ids),
             buffer_assignment=backbone_plan.selected_buffer_assignment,
         )
         wave_target_ranks = _build_phase1_target_ranks_from_blocks(
             source_plans=source_plans,
-            selected_block_ids=frozenset(cumulative_selected_ids),
-            buffer_assignment=wave_buffer_assignment,
+            selected_block_ids=frozenset(added_ids),
+            buffer_assignment=wave_active_buffer_assignment,
         )
-        wave_selected_vehicle_nos = frozenset(set(wave_buffer_assignment) | set(goal_overrides))
-        final_goal_overrides = goal_overrides
+        wave_selected_vehicle_nos = frozenset(set(wave_active_buffer_assignment) | set(goal_overrides))
         wave_plans.append(
             Phase1WavePlan(
                 wave_name=wave_name,
                 wave_role=wave_role,
-                selected_block_ids=cumulative_selected_ids,
+                wave_type=wave_role,
+                selected_source_track=selected_source_track,
+                selected_block_ids=tuple(added_ids),
+                required_predecessor_ids=required_predecessor_ids,
                 selected_vehicle_nos=wave_selected_vehicle_nos,
-                buffer_assignment=wave_buffer_assignment,
+                buffer_assignment=wave_active_buffer_assignment,
                 goal_overrides=dict(goal_overrides),
                 target_rank_by_vehicle=wave_target_ranks,
-                diagnostics=_build_phase1_wave_diagnostics(
+                diagnostics={
+                    **_build_phase1_wave_diagnostics(
                     source_plans=source_plans,
                     wave_name=wave_name,
                     wave_role=wave_role,
+                    selected_source_track=selected_source_track,
                     added_block_ids=tuple(added_ids),
-                    cumulative_block_ids=finish_plan.selected_block_ids,
-                ),
+                    cumulative_block_ids=tuple(dict.fromkeys(cumulative_ids)),
+                    ),
+                    "macroTaskId": macro_task.task_id,
+                    "macroTaskBlockIds": list(macro_task.block_ids),
+                    "macroTaskRequiredPredecessorIds": list(macro_task.required_predecessor_ids),
+                    "macroTaskVehicleNos": list(macro_task.vehicle_nos),
+                    "macroTaskSourceRole": macro_task.source_role,
+                    "macroTaskTopologyZones": list(macro_task.topology_zones),
+                    "macroTaskThroatGroups": list(macro_task.throat_groups),
+                    "macroTaskScoreKey": list(macro_task.score_key),
+                    "macroTaskBufferVehicleCount": macro_task.buffer_vehicle_count,
+                    "macroTaskCleanupVehicleCount": macro_task.cleanup_vehicle_count,
+                    "macroTaskReleasedDepotVehicleCount": macro_task.released_depot_vehicle_count,
+                    "macroTaskReleasedFinishVehicleCount": macro_task.released_finish_vehicle_count,
+                    "macroTaskPressureGain": macro_task.pressure_gain,
+                },
             )
         )
     merged_finish_plan = Phase1FinishPlan(
         selected_block_ids=tuple(dict.fromkeys(cumulative_ids)),
         goal_overrides={},
     )
+    final_goal_overrides = _materialize_phase1_finish_goal_overrides(
+        facts_list=facts_list,
+        source_plans=source_plans,
+        finish_plan=merged_finish_plan,
+        buffer_assignment=backbone_plan.selected_buffer_assignment,
+        master=master,
+    )
     return tuple(wave_plans), merged_finish_plan, final_goal_overrides
+
+
+def _phase1_group_cleanup_wave_block_ids(
+    *,
+    source_role: str,
+    cleanup_blocks: list[Phase1Block],
+) -> tuple[tuple[str, ...], ...]:
+    if not cleanup_blocks:
+        return tuple()
+    if source_role not in {"receiving_storage", "yard_storage"}:
+        return tuple((block.block_id,) for block in cleanup_blocks)
+    groups: list[tuple[str, ...]] = []
+    current_group: list[str] = []
+    current_vehicle_count = 0
+    current_length_m = 0.0
+    for block in cleanup_blocks:
+        vehicle_count = len(block.vehicle_nos)
+        projected_vehicle_count = current_vehicle_count + vehicle_count
+        projected_length_m = current_length_m + block.total_length_m
+        if current_group and (
+            len(current_group) >= 2
+            or projected_vehicle_count > 4
+            or projected_length_m > 42.0
+        ):
+            groups.append(tuple(current_group))
+            current_group = []
+            current_vehicle_count = 0
+            current_length_m = 0.0
+        current_group.append(block.block_id)
+        current_vehicle_count += vehicle_count
+        current_length_m += block.total_length_m
+    if current_group:
+        groups.append(tuple(current_group))
+    return tuple(groups)
+
+
+def _build_phase1_macro_tasks(
+    *,
+    source_plans: list[SourceTrackPlan],
+    selected_block_ids: set[str],
+) -> tuple[Phase1MacroTask, ...]:
+    tasks: list[Phase1MacroTask] = []
+    for plan in source_plans:
+        selected_blocks = [block for block in plan.blocks if block.block_id in selected_block_ids]
+        if not selected_blocks:
+            continue
+        source_role = _phase1_source_chain_role(source_track=plan.source_track)
+        first_buffer_index = next(
+            (index for index, block in enumerate(selected_blocks) if block.uses_buffer),
+            None,
+        )
+        wave_chunks: list[tuple[str, tuple[str, ...]]] = []
+        cleanup_buffer: list[Phase1Block] = []
+        seen_buffer = False
+
+        def flush_cleanup() -> None:
+            nonlocal cleanup_buffer
+            if not cleanup_buffer:
+                return
+            wave_role = "source_local_finish" if seen_buffer else "source_clearance"
+            for cleanup_ids in _phase1_group_cleanup_wave_block_ids(
+                source_role=source_role,
+                cleanup_blocks=cleanup_buffer,
+            ):
+                wave_chunks.append((wave_role, cleanup_ids))
+            cleanup_buffer = []
+
+        for block in selected_blocks:
+            if block.uses_buffer:
+                flush_cleanup()
+                seen_buffer = True
+                wave_chunks.append(("source_marshalling", (block.block_id,)))
+            else:
+                cleanup_buffer.append(block)
+        flush_cleanup()
+        if not wave_chunks:
+            continue
+        tasks.append(
+            _make_phase1_macro_task(
+                plan=plan,
+                source_role=source_role,
+                wave_chunks=tuple(wave_chunks),
+            )
+        )
+    tasks.sort(key=lambda task: task.score_key)
+    return tuple(tasks)
+
+
+def _make_phase1_macro_task(
+    *,
+    plan: SourceTrackPlan,
+    source_role: str,
+    wave_chunks: tuple[tuple[str, tuple[str, ...]], ...],
+) -> Phase1MacroTask:
+    block_by_id = {block.block_id: block for block in plan.blocks}
+    block_ids = tuple(
+        dict.fromkeys(
+            block_id
+            for _wave_role, chunk_ids in wave_chunks
+            for block_id in chunk_ids
+            if block_id in block_by_id
+        )
+    )
+    blocks = [block_by_id[block_id] for block_id in block_ids]
+    vehicle_nos = tuple(
+        dict.fromkeys(
+            vehicle_no
+            for block in blocks
+            for vehicle_no in block.vehicle_nos
+        )
+    )
+    required_predecessor_ids = tuple(
+        dict.fromkeys(
+            predecessor_id
+            for block in blocks
+            for predecessor_id in block.required_predecessor_ids
+            if predecessor_id not in block_ids
+        )
+    )
+    buffer_vehicle_count = sum(len(block.vehicle_nos) for block in blocks if block.uses_buffer)
+    cleanup_vehicle_count = sum(len(block.vehicle_nos) for block in blocks if not block.uses_buffer)
+    released_depot = sum(block.released_depot_vehicle_count for block in blocks)
+    released_finish = sum(block.released_finish_vehicle_count for block in blocks)
+    pressure_gain = sum(block.pressure_gain for block in blocks)
+    topology_zones = tuple(dict.fromkeys(block.topology_zone for block in blocks))
+    throat_groups = tuple(dict.fromkeys(block.throat_group for block in blocks))
+    source_opening = any(
+        not block.uses_buffer and block.released_depot_vehicle_count > 0
+        for block in blocks
+    )
+    has_buffer = buffer_vehicle_count > 0
+    cleanup_before_buffer = (
+        bool(wave_chunks)
+        and wave_chunks[0][0] == "source_clearance"
+        and any(block_by_id[block_id].uses_buffer for block_id in block_ids)
+    )
+    score_key = (
+        0 if cleanup_before_buffer else 1,
+        0 if source_opening else 1,
+        0 if source_role in {"wash_gate", "work_gate", "work_support"} else 1,
+        0 if has_buffer else 1,
+        -released_depot,
+        -buffer_vehicle_count,
+        -pressure_gain,
+        _phase1_source_chain_priority(source_role),
+        len(wave_chunks),
+        cleanup_vehicle_count,
+        *_phase1_flat_sort_key(plan.source_priority_score),
+        plan.source_track,
+    )
+    return Phase1MacroTask(
+        task_id=f"MT::{plan.source_track}::{block_ids[0]}",
+        source_track=plan.source_track,
+        source_role=source_role,
+        wave_chunks=wave_chunks,
+        block_ids=block_ids,
+        required_predecessor_ids=required_predecessor_ids,
+        vehicle_nos=vehicle_nos,
+        buffer_vehicle_count=buffer_vehicle_count,
+        cleanup_vehicle_count=cleanup_vehicle_count,
+        released_depot_vehicle_count=released_depot,
+        released_finish_vehicle_count=released_finish,
+        pressure_gain=pressure_gain,
+        topology_zones=topology_zones,
+        throat_groups=throat_groups,
+        score_key=score_key,
+    )
+
+
+def _phase1_flat_sort_key(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, (tuple, list)):
+        return tuple(item for nested in value for item in _phase1_flat_sort_key(nested))
+    return (value,)
 
 
 def _phase1_wave_buffer_assignment(
@@ -4469,18 +5027,152 @@ def _phase1_wave_a_block_ids(
 ) -> tuple[str, ...]:
     selected_ids: list[str] = []
     selected_backbone = set(backbone_plan.selected_block_ids)
-    selected_backbone_sources = set(backbone_plan.selected_source_tracks)
     for plan in source_plans:
         for block in plan.blocks:
-            if block.block_id in selected_backbone and not block.uses_buffer:
+            if block.block_id in selected_backbone:
                 selected_ids.append(block.block_id)
             elif block.block_type == "clear_cun4":
                 selected_ids.append(block.block_id)
             elif block.target_source == "PHASE1_CLEAR_JI":
                 selected_ids.append(block.block_id)
-            elif block.block_type in {"prefix_clear", "tail_finish"} and block.source_track in selected_backbone_sources:
-                selected_ids.append(block.block_id)
+    selected_ids.extend(
+        _phase1_required_clearance_closure_block_ids(
+            source_plans=source_plans,
+            backbone_plan=backbone_plan,
+        )
+    )
     return tuple(dict.fromkeys(selected_ids))
+
+
+def _phase1_required_clearance_closure_block_ids(
+    *,
+    source_plans: list[SourceTrackPlan],
+    backbone_plan: Phase1BackbonePlan,
+) -> tuple[str, ...]:
+    selected_backbone = set(backbone_plan.selected_block_ids)
+    chosen_ids: list[str] = []
+    candidate_closures: list[tuple[tuple[Any, ...], list[str]]] = []
+    block_by_id = {
+        block.block_id: block
+        for plan in source_plans
+        for block in plan.blocks
+    }
+    for plan in source_plans:
+        if any(block.block_id in selected_backbone and block.uses_buffer for block in plan.blocks):
+            continue
+        if _phase1_source_chain_role(source_track=plan.source_track) not in {"receiving_storage", "yard_storage"}:
+            continue
+        cleanup_blocks = [
+            block
+            for block in plan.blocks
+            if not block.uses_buffer and block.target_source == "PHASE1_LOCAL_FINISH"
+        ]
+        if not cleanup_blocks:
+            continue
+        best_prefix_ids: tuple[str, ...] = tuple()
+        best_prefix_score: tuple[Any, ...] | None = None
+        for anchor_block in cleanup_blocks:
+            closure_ids = _phase1_cleanup_predecessor_closure_ids(
+                anchor_block=anchor_block,
+                block_by_id=block_by_id,
+            )
+            prefix_ids, prefix_score = _phase1_best_storage_enabling_prefix_ids(
+                closure_ids=closure_ids,
+                block_by_id=block_by_id,
+            )
+            if not prefix_ids:
+                continue
+            if best_prefix_score is None or prefix_score > best_prefix_score:
+                best_prefix_score = prefix_score
+                best_prefix_ids = prefix_ids
+        prefix_blocks = [
+            block_by_id[block_id]
+            for block_id in best_prefix_ids
+            if block_id in block_by_id
+        ]
+        released_depot = max(
+            (block.released_depot_vehicle_count for block in prefix_blocks),
+            default=0,
+        )
+        released_finish = max(
+            (block.released_finish_vehicle_count for block in prefix_blocks),
+            default=0,
+        )
+        if released_depot <= 0 and released_finish <= 0:
+            continue
+        candidate_closures.append(
+            (
+                (
+                    -released_depot,
+                    -released_finish,
+                    _phase1_track_priority(plan.source_track),
+                    plan.source_track,
+                ),
+                list(best_prefix_ids),
+            )
+        )
+    for _score, block_ids in sorted(candidate_closures, key=lambda item: item[0])[:2]:
+        chosen_ids.extend(block_ids)
+    return tuple(chosen_ids)
+
+
+def _phase1_best_storage_enabling_prefix_ids(
+    *,
+    closure_ids: tuple[str, ...],
+    block_by_id: dict[str, Phase1Block],
+) -> tuple[tuple[str, ...], tuple[Any, ...]] | tuple[tuple[()], None]:
+    best_ids: tuple[str, ...] = tuple()
+    best_score: tuple[Any, ...] | None = None
+    prefix_ids: list[str] = []
+    prefix_vehicle_count = 0
+    prefix_length_m = 0.0
+    for block_id in closure_ids:
+        block = block_by_id.get(block_id)
+        if block is None:
+            continue
+        prefix_ids.append(block_id)
+        prefix_vehicle_count += len(block.vehicle_nos)
+        prefix_length_m += block.total_length_m
+        score = (
+            block.released_depot_vehicle_count,
+            block.released_finish_vehicle_count,
+            block.pressure_gain,
+            -len(prefix_ids),
+            -prefix_vehicle_count,
+            -round(prefix_length_m, 1),
+            -block.source_order_end,
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_ids = tuple(prefix_ids)
+    if best_score is None:
+        return tuple(), None
+    return best_ids, best_score
+
+
+def _phase1_cleanup_predecessor_closure_ids(
+    *,
+    anchor_block: Phase1Block,
+    block_by_id: dict[str, Phase1Block],
+) -> tuple[str, ...]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+
+    def visit(block: Phase1Block) -> None:
+        for predecessor_id in block.required_predecessor_ids:
+            predecessor = block_by_id.get(predecessor_id)
+            if predecessor is None or predecessor.uses_buffer:
+                continue
+            if predecessor.block_id in seen:
+                continue
+            seen.add(predecessor.block_id)
+            visit(predecessor)
+            ordered_ids.append(predecessor.block_id)
+
+    visit(anchor_block)
+    if anchor_block.block_id not in seen:
+        ordered_ids.append(anchor_block.block_id)
+    return tuple(dict.fromkeys(ordered_ids))
 
 
 def _phase1_wave_b_block_ids(
@@ -4488,49 +5180,7 @@ def _phase1_wave_b_block_ids(
     source_plans: list[SourceTrackPlan],
     already_selected_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
-    block_by_id = {
-        block.block_id: block
-        for plan in source_plans
-        for block in plan.blocks
-    }
-    candidates = sorted(
-        [
-            block
-            for plan in source_plans
-            for block in plan.blocks
-            if (
-                not block.uses_buffer
-                and block.target_track is not None
-                and block.block_type in {"prefix_clear", "tail_finish"}
-                and block.block_id not in set(already_selected_ids)
-            )
-        ],
-        key=_phase1_pressure_relief_order,
-    )
-    selected_ids: list[str] = []
-    selected_set = set(already_selected_ids)
-    per_source_count: Counter[str] = Counter()
-    per_throat_count: Counter[str] = Counter()
-    for block in candidates:
-        if block.pressure_gain < 14:
-            continue
-        if per_source_count[block.source_track] >= 2:
-            continue
-        if per_throat_count[block.throat_group] >= 3:
-            continue
-        if not _phase1_backbone_predecessors_ready(
-            block=block,
-            block_by_id=block_by_id,
-            selected_block_ids=selected_set,
-        ):
-            continue
-        selected_ids.append(block.block_id)
-        selected_set.add(block.block_id)
-        per_source_count[block.source_track] += 1
-        per_throat_count[block.throat_group] += 1
-        if len(selected_ids) >= 8:
-            break
-    return tuple(selected_ids)
+    return ()
 
 
 def _phase1_wave_c_block_ids(
@@ -4538,45 +5188,7 @@ def _phase1_wave_c_block_ids(
     source_plans: list[SourceTrackPlan],
     already_selected_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
-    block_by_id = {
-        block.block_id: block
-        for plan in source_plans
-        for block in plan.blocks
-    }
-    candidates = sorted(
-        [
-            block
-            for plan in source_plans
-            for block in plan.blocks
-            if (
-                not block.uses_buffer
-                and block.target_track is not None
-                and block.block_type in {"prefix_clear", "tail_finish"}
-                and block.block_id not in set(already_selected_ids)
-            )
-        ],
-        key=_phase1_cleanup_wave_order,
-    )
-    selected_ids: list[str] = []
-    selected_set = set(already_selected_ids)
-    per_source_count: Counter[str] = Counter()
-    for block in candidates:
-        if block.coupling_degree >= 3 and block.pressure_gain < 18:
-            continue
-        if per_source_count[block.source_track] >= 2:
-            continue
-        if not _phase1_backbone_predecessors_ready(
-            block=block,
-            block_by_id=block_by_id,
-            selected_block_ids=selected_set,
-        ):
-            continue
-        selected_ids.append(block.block_id)
-        selected_set.add(block.block_id)
-        per_source_count[block.source_track] += 1
-        if len(selected_ids) >= 8:
-            break
-    return tuple(selected_ids)
+    return ()
 
 
 def _build_phase1_wave_diagnostics(
@@ -4584,6 +5196,7 @@ def _build_phase1_wave_diagnostics(
     source_plans: list[SourceTrackPlan],
     wave_name: str,
     wave_role: str,
+    selected_source_track: str,
     added_block_ids: tuple[str, ...],
     cumulative_block_ids: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -4594,14 +5207,49 @@ def _build_phase1_wave_diagnostics(
     }
     added_blocks = [block_by_id[block_id] for block_id in added_block_ids if block_id in block_by_id]
     cumulative_blocks = [block_by_id[block_id] for block_id in cumulative_block_ids if block_id in block_by_id]
+    pressure_cut_counts = Counter(
+        _phase1_block_pressure_cut(
+            {
+                "blockType": block.block_type,
+                "sourceTrack": block.source_track,
+            }
+        )
+        for block in added_blocks
+    )
     return {
         "waveName": wave_name,
         "waveRole": wave_role,
+        "waveType": wave_role,
+        "selectedSourceTrack": selected_source_track,
+        "selectedSourceRole": (
+            _phase1_source_chain_role(source_track=selected_source_track)
+            if selected_source_track
+            else ""
+        ),
         "addedBlockIds": list(added_block_ids),
+        "requiredPredecessorIds": list(
+            dict.fromkeys(
+                predecessor_id
+                for block in added_blocks
+                for predecessor_id in block.required_predecessor_ids
+                if predecessor_id not in added_block_ids
+            )
+        ),
         "addedBlockCount": len(added_blocks),
         "addedVehicleCount": sum(len(block.vehicle_nos) for block in added_blocks),
+        "addedBufferVehicleCount": sum(len(block.vehicle_nos) for block in added_blocks if block.uses_buffer),
+        "addedCleanupVehicleCount": sum(len(block.vehicle_nos) for block in added_blocks if not block.uses_buffer),
         "addedSourceTracks": sorted({block.source_track for block in added_blocks}),
         "addedThroatGroups": dict(sorted(Counter(block.throat_group for block in added_blocks).items())),
+        "pressureCutCounts": dict(sorted(pressure_cut_counts.items())),
+        "releasedDepotVehicleCount": sum(block.released_depot_vehicle_count for block in added_blocks),
+        "releasedFinishVehicleCount": sum(block.released_finish_vehicle_count for block in added_blocks),
+        "pressureGain": sum(block.pressure_gain for block in added_blocks),
+        "containsBufferMove": any(block.uses_buffer for block in added_blocks),
+        "maxRequiredPredecessorDepth": max(
+            (len(block.required_predecessor_ids) for block in added_blocks),
+            default=0,
+        ),
         "cumulativeBlockCount": len(cumulative_blocks),
         "cumulativeVehicleCount": sum(len(block.vehicle_nos) for block in cumulative_blocks),
     }
@@ -4730,7 +5378,11 @@ def _build_phase1_block_diagnostics(
     facts_by_vehicle = {facts.vehicle_no: facts for facts in facts_list}
     block_by_id = {block.block_id: block for block in all_blocks}
     selected_backbone = [block_by_id[block_id] for block_id in backbone_plan.selected_block_ids]
-    selected_finish = [block_by_id[block_id] for block_id in finish_plan.selected_block_ids]
+    selected_finish = [
+        block_by_id[block_id]
+        for block_id in finish_plan.selected_block_ids
+        if block_id in block_by_id and not block_by_id[block_id].uses_buffer
+    ]
     selected_all_source_tracks = sorted({
         block.source_track
         for block in selected_backbone + selected_finish
@@ -4884,6 +5536,10 @@ def _build_phase1_block_diagnostics(
         for block in all_blocks
         for predecessor in block.required_predecessor_ids
     ]
+    macro_tasks = _build_phase1_macro_tasks(
+        source_plans=source_plans,
+        selected_block_ids=set(finish_plan.selected_block_ids),
+    )
     opened_source_tracks = {
         block.source_track
         for block in selected_finish
@@ -5213,6 +5869,32 @@ def _build_phase1_block_diagnostics(
         "trackFacts": source_plan_projection,
         "sourceTrackPlans": source_plan_projection,
         "phase1Blocks": block_projection,
+        "phase1MacroTasks": [
+            {
+                "taskId": task.task_id,
+                "sourceTrack": task.source_track,
+                "sourceRole": task.source_role,
+                "waveChunks": [
+                    {
+                        "waveRole": wave_role,
+                        "blockIds": list(block_ids),
+                    }
+                    for wave_role, block_ids in task.wave_chunks
+                ],
+                "blockIds": list(task.block_ids),
+                "requiredPredecessorIds": list(task.required_predecessor_ids),
+                "vehicleNos": list(task.vehicle_nos),
+                "bufferVehicleCount": task.buffer_vehicle_count,
+                "cleanupVehicleCount": task.cleanup_vehicle_count,
+                "releasedDepotVehicleCount": task.released_depot_vehicle_count,
+                "releasedFinishVehicleCount": task.released_finish_vehicle_count,
+                "pressureGain": task.pressure_gain,
+                "topologyZones": list(task.topology_zones),
+                "throatGroups": list(task.throat_groups),
+                "scoreKey": list(task.score_key),
+            }
+            for task in macro_tasks
+        ],
         "taskPackages": task_package_projection,
         "packageEdges": package_edges,
     }
@@ -6336,11 +7018,43 @@ def _build_phase1_chain_projection(
 
 
 def _is_phase1_candidate(facts: VehicleStageFacts) -> bool:
-    return (
-        facts.needs_depot_batch
-        and not facts.is_depot_area_vehicle
-        and facts.current_track not in JI_BUFFER_TRACKS
+    return _needs_phase1_depot_staging(facts) and facts.current_track not in JI_BUFFER_TRACKS
+
+
+def _needs_phase1_depot_staging(facts: VehicleStageFacts) -> bool:
+    return facts.needs_depot_batch and not facts.is_depot_area_vehicle
+
+
+def _validate_phase1_staging_contract(
+    *,
+    facts_list: list[VehicleStageFacts],
+    reachable_depot_set: frozenset[str],
+    buffer_assignment: dict[str, str],
+    goal_overrides: dict[str, tuple[str, str]],
+) -> None:
+    facts_by_vehicle = {facts.vehicle_no: facts for facts in facts_list}
+    missing = sorted(vehicle_no for vehicle_no in reachable_depot_set if vehicle_no not in buffer_assignment)
+    if missing:
+        raise ValueError(f"phase1 depot staging did not cover vehicles: {missing}")
+
+    invalid_buffered = sorted(
+        vehicle_no
+        for vehicle_no, target_track in buffer_assignment.items()
+        if target_track not in JI_BUFFER_TRACKS
+        or not _needs_phase1_depot_staging(facts_by_vehicle[vehicle_no])
     )
+    if invalid_buffered:
+        raise ValueError(f"phase1 staging buffers contain non-staging vehicles: {invalid_buffered}")
+
+    uncleared_ji = sorted(
+        facts.vehicle_no
+        for facts in facts_list
+        if facts.current_track in JI_BUFFER_TRACKS
+        and not _needs_phase1_depot_staging(facts)
+        and facts.vehicle_no not in goal_overrides
+    )
+    if uncleared_ji:
+        raise ValueError(f"phase1 JI buffers still contain non-staging vehicles: {uncleared_ji}")
 
 
 def _build_phase1_accessibility(
@@ -7333,6 +8047,11 @@ def _phase1_wave_stage_policy(
     return {
         "waveName": wave_plan.wave_name,
         "waveRole": wave_plan.wave_role,
+        "waveType": wave_plan.wave_type,
+        "selectedSourceTrack": wave_plan.selected_source_track,
+        "selectedBlockIds": list(wave_plan.selected_block_ids),
+        "requiredPredecessorIds": list(wave_plan.required_predecessor_ids),
+        "selectedVehicleNos": sorted(wave_plan.selected_vehicle_nos),
         "packageAssignments": dict(wave_plan.buffer_assignment),
         "layoutAssignments": dict(wave_plan.buffer_assignment),
         "packageTargetRanks": dict(wave_plan.target_rank_by_vehicle),
@@ -7610,6 +8329,54 @@ def rebuild_phase2_execution_policy_for_runtime(
     return _phase2_execution_stage_policy(rebuilt_execution_plan)
 
 
+def rebuild_phase1_stage_for_runtime(
+    *,
+    master: MasterData,
+    track_info: list[dict[str, Any]],
+    current_vehicle_info: list[dict[str, Any]],
+    loco_track_name: str,
+    original_goal_rows: list[dict[str, Any]],
+    initial_buffer_vehicle_nos: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    goal_row_by_vehicle = {
+        str(item["vehicleNo"]): dict(item)
+        for item in original_goal_rows
+    }
+    runtime_vehicle_rows: list[dict[str, Any]] = []
+    for item in current_vehicle_info:
+        vehicle_no = str(item["vehicleNo"])
+        goal_row = goal_row_by_vehicle.get(vehicle_no)
+        if goal_row is None:
+            raise ValueError(f"missing original phase1 goal row for vehicle {vehicle_no}")
+        runtime_vehicle_rows.append(
+            {
+                "trackName": str(item["trackName"]),
+                "order": str(item["order"]),
+                "vehicleModel": str(item["vehicleModel"]),
+                "vehicleNo": vehicle_no,
+                "repairProcess": str(item["repairProcess"]),
+                "vehicleLength": item["vehicleLength"],
+                "vehicleAttributes": str(item.get("vehicleAttributes", "")),
+                "targetTrack": str(goal_row.get("targetTrack") or ""),
+                "isSpotting": str(goal_row.get("isSpotting") or ""),
+            }
+        )
+    runtime_payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": [dict(item) for item in track_info],
+        "vehicleInfo": runtime_vehicle_rows,
+        "locoTrackName": loco_track_name,
+    }
+    workflow_payload = build_l7_closed_topology_workflow_payload(
+        master,
+        runtime_payload,
+        allow_internal_loco_tracks=True,
+        phase1_respect_existing_buffer_occupancy=True,
+        phase1_buffer_occupancy_exempt_vehicle_nos=initial_buffer_vehicle_nos,
+    )
+    return dict(workflow_payload["workflowStages"][0])
+
+
 def _phase2_vehicle_traits_from_row(row: dict[str, Any]) -> dict[str, Any]:
     attributes = str(row.get("vehicleAttributes") or "").strip()
     return {
@@ -7649,10 +8416,11 @@ def _phase2_goal(
     if facts.is_fixed_depot_resident:
         return _fixed_depot_resident_goal(facts)
     if facts.vehicle_no in stage_plan.phase1_plan.selected_vehicle_nos:
-        return _stage_track_goal(
-            facts.vehicle_no,
-            stage_plan.phase1_plan.buffer_assignment[facts.vehicle_no],
-            "PHASE2_HOLD_PHASE1_BACKBONE",
+        return _snapshot_track_goal(
+            vehicle_no=facts.vehicle_no,
+            target_track=stage_plan.phase1_plan.buffer_assignment[facts.vehicle_no],
+            source="PHASE2_HOLD_PHASE1_BACKBONE",
+            vehicle_length=facts.vehicle_length,
         )
     execution_plan = stage_plan.stage2_plan.execution_plan
     transfer_vehicle_nos = frozenset(execution_plan.transfer_vehicle_nos) if execution_plan is not None else frozenset()
@@ -7661,8 +8429,18 @@ def _phase2_goal(
     if execution_plan is not None and facts.vehicle_no in execution_plan.deferred_tail_vehicle_nos:
         return _hold_current_track_goal(facts)
     if facts.vehicle_no in stage_plan.stage2_plan.demand_summary.depot_stay_vehicle_nos:
-        return _stage_track_goal(facts.vehicle_no, _phase2_resting_track(facts), "PHASE2_DEPOT_STAY")
-    return _stage_track_goal(facts.vehicle_no, _phase2_resting_track(facts), "STAGE_HOLD")
+        return _snapshot_track_goal(
+            vehicle_no=facts.vehicle_no,
+            target_track=_phase2_resting_track(facts),
+            source="PHASE2_DEPOT_STAY",
+            vehicle_length=facts.vehicle_length,
+        )
+    return _snapshot_track_goal(
+        vehicle_no=facts.vehicle_no,
+        target_track=_phase2_resting_track(facts),
+        source="STAGE_HOLD",
+        vehicle_length=facts.vehicle_length,
+    )
 
 
 def _phase3_goal(
@@ -7675,15 +8453,47 @@ def _phase3_goal(
         return _fixed_depot_resident_goal(facts)
     if facts.needs_depot_batch:
         return _normalized_final_goal_payload(facts)
-    return _stage_track_goal(facts.vehicle_no, facts.current_track, PHASE3_DYNAMIC_CURRENT_HOLD)
+    return _snapshot_track_goal(
+        vehicle_no=facts.vehicle_no,
+        target_track=facts.current_track,
+        source=PHASE3_DYNAMIC_CURRENT_HOLD,
+        vehicle_length=facts.vehicle_length,
+    )
 
 
 def _fixed_depot_resident_goal(facts: VehicleStageFacts) -> dict[str, Any]:
-    return _stage_track_goal(facts.vehicle_no, facts.current_track, FIXED_DEPOT_RESIDENT_SOURCE)
+    return _snapshot_track_goal(
+        vehicle_no=facts.vehicle_no,
+        target_track=facts.current_track,
+        source=FIXED_DEPOT_RESIDENT_SOURCE,
+        vehicle_length=facts.vehicle_length,
+    )
 
 
 def _hold_current_track_goal(facts: VehicleStageFacts) -> dict[str, Any]:
-    return _stage_track_goal(facts.vehicle_no, facts.current_track, "STAGE_HOLD")
+    return _snapshot_track_goal(
+        vehicle_no=facts.vehicle_no,
+        target_track=facts.current_track,
+        source="HOLD_CURRENT",
+        vehicle_length=facts.vehicle_length,
+    )
+
+
+def _snapshot_track_goal(
+    *,
+    vehicle_no: str,
+    target_track: str,
+    source: str,
+    vehicle_length: float,
+) -> dict[str, Any]:
+    return {
+        "vehicleNo": vehicle_no,
+        "targetTrack": target_track,
+        "targetMode": "SNAPSHOT",
+        "targetSource": source,
+        "isSpotting": "",
+        "vehicleLength": vehicle_length,
+    }
 
 
 def _stage_track_goal(vehicle_no: str, target_track: str, source: str) -> dict[str, Any]:
