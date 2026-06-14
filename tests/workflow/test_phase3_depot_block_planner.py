@@ -110,6 +110,37 @@ def test_phase3_block_plan_splits_when_target_changes_on_same_source_track():
         ("修1", ["A"]),
         ("修2", ["B", "C"]),
     ]
+    assert len(plan.wave_plans) == 2
+
+
+def test_phase3_block_plan_stops_at_first_hold_vehicle_on_source_frontier():
+    goals = [
+        _goal("A", "修1"),
+        _goal("HOLD", "调棚"),
+        _goal("B", "修2"),
+    ]
+    current_by_vehicle = {
+        "A": _current("A", "调棚", 1),
+        "HOLD": _current("HOLD", "调棚", 2),
+        "B": _current("B", "调棚", 3),
+    }
+
+    plan = build_phase3_depot_block_plan(
+        goals=goals,
+        current_by_vehicle=current_by_vehicle,
+        track_sequences={"调棚": ["A", "HOLD", "B"]},
+        min_active_vehicle_count=1,
+        min_source_track_count=1,
+    )
+
+    assert [
+        (block["targetTrack"], block["vehicleNos"])
+        for block in plan.diagnostics["sourceBlocks"]
+    ] == [("修1", ["A"])]
+    assert plan.diagnostics["coveredVehicleNos"] == ["A"]
+    assert plan.diagnostics["hiddenActiveVehicleNos"] == ["B"]
+    assert plan.diagnostics["allActiveCoveredByFrontier"] is False
+    assert set(plan.wave_plans[0]["activeGoalsByVehicle"]) == {"A"}
 
 
 def test_phase3_block_plan_scores_high_risk_for_full_short_depot_tracks_and_many_sources():

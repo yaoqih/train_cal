@@ -45,11 +45,15 @@ def build_phase3_depot_block_plan(
         source_tracks.add(current_track)
         target_tracks.add(target_track)
 
-    source_blocks = _build_source_blocks(
+    source_block_result = _build_source_blocks(
         active_by_vehicle=active_by_vehicle,
         track_sequences=track_sequences,
         current_by_vehicle=current_by_vehicle,
     )
+    source_blocks = source_block_result["blocks"]
+    hidden_active_vehicle_nos = source_block_result["hiddenActiveVehicleNos"]
+    missing_vehicle_nos = source_block_result["missingVehicleNos"]
+    covered_vehicle_nos = source_block_result["coveredVehicleNos"]
     target_counts = {
         track: sum(1 for goal in active_by_vehicle.values() if str(goal.get("targetTrack") or "") == track)
         for track in sorted(PHASE3_BLOCK_TARGET_TRACKS)
@@ -91,6 +95,14 @@ def build_phase3_depot_block_plan(
         "targetCounts": target_counts,
         "sourceBlocks": source_blocks,
         "sourceBlockCount": len(source_blocks),
+        "activeVehicleNos": sorted(active_by_vehicle),
+        "coveredVehicleNos": covered_vehicle_nos,
+        "coveredVehicleCount": len(covered_vehicle_nos),
+        "hiddenActiveVehicleNos": hidden_active_vehicle_nos,
+        "hiddenActiveVehicleCount": len(hidden_active_vehicle_nos),
+        "missingVehicleNos": missing_vehicle_nos,
+        "missingVehicleCount": len(missing_vehicle_nos),
+        "allActiveCoveredByFrontier": set(covered_vehicle_nos) == set(active_by_vehicle),
         "waveCount": len(wave_plans),
         "risk": risk,
         "targetSequencePlan": sequence_plan,
@@ -105,14 +117,16 @@ def _build_source_blocks(
     active_by_vehicle: dict[str, dict[str, Any]],
     track_sequences: dict[str, list[str] | tuple[str, ...]],
     current_by_vehicle: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     blocks: list[dict[str, Any]] = []
     seen: set[str] = set()
+    hidden: set[str] = set()
     for source_track in sorted(track_sequences):
         sequence = [str(vehicle_no) for vehicle_no in track_sequences.get(source_track, ())]
         current_vehicle_nos: list[str] = []
         current_target = ""
         block_index = 1
+        frontier_closed = False
 
         def flush() -> None:
             nonlocal current_vehicle_nos, current_target, block_index
@@ -140,6 +154,10 @@ def _build_source_blocks(
             goal = active_by_vehicle.get(vehicle_no)
             if goal is None:
                 flush()
+                frontier_closed = True
+                continue
+            if frontier_closed:
+                hidden.add(vehicle_no)
                 continue
             target_track = str(goal.get("targetTrack") or "")
             if current_vehicle_nos and target_track != current_target:
@@ -151,24 +169,14 @@ def _build_source_blocks(
 
     missing_vehicle_nos = [
         vehicle_no for vehicle_no in active_by_vehicle
-        if vehicle_no not in seen
+        if vehicle_no not in seen and vehicle_no not in hidden
     ]
-    for vehicle_no in missing_vehicle_nos:
-        current = current_by_vehicle.get(vehicle_no, {})
-        goal = active_by_vehicle[vehicle_no]
-        source_track = str(current.get("trackName") or "")
-        blocks.append(
-            {
-                "blockId": f"PHASE3::{source_track or 'UNKNOWN'}::missing::{vehicle_no}",
-                "sourceTrack": source_track,
-                "targetTrack": str(goal.get("targetTrack") or ""),
-                "vehicleNos": [vehicle_no],
-                "vehicleCount": 1,
-                "sourceOrders": [str(current.get("order") or "")],
-                "missingFromTrackSequence": True,
-            }
-        )
-    return blocks
+    return {
+        "blocks": blocks,
+        "coveredVehicleNos": sorted(seen),
+        "hiddenActiveVehicleNos": sorted(hidden),
+        "missingVehicleNos": sorted(missing_vehicle_nos),
+    }
 
 
 def _score_phase3_risk(

@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 from fzed_shunting.domain.carry_order import is_carried_tail_block
 from fzed_shunting.domain.hook_constraints import validate_hook_vehicle_group
 from fzed_shunting.domain.master_data import MasterData, clone_master_with_blocked_branches
-from fzed_shunting.domain.depot_spots import exact_spot_reservations, realign_spots_for_track_order
+from fzed_shunting.domain.depot_spots import exact_spot_reservations, list_track_spots, realign_spots_for_track_order
 from fzed_shunting.io.normalize_input import SOURCE_TRACK_ALIASES, normalize_plan_input
-from fzed_shunting.verify.replay import ReplayState, build_initial_state
+from fzed_shunting.verify.replay import ReplayState, build_initial_state, replay_plan
 from fzed_shunting.workflow.phase3_depot_block_planner import build_phase3_depot_block_plan
 from fzed_shunting.workflow.phase3_depot_insertion import plan_phase3_depot_insertion
 from fzed_shunting.workflow.phase3_depot_relayout import (
@@ -89,6 +89,8 @@ PHASE2_REORDER_BUFFER_TRACKS = (
     "存3",
     "存4南",
 )
+PHASE3_ADMISSION_MAX_RANDOM_DEPOT_VEHICLES = 10
+
 @dataclass(frozen=True)
 class Phase2ReleaseTask:
     blocked_source_track: str
@@ -650,6 +652,26 @@ def _solve_wave_stage(
                 )
                 if plan_payload is None:
                     raise ValueError("phase2 reorder wave has no executable explicit plan")
+        elif wave_plan_key == "phase3WavePlans":
+            normalized = normalize_plan_input(
+                sub_stage_payload,
+                stage_master,
+                allow_internal_loco_tracks=True,
+            )
+            route_oracle = RouteOracle(stage_master)
+            vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+            try:
+                plan_payload = _build_phase3_wave_plan_payload(
+                    wave_plan=wave_plan,
+                    working_state=working_state,
+                    normalized=normalized,
+                    route_oracle=route_oracle,
+                    vehicle_by_no=vehicle_by_no,
+                )
+            except ValueError:
+                if bool(wave_plan.get("requiresExplicitPlan")):
+                    raise
+                plan_payload = None
         view = build_demo_view_model(
             stage_master,
             sub_stage_payload,
@@ -2211,7 +2233,7 @@ def _build_phase1_rolling_plan_payload(
             "sourceTrack": source_track,
             "targetTrack": source_track,
             "vehicleNos": list(vehicle_nos),
-            "pathTracks": list(attach_path),
+            "pathTracks": [source_track],
         },
         {
             "hookNo": 2,
@@ -2238,6 +2260,14 @@ def _build_phase3_wave_plan_payload(
     source_track = str(wave_plan.get("waveSourceTrack") or "")
     target_track = str(wave_plan.get("waveTargetTrack") or "")
     source_block = dict(wave_plan.get("sourceBlock") or {})
+    target_runs = [
+        {
+            "targetTrack": str(item.get("targetTrack") or ""),
+            "vehicleNos": [str(vehicle_no) for vehicle_no in item.get("vehicleNos") or ()],
+        }
+        for item in list(wave_plan.get("waveTargetRuns") or source_block.get("targetRuns") or [])
+        if dict(item)
+    ]
     vehicle_nos = [
         str(vehicle_no)
         for vehicle_no in list(source_block.get("vehicleNos") or [])
@@ -2251,6 +2281,18 @@ def _build_phase3_wave_plan_payload(
         ]
     if not source_track or not target_track or not vehicle_nos:
         raise ValueError("phase3 wave is incomplete")
+    if not target_runs:
+        target_runs = [{"targetTrack": target_track, "vehicleNos": list(vehicle_nos)}]
+    target_runs = [
+        {
+            "targetTrack": str(item["targetTrack"]),
+            "vehicleNos": [str(vehicle_no) for vehicle_no in item["vehicleNos"] if str(vehicle_no)],
+        }
+        for item in target_runs
+        if str(item.get("targetTrack") or "") and list(item.get("vehicleNos") or [])
+    ]
+    if [vehicle_no for run in target_runs for vehicle_no in run["vehicleNos"]] != vehicle_nos:
+        raise ValueError("phase3 wave target runs do not match source prefix")
     source_seq = list(working_state.track_sequences.get(source_track, []))
     if source_seq[: len(vehicle_nos)] != vehicle_nos:
         raise ValueError(
@@ -2295,33 +2337,303 @@ def _build_phase3_wave_plan_payload(
         plan_input=normalized,
         vehicle_by_no=vehicle_by_no,
     )
-    detach_path = route_oracle.resolve_clear_path_tracks(
-        attached_state.loco_track_name,
-        target_track,
-        occupied_track_sequences=attached_state.track_sequences,
-        source_node=attached_state.loco_node,
-        target_node=route_oracle.order_end_node(target_track),
-    )
-    if detach_path is None:
-        raise ValueError(f"phase3 wave no clear detach path {attached_state.loco_track_name} -> {target_track}")
-    return [
+    plan_payload = [
         {
             "hookNo": 1,
             "actionType": "ATTACH",
             "sourceTrack": source_track,
             "targetTrack": source_track,
             "vehicleNos": list(vehicle_nos),
-            "pathTracks": list(attach_path),
-        },
-        {
-            "hookNo": 2,
-            "actionType": "DETACH",
-            "sourceTrack": attached_state.loco_track_name,
-            "targetTrack": target_track,
-            "vehicleNos": list(vehicle_nos),
-            "pathTracks": list(detach_path),
+            "pathTracks": [source_track],
         },
     ]
+    hook_no = 2
+    for run in reversed(target_runs):
+        run_target_track = str(run["targetTrack"])
+        run_vehicle_nos = [str(vehicle_no) for vehicle_no in run["vehicleNos"]]
+        if not is_carried_tail_block(attached_state.loco_carry, run_vehicle_nos):
+            raise ValueError(
+                "phase3 wave target run is not carried tail block: "
+                f"{run_vehicle_nos} from carry {list(attached_state.loco_carry)}"
+            )
+        detach_path = route_oracle.resolve_clear_path_tracks(
+            attached_state.loco_track_name,
+            run_target_track,
+            occupied_track_sequences=attached_state.track_sequences,
+            source_node=attached_state.loco_node,
+            target_node=route_oracle.order_end_node(run_target_track),
+        )
+        if detach_path is None:
+            raise ValueError(
+                f"phase3 wave no clear detach path {attached_state.loco_track_name} -> {run_target_track}"
+            )
+        detach_move = HookAction(
+            source_track=attached_state.loco_track_name,
+            target_track=run_target_track,
+            vehicle_nos=list(run_vehicle_nos),
+            path_tracks=list(detach_path),
+            action_type="DETACH",
+        )
+        plan_payload.append(
+            {
+                "hookNo": hook_no,
+                "actionType": "DETACH",
+                "sourceTrack": attached_state.loco_track_name,
+                "targetTrack": run_target_track,
+                "vehicleNos": list(run_vehicle_nos),
+                "pathTracks": list(detach_path),
+            }
+        )
+        hook_no += 1
+        attached_state = _apply_move(
+            state=attached_state,
+            move=detach_move,
+            plan_input=normalized,
+            vehicle_by_no=vehicle_by_no,
+        )
+    return plan_payload
+
+
+def _build_preflighted_phase3_wave_plans(
+    *,
+    stage: dict[str, Any],
+    current_vehicle_info: list[dict[str, Any]],
+    current_by_vehicle: dict[str, dict[str, Any]],
+    current_state: ReplayState,
+    master: MasterData,
+    source_wave_plans: list[dict[str, Any]],
+    all_active_covered: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from fzed_shunting.domain.route_oracle import RouteOracle
+
+    if not all_active_covered:
+        return [], {
+            "enabled": False,
+            "reason": "active_vehicle_hidden_behind_hold",
+        }
+    if not source_wave_plans:
+        return [], {
+            "enabled": False,
+            "reason": "no_source_wave_plans",
+        }
+
+    candidate_wave_plans = _build_phase3_tail_run_candidates(source_wave_plans)
+    route_oracle = RouteOracle(master)
+    working_state = ReplayState.model_validate(current_state.model_dump())
+    working_vehicle_info = [dict(item) for item in current_vehicle_info]
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for wave_plan in candidate_wave_plans:
+        sub_stage = _build_phase3_wave_sub_stage(
+            stage=stage,
+            wave_plan=wave_plan,
+            working_vehicle_info=working_vehicle_info,
+        )
+        stage_payload = _build_stage_payload(
+            track_info=[],
+            current_vehicle_info=working_vehicle_info,
+            vehicle_meta=current_by_vehicle,
+            stage=sub_stage,
+            loco_track_name=working_state.loco_track_name,
+        )
+        normalized = normalize_plan_input(
+            stage_payload,
+            master,
+            allow_internal_loco_tracks=True,
+        )
+        vehicle_by_no = {vehicle.vehicle_no: vehicle for vehicle in normalized.vehicles}
+        try:
+            plan_payload = _build_phase3_wave_plan_payload(
+                wave_plan=wave_plan,
+                working_state=working_state,
+                normalized=normalized,
+                route_oracle=route_oracle,
+                vehicle_by_no=vehicle_by_no,
+            )
+            working_state = replay_plan(
+                initial_state=working_state,
+                hook_plan=plan_payload,
+                plan_input=normalized,
+            ).final_state
+            working_vehicle_info = _vehicle_info_from_replay_state(
+                state=working_state,
+                previous_vehicle_info=working_vehicle_info,
+            )
+        except ValueError as exc:
+            rejected.append(
+                {
+                    "waveName": str(wave_plan.get("waveName") or ""),
+                    "sourceTrack": str(wave_plan.get("waveSourceTrack") or ""),
+                    "targetRuns": list(wave_plan.get("waveTargetRuns") or []),
+                    "reason": str(exc),
+                }
+            )
+            return [], {
+                "enabled": False,
+                "reason": "preflight_failed",
+                "candidateWaveCount": len(candidate_wave_plans),
+                "acceptedWaveCount": len(accepted),
+                "rejectedWaves": rejected,
+            }
+        accepted.append({**dict(wave_plan), "requiresExplicitPlan": True})
+
+    return accepted, {
+        "enabled": True,
+        "reason": "preflight_passed",
+        "candidateWaveCount": len(candidate_wave_plans),
+        "acceptedWaveCount": len(accepted),
+        "rejectedWaves": [],
+        "plannedHookCount": sum(
+            1 + len(list(wave.get("waveTargetRuns") or []))
+            for wave in accepted
+        ),
+    }
+
+
+def _build_phase3_tail_run_candidates(
+    source_wave_plans: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    source_order: list[str] = []
+    for wave_plan in source_wave_plans:
+        source_track = str(wave_plan.get("waveSourceTrack") or "")
+        if not source_track:
+            continue
+        if source_track not in by_source:
+            source_order.append(source_track)
+            by_source[source_track] = []
+        by_source[source_track].append(dict(wave_plan))
+
+    candidates: list[dict[str, Any]] = []
+    for source_track in source_order:
+        source_waves = by_source[source_track]
+        if len(source_waves) == 1:
+            wave = dict(source_waves[0])
+            block = dict(wave.get("sourceBlock") or {})
+            wave["waveTargetRuns"] = [
+                {
+                    "targetTrack": str(wave.get("waveTargetTrack") or block.get("targetTrack") or ""),
+                    "vehicleNos": [
+                        str(vehicle_no)
+                        for vehicle_no in list(block.get("vehicleNos") or [])
+                    ],
+                }
+            ]
+            candidates.append(wave)
+            continue
+
+        target_runs: list[dict[str, Any]] = []
+        vehicle_nos: list[str] = []
+        active_goals: dict[str, dict[str, Any]] = {}
+        block_ids: list[str] = []
+        total_weight = 0.0
+        for wave in source_waves:
+            block = dict(wave.get("sourceBlock") or {})
+            run_vehicle_nos = [
+                str(vehicle_no)
+                for vehicle_no in list(block.get("vehicleNos") or [])
+                if str(vehicle_no)
+            ]
+            target_track = str(wave.get("waveTargetTrack") or block.get("targetTrack") or "")
+            if not run_vehicle_nos or not target_track:
+                continue
+            target_runs.append(
+                {
+                    "targetTrack": target_track,
+                    "vehicleNos": run_vehicle_nos,
+                }
+            )
+            vehicle_nos.extend(run_vehicle_nos)
+            active_goals.update(
+                {
+                    str(vehicle_no): dict(goal)
+                    for vehicle_no, goal in dict(wave.get("activeGoalsByVehicle") or {}).items()
+                }
+            )
+            block_ids.append(str(block.get("blockId") or ""))
+            total_weight += float(wave.get("waveWeight") or 0.0)
+        if not target_runs or not vehicle_nos:
+            continue
+        first_target = str(target_runs[0]["targetTrack"])
+        candidates.append(
+            {
+                "waveName": f"phase3_tail_run_{len(candidates) + 1:02d}_{source_track}",
+                "waveRole": "PHASE3_SOURCE_TAIL_RUN_TO_DEPOT",
+                "waveSourceTrack": source_track,
+                "waveTargetTrack": first_target,
+                "waveWeight": total_weight,
+                "sourceBlock": {
+                    "blockId": "PHASE3_TAIL_RUN::" + source_track,
+                    "sourceTrack": source_track,
+                    "targetTrack": first_target,
+                    "vehicleNos": vehicle_nos,
+                    "vehicleCount": len(vehicle_nos),
+                    "targetRuns": target_runs,
+                    "sourceBlockIds": [block_id for block_id in block_ids if block_id],
+                },
+                "waveTargetRuns": target_runs,
+                "activeGoalsByVehicle": active_goals,
+            }
+        )
+    total_weight = sum(float(item.get("waveWeight") or 0.0) for item in candidates)
+    if total_weight > 0:
+        for item in candidates:
+            item["waveWeight"] = float(item["waveWeight"]) / total_weight
+    return candidates
+
+
+def _build_phase3_wave_sub_stage(
+    *,
+    stage: dict[str, Any],
+    wave_plan: dict[str, Any],
+    working_vehicle_info: list[dict[str, Any]],
+) -> dict[str, Any]:
+    active_goals = {
+        str(vehicle_no): dict(goal)
+        for vehicle_no, goal in dict(wave_plan.get("activeGoalsByVehicle") or {}).items()
+    }
+    sub_vehicle_goals: list[dict[str, Any]] = []
+    for item in working_vehicle_info:
+        vehicle_no = str(item["vehicleNo"])
+        current_track = str(item["trackName"])
+        if vehicle_no in active_goals:
+            sub_vehicle_goals.append(active_goals[vehicle_no])
+            continue
+        sub_vehicle_goals.append(
+            {
+                "vehicleNo": vehicle_no,
+                "targetTrack": current_track,
+                "targetMode": "SNAPSHOT",
+                "targetSource": "PHASE3_DYNAMIC_HOLD",
+                "isSpotting": "",
+            }
+        )
+    return {
+        "name": str(stage.get("name", "phase3")),
+        "description": str(stage.get("description", "")),
+        "routePolicy": dict(stage.get("routePolicy") or {}),
+        "stagePolicy": dict(stage.get("stagePolicy") or {}),
+        "vehicleGoals": sub_vehicle_goals,
+    }
+
+
+def _vehicle_info_from_replay_state(
+    *,
+    state: ReplayState,
+    previous_vehicle_info: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    previous_by_vehicle = {
+        str(item["vehicleNo"]): dict(item)
+        for item in previous_vehicle_info
+    }
+    next_vehicle_info: list[dict[str, Any]] = []
+    for track_name in sorted(state.track_sequences):
+        for index, vehicle_no in enumerate(state.track_sequences[track_name], start=1):
+            base = dict(previous_by_vehicle[str(vehicle_no)])
+            base["trackName"] = track_name
+            base["order"] = str(index)
+            next_vehicle_info.append(base)
+    return next_vehicle_info
 
 
 def _build_phase1_runtime_frontier_wave(
@@ -4276,12 +4588,22 @@ def _resolve_phase3_depot_targets(
         for track, vehicle_nos in planned_track_sequences.items()
     }
     base_depot_spot_assignments = dict(planned_spot_assignments)
+    admitted_goals, admission_diagnostics = _apply_phase3_admission_budget(
+        goals=[dict(goal) for goal in stage.get("vehicleGoals") or []],
+        current_by_vehicle=current_by_vehicle,
+        base_track_sequences=base_depot_track_sequences,
+        base_spot_assignments=base_depot_spot_assignments,
+        vehicle_by_no=vehicle_by_no,
+        yard_mode=normalized.yard_mode,
+        reserved_spot_codes=reserved_spot_codes,
+    )
+
     insertion_plan = None
     insertion_score = None
     insertion_error = ""
     try:
         insertion_plan = plan_phase3_depot_insertion(
-            goals=[dict(goal) for goal in stage.get("vehicleGoals") or []],
+            goals=admitted_goals,
             current_by_vehicle=current_by_vehicle,
             current_track_sequences=planned_track_sequences,
             current_spot_assignments=planned_spot_assignments,
@@ -4298,7 +4620,7 @@ def _resolve_phase3_depot_targets(
     except ValueError as exc:
         insertion_error = str(exc)
     relayout_plan = search_phase3_depot_relayout(
-        goals=[dict(goal) for goal in stage.get("vehicleGoals") or []],
+        goals=admitted_goals,
         current_by_vehicle=current_by_vehicle,
         base_track_sequences=base_depot_track_sequences,
         base_spot_assignments=base_depot_spot_assignments,
@@ -4337,7 +4659,7 @@ def _resolve_phase3_depot_targets(
     planned_spot_assignments = active_depot_plan.spot_assignments
 
     resolved_goals: list[dict[str, Any]] = []
-    for goal in list(stage.get("vehicleGoals") or []):
+    for goal in admitted_goals:
         if str(goal.get("targetSource") or "") == PHASE3_DYNAMIC_CURRENT_HOLD:
             vehicle_no = str(goal["vehicleNo"])
             current = current_by_vehicle[vehicle_no]
@@ -4388,6 +4710,7 @@ def _resolve_phase3_depot_targets(
         "insertion": insertion_score,
         "relayout": relayout_score,
     }
+    resolved_policy["phase3AdmissionDiagnostics"] = admission_diagnostics
     resolved_policy["phase3DepotRelayoutDiagnostics"] = relayout_plan.diagnostics
     resolved_policy["phase3DepotTargetResolver"] = active_resolver
     resolved_policy["phase3DepotInsertionDiagnostics"] = (
@@ -4411,12 +4734,190 @@ def _resolve_phase3_depot_targets(
         min_source_track_count=1,
     )
     resolved_policy["phase3BlockPlanDiagnostics"] = block_plan.diagnostics
-    if block_plan.wave_plans:
-        resolved_policy["phase3WavePlans"] = [dict(wave_plan) for wave_plan in block_plan.wave_plans]
+    preflighted_wave_plans, preflight_diagnostics = _build_preflighted_phase3_wave_plans(
+        stage=resolved_stage,
+        current_vehicle_info=current_vehicle_info,
+        current_by_vehicle=current_by_vehicle,
+        current_state=current_state,
+        master=master,
+        source_wave_plans=block_plan.wave_plans,
+        all_active_covered=block_plan.diagnostics.get("allActiveCoveredByFrontier") is True,
+    )
+    resolved_policy["phase3ExecutionPlanDiagnostics"] = preflight_diagnostics
+    if preflighted_wave_plans:
+        resolved_policy["phase3WavePlans"] = preflighted_wave_plans
     else:
         resolved_policy.pop("phase3WavePlans", None)
     resolved_stage["stagePolicy"] = resolved_policy
     return resolved_stage
+
+
+def _apply_phase3_admission_budget(
+    *,
+    goals: list[dict[str, Any]],
+    current_by_vehicle: dict[str, dict],
+    base_track_sequences: dict[str, list[str]],
+    base_spot_assignments: dict[str, str],
+    vehicle_by_no: dict[str, Any],
+    yard_mode: str,
+    reserved_spot_codes: set[str] | frozenset[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    depot_tracks = ("修1", "修2", "修3", "修4")
+    capacity = sum(len(list_track_spots(track, yard_mode)) for track in depot_tracks)
+    working_track_sequences = {
+        track: list(base_track_sequences.get(track, ()))
+        for track in depot_tracks
+    }
+    working_spot_assignments = dict(base_spot_assignments)
+    base_vehicle_nos = tuple(
+        vehicle_no
+        for track in depot_tracks
+        for vehicle_no in list(working_track_sequences.get(track, ()))
+    )
+    pending_goals = [
+        dict(goal)
+        for goal in goals
+        if _phase3_goal_needs_depot_admission(
+            goal=goal,
+            current_by_vehicle=current_by_vehicle,
+        )
+    ]
+    base_count = len(base_vehicle_nos)
+    available_slots = max(0, capacity - base_count)
+    active_budget = min(available_slots, PHASE3_ADMISSION_MAX_RANDOM_DEPOT_VEHICLES)
+    admitted_vehicle_nos: set[str] = set()
+    deferred_vehicle_nos: set[str] = set()
+    assigned_track_by_vehicle: dict[str, str] = {}
+    rejected_by_vehicle: dict[str, dict[str, str]] = {}
+    for goal in sorted(
+        pending_goals,
+        key=lambda item: _phase3_admission_goal_priority(
+            goal=item,
+            current_by_vehicle=current_by_vehicle,
+        ),
+    ):
+        vehicle_no = str(goal["vehicleNo"])
+        if len(admitted_vehicle_nos) >= active_budget:
+            deferred_vehicle_nos.add(vehicle_no)
+            rejected_by_vehicle[vehicle_no] = {"*": "phase3_active_vehicle_budget"}
+            continue
+        vehicle = current_by_vehicle[vehicle_no]
+        rejected: dict[str, str] = {}
+        admitted_track = ""
+        for target_track in _ordered_phase3_admission_candidate_tracks(
+            goal=goal,
+            vehicle=vehicle,
+            planned_track_sequences=working_track_sequences,
+        ):
+            next_track_seq = [vehicle_no] + list(working_track_sequences.get(target_track, ()))
+            next_spot_assignments = realign_spots_for_track_order(
+                vehicle_nos_in_order=next_track_seq,
+                vehicle_by_no=vehicle_by_no,
+                target_track=target_track,
+                yard_mode=yard_mode,
+                current_spot_assignments=working_spot_assignments,
+                reserved_spot_codes=reserved_spot_codes,
+            )
+            if next_spot_assignments is None:
+                rejected[target_track] = "spot_realign_failed"
+                continue
+            admitted_track = target_track
+            working_track_sequences[target_track] = next_track_seq
+            working_spot_assignments = next_spot_assignments
+            admitted_vehicle_nos.add(vehicle_no)
+            assigned_track_by_vehicle[vehicle_no] = target_track
+            break
+        if not admitted_track:
+            deferred_vehicle_nos.add(vehicle_no)
+            rejected_by_vehicle[vehicle_no] = rejected or {"*": "no_candidate_depot_track"}
+    admitted_goals: list[dict[str, Any]] = []
+    for goal in goals:
+        vehicle_no = str(goal.get("vehicleNo") or "")
+        if vehicle_no not in deferred_vehicle_nos:
+            admitted_goals.append(dict(goal))
+            continue
+        current = current_by_vehicle[vehicle_no]
+        admitted_goals.append(
+            {
+                "vehicleNo": vehicle_no,
+                "targetTrack": str(current["trackName"]),
+                "targetMode": "SNAPSHOT",
+                "targetSource": PHASE3_DYNAMIC_CURRENT_HOLD,
+                "isSpotting": "",
+            }
+        )
+    return (
+        admitted_goals,
+        {
+            "enabled": True,
+            "capacity": capacity,
+            "baseVehicleCount": base_count,
+            "baseVehicleNos": list(base_vehicle_nos),
+            "baseTrackCounts": {
+                track: len(base_track_sequences.get(track, ()))
+                for track in depot_tracks
+            },
+            "pendingVehicleCount": len(pending_goals),
+            "availableSlots": available_slots,
+            "activeVehicleBudget": active_budget,
+            "admittedVehicleNos": sorted(admitted_vehicle_nos),
+            "admittedVehicleCount": len(admitted_vehicle_nos),
+            "assignedTrackByVehicle": dict(sorted(assigned_track_by_vehicle.items())),
+            "deferredVehicleNos": sorted(deferred_vehicle_nos),
+            "deferredVehicleCount": len(deferred_vehicle_nos),
+            "deferredReason": (
+                ""
+                if not deferred_vehicle_nos
+                else "phase3_depot_track_admission_budget"
+            ),
+            "rejectedByVehicle": rejected_by_vehicle,
+            "projectedTrackCounts": {
+                track: len(working_track_sequences.get(track, ()))
+                for track in depot_tracks
+            },
+            "projectedVehicleCount": base_count + len(admitted_vehicle_nos),
+        },
+    )
+
+
+def _phase3_admission_goal_priority(
+    *,
+    goal: dict[str, Any],
+    current_by_vehicle: dict[str, dict],
+) -> tuple[Any, ...]:
+    vehicle_no = str(goal["vehicleNo"])
+    vehicle = current_by_vehicle[vehicle_no]
+    candidates = _phase3_admission_candidate_tracks(goal=goal, vehicle=vehicle)
+    vehicle_length = float(vehicle.get("vehicleLength") or 0.0)
+    repair_process = str(vehicle.get("repairProcess") or "")
+    return (
+        len(candidates),
+        0 if repair_process == "厂修" else 1,
+        0 if vehicle_length >= 17.6 else 1,
+        str(vehicle.get("trackName") or ""),
+        str(vehicle.get("order") or ""),
+        vehicle_no,
+    )
+
+
+def _phase3_goal_needs_depot_admission(
+    *,
+    goal: dict[str, Any],
+    current_by_vehicle: dict[str, dict],
+) -> bool:
+    if str(goal.get("targetSource") or "") == PHASE3_DYNAMIC_CURRENT_HOLD:
+        return False
+    vehicle_no = str(goal["vehicleNo"])
+    current_track = str(current_by_vehicle.get(vehicle_no, {}).get("trackName") or "")
+    if current_track in {"修1", "修2", "修3", "修4"}:
+        return False
+    target_track = str(goal.get("targetTrack") or "")
+    target_area_code = str(goal.get("targetAreaCode") or "")
+    return (
+        target_area_code == "大库:RANDOM"
+        or target_track == "大库"
+        or target_track in {"修1", "修2", "修3", "修4"}
+    )
 
 
 def _phase3_planned_to_stay_in_depot_track(
@@ -4586,6 +5087,40 @@ def _ordered_phase3_random_depot_candidate_tracks(
             track,
         ),
     )
+
+
+def _ordered_phase3_admission_candidate_tracks(
+    *,
+    goal: dict[str, Any],
+    vehicle: dict,
+    planned_track_sequences: dict[str, list[str]],
+) -> list[str]:
+    preferred = [str(item) for item in goal.get("preferredTargetTracks") or ()]
+    candidates = _phase3_admission_candidate_tracks(goal=goal, vehicle=vehicle)
+    return sorted(
+        candidates,
+        key=lambda track: (
+            0 if track in preferred else 1,
+            len(planned_track_sequences.get(track, ())),
+            track,
+        ),
+    )
+
+
+def _phase3_admission_candidate_tracks(
+    *,
+    goal: dict[str, Any],
+    vehicle: dict,
+) -> list[str]:
+    target_track = str(goal.get("targetTrack") or "")
+    target_area_code = str(goal.get("targetAreaCode") or "")
+    if target_track in {"修1", "修2", "修3", "修4"} and target_area_code != "大库:RANDOM":
+        candidates = [target_track]
+    else:
+        candidates = _phase3_random_depot_candidate_tracks(goal=goal, vehicle=vehicle)
+    if float(vehicle.get("vehicleLength") or 0.0) >= 17.6:
+        candidates = [track for track in candidates if track in {"修3", "修4"}]
+    return list(dict.fromkeys(candidates))
 
 
 def _phase3_random_depot_candidate_tracks(

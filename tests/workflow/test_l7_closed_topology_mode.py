@@ -1897,6 +1897,87 @@ def test_phase3_builds_wave_plans_for_multi_block_depot_push():
     }
 
 
+def test_phase3_compacts_same_source_blocks_into_preflighted_tail_run():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="调棚", order="1", vehicle_no="A", target_track="修1"),
+            _vehicle(track_name="调棚", order="2", vehicle_no="B", target_track="修2"),
+            _vehicle(track_name="调棚", order="3", vehicle_no="C", target_track="修2"),
+            _vehicle(track_name="修3", order="1", vehicle_no="HOLD3", target_track="修3"),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase3_stage = _resolve_dynamic_stage(
+        stage=workflow_payload["workflowStages"][2],
+        track_info=payload["trackInfo"],
+        current_vehicle_info=payload["vehicleInfo"],
+        current_state=ReplayState(
+            track_sequences={
+                "调棚": ["A", "B", "C"],
+                "修3": ["HOLD3"],
+            },
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+        ),
+        master=master,
+    )
+    phase3_policy = phase3_stage["stagePolicy"]
+    wave_plans = list(phase3_policy.get("phase3WavePlans") or [])
+
+    assert len(wave_plans) == 1
+    assert wave_plans[0]["requiresExplicitPlan"] is True
+    assert wave_plans[0]["waveRole"] == "PHASE3_SOURCE_TAIL_RUN_TO_DEPOT"
+    assert wave_plans[0]["waveTargetRuns"] == [
+        {"targetTrack": "修1", "vehicleNos": ["A"]},
+        {"targetTrack": "修2", "vehicleNos": ["B", "C"]},
+    ]
+    assert phase3_policy["phase3ExecutionPlanDiagnostics"]["enabled"] is True
+    assert phase3_policy["phase3ExecutionPlanDiagnostics"]["plannedHookCount"] == 3
+
+
+def test_phase3_does_not_enable_partial_wave_plans_when_active_vehicle_is_hidden():
+    master = load_master_data(DATA_DIR)
+    payload = {
+        "operationMode": OPERATION_MODE_L7_CLOSED_TOPOLOGY,
+        "trackInfo": _base_track_info(),
+        "vehicleInfo": [
+            _vehicle(track_name="调棚", order="1", vehicle_no="A", target_track="修1"),
+            _vehicle(track_name="调棚", order="2", vehicle_no="HOLD", target_track="调棚"),
+            _vehicle(track_name="调棚", order="3", vehicle_no="B", target_track="修2"),
+        ],
+        "locoTrackName": "机库",
+    }
+
+    workflow_payload = build_l7_closed_topology_workflow_payload(master, payload)
+    phase3_stage = _resolve_dynamic_stage(
+        stage=workflow_payload["workflowStages"][2],
+        track_info=payload["trackInfo"],
+        current_vehicle_info=payload["vehicleInfo"],
+        current_state=ReplayState(
+            track_sequences={"调棚": ["A", "HOLD", "B"]},
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+        ),
+        master=master,
+    )
+    phase3_policy = phase3_stage["stagePolicy"]
+    diagnostics = phase3_policy["phase3BlockPlanDiagnostics"]
+
+    assert diagnostics["coveredVehicleNos"] == ["A"]
+    assert diagnostics["hiddenActiveVehicleNos"] == ["B"]
+    assert diagnostics["allActiveCoveredByFrontier"] is False
+    assert phase3_policy["phase3ExecutionPlanDiagnostics"]["enabled"] is False
+    assert phase3_policy["phase3ExecutionPlanDiagnostics"]["reason"] == "active_vehicle_hidden_behind_hold"
+    assert "phase3WavePlans" not in phase3_policy
+
+
 def test_solve_workflow_auto_expands_l7_mode_and_applies_stage_route_overlay(monkeypatch):
     master = load_master_data(DATA_DIR)
     payload = {

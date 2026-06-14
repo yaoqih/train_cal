@@ -37,6 +37,11 @@ from fzed_shunting.workflow.l7_closed_topology_mode import (
 
 
 MASTER_DIR = Path(__file__).resolve().parent / "data" / "master"
+DEFAULT_EVAL_ARTIFACT = (
+    Path(__file__).resolve().parent
+    / "artifacts"
+    / "l7_phase1234_truth_phase3_tail_run_preflight_20260614.json"
+)
 _TOPOLOGY_LAYOUT = None
 _SCHEMATIC_LAYOUT = None
 _MASTER_DATA = None
@@ -88,6 +93,16 @@ def main():
     st.set_page_config(page_title="福州东调车 Demo", layout="wide")
     st.title("福州东调车 Demo")
     st.caption("按场景文件回放 block 级求解结果，并显示 verifier 结论。")
+
+    demo_tab, eval_tab = st.tabs(["案例回放", "评估统计"])
+    with eval_tab:
+        _render_evaluation_dashboard()
+    with demo_tab:
+        _render_single_scenario_page()
+
+
+def _render_single_scenario_page() -> None:
+    st.subheader("案例回放")
 
     scenario_path = st.text_input("Scenario JSON 路径", value="")
     auto_solver = st.checkbox(
@@ -152,6 +167,283 @@ def main():
         time_budget_ms=time_budget_ms,
     )
     return
+
+
+def _render_evaluation_dashboard() -> None:
+    st.subheader("评估统计")
+    default_path = str(DEFAULT_EVAL_ARTIFACT if DEFAULT_EVAL_ARTIFACT.exists() else "")
+    artifact_path = st.text_input(
+        "评估 JSON 路径",
+        value=default_path,
+        help="例如 artifacts/l7_phase1234_truth_phase3_tail_run_preflight_20260614.json",
+    )
+    if not artifact_path:
+        st.info("先填写评估 JSON 路径。")
+        return
+    path = Path(artifact_path)
+    if not path.exists():
+        st.warning("评估 JSON 还不存在；如果正在跑全量评估，等进程结束后刷新。")
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"评估 JSON 读取失败：{exc}")
+        return
+    dataset_name, dataset = _extract_eval_dataset(payload)
+    rows = list(dataset.get("rows") or [])
+    if not rows:
+        st.warning("评估 JSON 中没有 rows。")
+        return
+
+    st.caption(f"数据集：{dataset_name} | 文件：{path}")
+    summary_cols = st.columns(7)
+    summary_cols[0].metric("样本数", dataset.get("scenario_count", len(rows)))
+    summary_cols[1].metric("Phase1 可解", dataset.get("phase1_ok_count", "-"))
+    summary_cols[2].metric("Phase2 可解", dataset.get("phase2_ok_count", "-"))
+    summary_cols[3].metric("可进 Phase3", dataset.get("phase2_can_enter_phase3_count", "-"))
+    summary_cols[4].metric("Phase3 可解", dataset.get("phase3_ok_count", "-"))
+    summary_cols[5].metric("Phase4 可解", dataset.get("phase4_ok_count", "-"))
+    summary_cols[6].metric("1-4 全通", dataset.get("phase1234_ok_count", "-"))
+
+    stage_rows = _build_eval_stage_summary_rows(dataset, rows)
+    st.markdown("**阶段分布**")
+    st.dataframe(stage_rows, use_container_width=True, hide_index=True)
+
+    failed_distribution = dataset.get("failed_stage_distribution") or {}
+    if failed_distribution:
+        st.markdown("**失败阶段分布**")
+        st.dataframe(
+            [{"failedAt": key, "count": value} for key, value in sorted(failed_distribution.items())],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    case_rows = _build_eval_case_rows(rows)
+    failed_options = ["全部", *sorted({str(row["failedAt"]) for row in case_rows})]
+    solved_options = ["全部", "Phase1 可解", "Phase2 可解", "Phase3 可解", "Phase4 可解", "1-4 全通", "未全通"]
+    filter_cols = st.columns([2, 2, 2])
+    failed_filter = filter_cols[0].selectbox("失败阶段", failed_options)
+    solved_filter = filter_cols[1].selectbox("阶段筛选", solved_options)
+    min_phase3_hooks = filter_cols[2].number_input("Phase3 最小钩数", min_value=0, value=0, step=1)
+    filtered_rows = _filter_eval_case_rows(
+        case_rows,
+        failed_filter=failed_filter,
+        solved_filter=solved_filter,
+        min_phase3_hooks=int(min_phase3_hooks),
+    )
+    st.markdown("**案例明细**")
+    st.caption(f"当前显示 {len(filtered_rows)} / {len(case_rows)} 个案例。")
+    st.dataframe(filtered_rows, use_container_width=True, hide_index=True)
+    st.download_button(
+        "下载当前明细 CSV",
+        data=_rows_to_csv(filtered_rows),
+        file_name="l7_eval_case_rows.csv",
+        mime="text/csv",
+    )
+
+    scenario_names = [str(row["scenario"]) for row in filtered_rows]
+    if not scenario_names:
+        return
+    selected_scenario = st.selectbox("选中案例", scenario_names)
+    selected_path = Path(__file__).resolve().parent / "data" / "validation_inputs" / dataset_name / selected_scenario
+    st.code(str(selected_path), language="text")
+    if st.checkbox("在本页回放选中案例", value=False):
+        if not selected_path.exists():
+            st.error("选中案例文件不存在。")
+            return
+        raw_payload = json.loads(selected_path.read_text(encoding="utf-8"))
+        _render_workflow_demo(
+            master=_get_master_data(),
+            payload=_as_l7_workflow_payload(raw_payload),
+            solver=VALIDATION_DEFAULT_SOLVER,
+            heuristic_weight=1.0,
+            beam_width=VALIDATION_DEFAULT_BEAM_WIDTH,
+            time_budget_ms=_validation_time_budget_ms(VALIDATION_DEFAULT_TIMEOUT_SECONDS),
+        )
+
+
+def _extract_eval_dataset(payload: dict) -> tuple[str, dict]:
+    if "truth" in payload and isinstance(payload["truth"], dict):
+        return "truth", dict(payload["truth"])
+    if len(payload) == 1:
+        name = next(iter(payload))
+        value = payload[name]
+        if isinstance(value, dict):
+            return str(name), dict(value)
+    return "truth", payload
+
+
+def _build_eval_stage_summary_rows(dataset: dict, rows: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    for stage_no in range(1, 5):
+        hook_key = f"stage{stage_no}_hook_distribution"
+        hooks = dataset.get(hook_key) or _distribution([
+            _as_float((row.get(f"phase{stage_no}Actual") or {}).get("hookCount"))
+            for row in rows
+        ])
+        elapsed_values = [
+            _stage_elapsed_ms(row, stage_no)
+            for row in rows
+            if _stage_prefix(row, stage_no).get("elapsed_ms") is not None
+        ]
+        elapsed = _distribution(elapsed_values)
+        result.append(
+            {
+                "stage": f"Phase{stage_no}",
+                "prefixOk": sum(1 for row in rows if _stage_prefix(row, stage_no).get("ok") is True),
+                "actualValid": sum(1 for row in rows if (row.get(f"phase{stage_no}Actual") or {}).get("isValid") is True),
+                "hookP50": hooks.get("p50"),
+                "hookP90": hooks.get("p90"),
+                "hookP95": hooks.get("p95"),
+                "hookMax": hooks.get("max"),
+                "elapsedP50Ms": elapsed.get("p50"),
+                "elapsedP90Ms": elapsed.get("p90"),
+                "elapsedP95Ms": elapsed.get("p95"),
+                "elapsedMaxMs": elapsed.get("max"),
+            }
+        )
+    return result
+
+
+def _build_eval_case_rows(rows: list[dict]) -> list[dict]:
+    case_rows: list[dict] = []
+    for row in rows:
+        item = {
+            "scenario": str(row.get("scenario") or ""),
+            "failedAt": str(row.get("failedAt") or ""),
+            "solved123": bool(row.get("solved123")),
+            "solved1234": bool(row.get("solved1234")),
+            "totalElapsedMs": _round_or_none(_as_float(row.get("elapsed_ms"))),
+        }
+        for stage_no in range(1, 5):
+            prefix = _stage_prefix(row, stage_no)
+            actual = row.get(f"phase{stage_no}Actual") or {}
+            item[f"phase{stage_no}Ok"] = prefix.get("ok") is True
+            item[f"phase{stage_no}Valid"] = actual.get("isValid") is True
+            item[f"phase{stage_no}Hooks"] = _hook_count(row, stage_no)
+            item[f"phase{stage_no}ElapsedMs"] = _round_or_none(_stage_elapsed_ms(row, stage_no))
+        case_rows.append(item)
+    return sorted(
+        case_rows,
+        key=lambda item: (
+            bool(item.get("solved1234")),
+            bool(item.get("solved123")),
+            -float(item.get("phase3Hooks") or 0),
+            str(item.get("scenario") or ""),
+        ),
+    )
+
+
+def _filter_eval_case_rows(
+    rows: list[dict],
+    *,
+    failed_filter: str,
+    solved_filter: str,
+    min_phase3_hooks: int,
+) -> list[dict]:
+    result = []
+    for row in rows:
+        if failed_filter != "全部" and row.get("failedAt") != failed_filter:
+            continue
+        if solved_filter == "Phase1 可解" and not row.get("phase1Ok"):
+            continue
+        if solved_filter == "Phase2 可解" and not row.get("phase2Ok"):
+            continue
+        if solved_filter == "Phase3 可解" and not row.get("phase3Ok"):
+            continue
+        if solved_filter == "Phase4 可解" and not row.get("phase4Ok"):
+            continue
+        if solved_filter == "1-4 全通" and not row.get("solved1234"):
+            continue
+        if solved_filter == "未全通" and row.get("solved1234"):
+            continue
+        if int(row.get("phase3Hooks") or 0) < min_phase3_hooks:
+            continue
+        result.append(row)
+    return result
+
+
+def _stage_prefix(row: dict, stage_no: int) -> dict:
+    return row.get(f"phase{stage_no}Prefix") or {}
+
+
+def _hook_count(row: dict, stage_no: int) -> int | None:
+    actual = row.get(f"phase{stage_no}Actual") or {}
+    parsed = _as_float(actual.get("hookCount"))
+    if parsed is not None:
+        return int(parsed)
+    counts = _stage_prefix(row, stage_no).get("stage_hook_counts") or []
+    if len(counts) >= stage_no:
+        return int(counts[stage_no - 1])
+    return None
+
+
+def _stage_elapsed_ms(row: dict, stage_no: int) -> float | None:
+    current = _as_float(_stage_prefix(row, stage_no).get("elapsed_ms"))
+    if current is None:
+        return None
+    if stage_no == 1:
+        return current
+    previous = _as_float(_stage_prefix(row, stage_no - 1).get("elapsed_ms"))
+    if previous is None:
+        return current
+    return max(0.0, current - previous)
+
+
+def _distribution(raw_values: list[float | None]) -> dict[str, float | None]:
+    values = sorted(value for value in raw_values if value is not None)
+    if not values:
+        return {"min": None, "p50": None, "p90": None, "p95": None, "max": None, "avg": None}
+    return {
+        "min": _round_or_none(values[0]),
+        "p50": _round_or_none(_percentile(values, 50)),
+        "p90": _round_or_none(_percentile(values, 90)),
+        "p95": _round_or_none(_percentile(values, 95)),
+        "max": _round_or_none(values[-1]),
+        "avg": _round_or_none(sum(values) / len(values)),
+    }
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if len(values) == 1:
+        return values[0]
+    rank = (len(values) - 1) * percentile / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(values) - 1)
+    weight = rank - lower
+    return values[lower] * (1.0 - weight) + values[upper] * weight
+
+
+def _as_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_or_none(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 3)
+
+
+def _rows_to_csv(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    columns = list(rows[0].keys())
+    csv_rows = [",".join(columns)]
+    for row in rows:
+        csv_rows.append(",".join(_csv_cell(row.get(column)) for column in columns))
+    return "\n".join(csv_rows) + "\n"
+
+
+def _csv_cell(value) -> str:
+    text = "" if value is None else str(value)
+    if any(ch in text for ch in [",", "\"", "\n"]):
+        text = "\"" + text.replace("\"", "\"\"") + "\""
+    return text
 
 
 def _render_workflow_demo(

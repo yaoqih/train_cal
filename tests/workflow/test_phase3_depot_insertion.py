@@ -168,6 +168,125 @@ def test_resolve_phase3_depot_targets_never_emits_track_mode_abstract_depot():
     assert goal["targetTrack"] in {"修1", "修2", "修3", "修4"}
 
 
+def test_resolve_phase3_depot_targets_defers_vehicle_when_only_allowed_track_is_full():
+    master = load_master_data(DATA_DIR)
+    current_vehicle_info = [_vehicle(vehicle_no="EXTRA", track_name="机北1")]
+    goals = [
+        {
+            "vehicleNo": "EXTRA",
+            "targetTrack": "大库",
+            "targetMode": "AREA",
+            "targetAreaCode": "大库:RANDOM",
+            "allowedTargetTracks": ["修1"],
+            "preferredTargetTracks": ["修1"],
+            "fallbackTargetTracks": [],
+            "isSpotting": "",
+        }
+    ]
+    track_sequences = {"机北1": ["EXTRA"], "修1": []}
+    for slot in range(1, 6):
+        vehicle_no = f"R{slot}"
+        current_vehicle_info.append(
+            _vehicle(
+                vehicle_no=vehicle_no,
+                track_name="修1",
+                order=str(slot),
+                target_track="修1",
+            )
+        )
+        goals.append(
+            {
+                "vehicleNo": vehicle_no,
+                "targetTrack": "修1",
+                "targetMode": "TRACK",
+                "isSpotting": "",
+            }
+        )
+        track_sequences["修1"].append(vehicle_no)
+    stage = {
+        "name": "phase3_ji_to_depot_allocation",
+        "vehicleGoals": goals,
+        "stagePolicy": {"stageMode": "PHASE3_JI_TO_DEPOT_ALLOCATION"},
+    }
+
+    resolved = _resolve_phase3_depot_targets(
+        stage=stage,
+        current_vehicle_info=current_vehicle_info,
+        current_state=ReplayState(
+            track_sequences=track_sequences,
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+        ),
+        master=master,
+    )
+
+    goal_by_vehicle = {goal["vehicleNo"]: goal for goal in resolved["vehicleGoals"]}
+    assert goal_by_vehicle["EXTRA"]["targetTrack"] == "机北1"
+    assert goal_by_vehicle["EXTRA"]["targetMode"] == "SNAPSHOT"
+    assert goal_by_vehicle["EXTRA"]["targetSource"] == "PHASE3_DYNAMIC_CURRENT_HOLD"
+    diagnostics = resolved["stagePolicy"]["phase3AdmissionDiagnostics"]
+    assert diagnostics["deferredVehicleNos"] == ["EXTRA"]
+    assert diagnostics["projectedTrackCounts"]["修1"] == 5
+
+
+def test_resolve_phase3_depot_targets_defers_concrete_depot_target_when_track_is_full():
+    master = load_master_data(DATA_DIR)
+    current_vehicle_info = [_vehicle(vehicle_no="EXTRA", track_name="机北1", target_track="修1")]
+    goals = [
+        {
+            "vehicleNo": "EXTRA",
+            "targetTrack": "修1",
+            "targetMode": "TRACK",
+            "isSpotting": "",
+        }
+    ]
+    track_sequences = {"机北1": ["EXTRA"], "修1": []}
+    for slot in range(1, 6):
+        vehicle_no = f"R{slot}"
+        current_vehicle_info.append(
+            _vehicle(
+                vehicle_no=vehicle_no,
+                track_name="修1",
+                order=str(slot),
+                target_track="修1",
+            )
+        )
+        goals.append(
+            {
+                "vehicleNo": vehicle_no,
+                "targetTrack": "修1",
+                "targetMode": "TRACK",
+                "isSpotting": "",
+            }
+        )
+        track_sequences["修1"].append(vehicle_no)
+    stage = {
+        "name": "phase3_ji_to_depot_allocation",
+        "vehicleGoals": goals,
+        "stagePolicy": {"stageMode": "PHASE3_JI_TO_DEPOT_ALLOCATION"},
+    }
+
+    resolved = _resolve_phase3_depot_targets(
+        stage=stage,
+        current_vehicle_info=current_vehicle_info,
+        current_state=ReplayState(
+            track_sequences=track_sequences,
+            loco_track_name="机库",
+            weighed_vehicle_nos=set(),
+            spot_assignments={},
+        ),
+        master=master,
+    )
+
+    goal_by_vehicle = {goal["vehicleNo"]: goal for goal in resolved["vehicleGoals"]}
+    assert goal_by_vehicle["EXTRA"]["targetTrack"] == "机北1"
+    assert goal_by_vehicle["EXTRA"]["targetSource"] == "PHASE3_DYNAMIC_CURRENT_HOLD"
+    diagnostics = resolved["stagePolicy"]["phase3AdmissionDiagnostics"]
+    assert diagnostics["deferredVehicleNos"] == ["EXTRA"]
+    assert diagnostics["rejectedByVehicle"]["EXTRA"] == {"修1": "spot_realign_failed"}
+
+
 def test_resolve_phase3_dynamic_hold_uses_snapshot_for_non_final_buffer_track():
     master = load_master_data(DATA_DIR)
     current_vehicle_info = [_vehicle(vehicle_no="HOLD", track_name="机北1")]
